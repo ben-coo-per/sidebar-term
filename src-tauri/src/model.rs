@@ -1,13 +1,13 @@
 //! Shared types crossing the Rust <-> webview boundary. Mirrored by `src/lib/types.ts`.
 //! CONTRACT: owned by the tech lead. Change only by agreement; keep the TS mirror in sync.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Identity of one Session (one shell on one pty). Allocated by `SessionManager`, never reused.
 pub type SessionId = u32;
 
 /// A known coding agent that can be a Session's Foreground process.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentKind {
     Claude,
@@ -133,8 +133,46 @@ pub struct ActivitySnapshot {
     pub processes: Vec<ActivityProcess>,
 }
 
+/// One usage limit of one coding agent, e.g. Claude Code's 5-hour window.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageWindow {
+    /// Short name for the window: `5h`, `Week`, `Opus wk`.
+    pub label: String,
+    /// Percent of the limit used; 100 is the limit (overage can exceed it).
+    pub used_percent: f32,
+    /// When the window resets, epoch ms; `None` when the agent does not say.
+    pub resets_at: Option<u64>,
+}
+
+/// One coding agent's usage limits. Payload element of `usage`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentUsage {
+    pub agent: AgentKind,
+    /// The agent's limits; empty when never read (see `error`).
+    pub windows: Vec<UsageWindow>,
+    /// The plan the agent reports (`free`, `plus`, `max`), if any.
+    pub plan: Option<String>,
+    /// When `windows` were read (Claude Code) or recorded by the agent (Codex), epoch ms.
+    pub updated_at: Option<u64>,
+    /// Why the numbers are missing or stale; `windows` then hold the last good ones, if any.
+    pub error: Option<String>,
+}
+
+/// Usage limits of the agents chosen in Settings, in the order asked for. Payload of `usage`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageSnapshot {
+    pub agents: Vec<AgentUsage>,
+}
+
 /// Event names. Frontend listens with `listen(EVENT_SESSION_INFO, ...)`.
 pub const EVENT_SESSION_INFO: &str = "session-info";
 pub const EVENT_SESSION_EXIT: &str = "session-exit";
 /// Sent every activity tick while the webview watches (`activity_watch`).
 pub const EVENT_ACTIVITY: &str = "activity";
+/// Sent when the watched agents' usage changes, and right away on `usage_watch`.
+pub const EVENT_USAGE: &str = "usage";
+/// The app menu's "Settings…" was chosen: the webview opens the Settings page.
+pub const EVENT_MENU_SETTINGS: &str = "menu-settings";

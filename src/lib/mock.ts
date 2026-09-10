@@ -9,7 +9,7 @@
 //   cd ~/Dev/detached         -> detached HEAD
 // Layout persistence uses localStorage. Activity is invented: each fake Session has a shell (and
 // its foreground program, busy when it is an agent) next to a fixed cast of jittering system
-// processes.
+// processes. Usage is invented too: fixed limits, Claude Code's 5-hour window creeping up.
 
 import type { SpawnOptions } from "./ipc";
 import type {
@@ -17,10 +17,12 @@ import type {
   ActivitySession,
   ActivitySnapshot,
   AgentKind,
+  AgentUsage,
   GitInfo,
   SessionExit,
   SessionId,
   SessionInfo,
+  UsageSnapshot,
 } from "./types";
 
 type InfoCb = (i: SessionInfo) => void;
@@ -307,6 +309,59 @@ export async function watchActivity(on: boolean): Promise<void> {
 export async function onActivity(cb: ActivityCb) {
   activityCbs.add(cb);
   return () => void activityCbs.delete(cb);
+}
+
+type UsageCb = (u: UsageSnapshot) => void;
+const usageCbs = new Set<UsageCb>();
+let usageTimer: ReturnType<typeof setInterval> | null = null;
+const startedAt = Date.now();
+const HOUR = 3_600_000;
+
+function fakeUsage(agent: AgentKind): AgentUsage | null {
+  const now = Date.now();
+  switch (agent) {
+    case "claude":
+      return {
+        agent,
+        windows: [
+          { label: "5h", usedPercent: Math.min(100, 48 + (now - startedAt) / 20_000), resetsAt: now + 2.2 * HOUR },
+          { label: "Week", usedPercent: 83, resetsAt: now + 76 * HOUR },
+        ],
+        plan: "max",
+        updatedAt: now,
+        error: null,
+      };
+    case "codex":
+      return {
+        agent,
+        windows: [
+          { label: "5h", usedPercent: 12, resetsAt: now + 0.6 * HOUR },
+          { label: "Week", usedPercent: 97, resetsAt: now + 120 * HOUR },
+        ],
+        plan: "plus",
+        updatedAt: now - 3 * HOUR,
+        error: null,
+      };
+    case "gemini":
+      return null;
+  }
+}
+
+export async function watchUsage(on: boolean, agents: AgentKind[]): Promise<void> {
+  if (usageTimer !== null) clearInterval(usageTimer);
+  usageTimer = null;
+  if (!on) return;
+  const tick = () => {
+    const snapshot = { agents: agents.map(fakeUsage).filter((a): a is AgentUsage => a !== null) };
+    usageCbs.forEach((cb) => cb(snapshot));
+  };
+  tick();
+  usageTimer = setInterval(tick, 5000);
+}
+
+export async function onUsage(cb: UsageCb) {
+  usageCbs.add(cb);
+  return () => void usageCbs.delete(cb);
 }
 
 const SETTINGS_KEY = "sidebar-term:mock-settings";

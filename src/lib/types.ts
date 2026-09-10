@@ -77,6 +77,37 @@ export interface ActivitySnapshot {
   processes: ActivityProcess[];
 }
 
+/** One usage limit of one coding agent, e.g. Claude Code's 5-hour window. */
+export interface UsageWindow {
+  /** Short name for the window: "5h", "Week", "Opus wk". */
+  label: string;
+  /** Percent of the limit used; 100 is the limit (overage can exceed it). */
+  usedPercent: number;
+  /** When the window resets, epoch ms; null when the agent does not say. */
+  resetsAt: number | null;
+}
+
+/** One coding agent's usage limits. */
+export interface AgentUsage {
+  agent: AgentKind;
+  /** The agent's limits; empty when never read (see `error`). */
+  windows: UsageWindow[];
+  /** The plan the agent reports ("free", "plus", "max"), if any. */
+  plan: string | null;
+  /** When `windows` were read (Claude Code) or recorded by the agent (Codex), epoch ms. */
+  updatedAt: number | null;
+  /** Why the numbers are missing or stale; `windows` then hold the last good ones, if any. */
+  error: string | null;
+}
+
+/** Usage limits of the agents chosen in Settings, in the order asked for. Pushed on `usage`. */
+export interface UsageSnapshot {
+  agents: AgentUsage[];
+}
+
 export const EVENT_SESSION_INFO = "session-info";
 export const EVENT_SESSION_EXIT = "session-exit";
 export const EVENT_ACTIVITY = "activity";
+export const EVENT_USAGE = "usage";
+/** The app menu's "Settings…" was chosen. */
+export const EVENT_MENU_SETTINGS = "menu-settings";

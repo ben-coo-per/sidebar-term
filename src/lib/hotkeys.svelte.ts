@@ -1,8 +1,8 @@
 // The live Hotkey bindings: defaults from ./hotkeys.ts with the user's overrides applied,
-// persisted (overrides only) via settings_load/settings_save (src/lib/ipc.ts). Edited on the
+// persisted (overrides only) as the `hotkeys` section of the settings (./settings/store.ts). Edited on the
 // Settings page (src/lib/settings/SettingsPage.svelte); dispatched by ./shortcuts.ts.
 
-import { loadSettings, saveSettings } from "./ipc";
+import { loadSection, saveSection } from "./settings/store";
 import {
   ACTIONS,
   actionFor,
@@ -16,8 +16,6 @@ import {
   type Combo,
 } from "./hotkeys";
 
-const SETTINGS_VERSION = 1;
-
 export const hotkeys = $state<{
   bindings: Bindings;
   /** True while the Settings page is capturing a new combo: ./shortcuts.ts stands aside. */
@@ -25,13 +23,11 @@ export const hotkeys = $state<{
 }>({ bindings: defaultBindings(), recording: false });
 
 export async function initHotkeys(): Promise<void> {
-  const raw = await loadSettings().catch(() => null);
-  const overrides = raw && typeof raw === "object" ? (raw as Record<string, unknown>).hotkeys : null;
-  hotkeys.bindings = resolveBindings(parseOverrides(overrides));
+  hotkeys.bindings = resolveBindings(parseOverrides(await loadSection("hotkeys")));
 }
 
 function persist(): void {
-  void saveSettings({ version: SETTINGS_VERSION, hotkeys: diffFromDefaults(hotkeys.bindings) });
+  saveSection("hotkeys", diffFromDefaults(hotkeys.bindings));
 }
 
 /**

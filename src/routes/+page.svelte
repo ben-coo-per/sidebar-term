@@ -8,19 +8,24 @@
   import { activeTab, initLayout, layout } from "$lib/layout.svelte";
   import { initShortcuts } from "$lib/shortcuts";
   import { initHotkeys } from "$lib/hotkeys.svelte";
+  import { initUsageSettings } from "$lib/panel/usage/settings.svelte";
+  import { onMenuSettings } from "$lib/ipc";
   import { initDropGuard } from "$lib/terminal/drop";
   import SettingsPage from "$lib/settings/SettingsPage.svelte";
-  import { closeSettings, settingsPage } from "$lib/settings/visibility.svelte";
+  import { closeSettings, openSettings, settingsPage } from "$lib/settings/visibility.svelte";
   import { untrack } from "svelte";
 
   $effect(() => {
     void initLayout();
     void initHotkeys();
+    void initUsageSettings();
     const stopShortcuts = initShortcuts();
     const stopDropGuard = initDropGuard();
+    const menuSettings = onMenuSettings(openSettings);
     return () => {
       stopShortcuts();
       stopDropGuard();
+      void menuSettings.then((stop) => stop());
     };
   });
 

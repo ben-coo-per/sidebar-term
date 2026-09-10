@@ -23,17 +23,20 @@ stores each Tab's last cwd instead and respawns a shell there on relaunch.
 | `session_resize` | `sessionId, cols, rows` | - |
 | `session_pause` / `session_resume` | `sessionId` | - (flow control, see `docs/research/pty.md`) |
 | `session_kill` | `sessionId` | - (then `session-exit` fires) |
-| `session_reset` | - | - (kills every Session and stops Activity sampling; called once at webview startup so a reload leaves no orphans) |
+| `session_reset` | - | - (kills every Session and stops Activity and Usage reading; called once at webview startup so a reload leaves no orphans) |
 | `session_info` | `sessionId` | `SessionInfo \| null` (fresh probe) |
 | `activity_watch` | `on: boolean` | - (start / stop sampling Activity) |
+| `usage_watch` | `on: boolean, agents: AgentKind[]` | - (start, change the agents of, or stop reading Usage) |
 | `layout_load` / `layout_save` | `layout: json` | opaque JSON blob in the app data dir |
-| `settings_load` / `settings_save` | `settings: json` | opaque JSON blob (Hotkey overrides) in the app data dir |
+| `settings_load` / `settings_save` | `settings: json` | opaque JSON blob in the app data dir; one section per owner (`hotkeys`, `usage`), merged by `src/lib/settings/store.ts` |
 
 | Event | Payload | When |
 |---|---|---|
 | `session-info` | `SessionInfo` | first probe of a Session, then on every change (monitor tick 500 ms) |
 | `session-exit` | `SessionExit` | the shell exited or was killed |
 | `activity` | `ActivitySnapshot` | every 2 s while `activity_watch(true)`; the first right away |
+| `usage` | `UsageSnapshot` | right away on `usage_watch(true, ..)`, then whenever a number changes (checked every 5 s) |
+| `menu-settings` | - | the app menu's "Settings…" was chosen |
 
 Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `ipc.ts` routes to
 `src/lib/mock.ts`, a fake backend for developing the UI in a browser (`pnpm dev`, then open
@@ -50,6 +53,10 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
 - `activity.rs` — `Activity` (Tauri state): thread idle until watched, then every 2 s runs
   `/bin/ps` over every process, attributes each to a Session by ppid descent from its shell, and
   emits `activity` (see "Panel").
+- `usage.rs` — `Usage` (Tauri state): thread idle until watched, then every 5 s reads the chosen
+  agents' usage limits and emits `usage` on change (see "Panel").
+- `lib.rs` also builds the app menu: Tauri's default plus "Settings…" (no key equivalent: the
+  Settings Hotkey stays the webview's, rebindable).
 - `layout.rs` — atomic JSON read/write of `layout.json` and `settings.json` in the app data dir.
 
 ## Webview modules
@@ -62,14 +69,16 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
 - `src/lib/hotkeys.ts` — Hotkey actions, defaults and the pure rules for combos;
   `src/lib/hotkeys.svelte.ts` — the live bindings (persisted overrides); `src/lib/shortcuts.ts` —
   the window listener that dispatches them.
-- `src/lib/settings/*` — the Settings page (Hotkeys), shown over the Terminal.
+- `src/lib/settings/*` — the Settings page (Usage agents, Hotkeys), shown over the Terminal; the
+  settings blob's per-section store (`store.ts`).
 - `src/lib/sidebar/*` — sidebar components. `src/routes/+page.svelte` — app shell.
-- `src/lib/panel/*` — the Panel (`Panel.svelte`), its view list (`views.ts`) and the Activity
-  view (`activity/`: snapshot store, pure sorting / formatting / meter maths, components).
+- `src/lib/panel/*` — the Panel (`Panel.svelte`), its view list (`views.ts`), the Activity view
+  (`activity/`: snapshot store, pure sorting / formatting / meter maths, components) and the Usage
+  view (`usage/`: snapshot store, chosen agents, pure formatting, components).
 
 ## v1 product defaults (provisional)
 
-- **Scope** (#7): one window, no split panes, no profiles, no settings UI beyond Hotkeys, no quick
+- **Scope** (#7): one window, no split panes, no profiles, no settings UI beyond Usage agents and Hotkeys, no quick
   switcher. Tabs move between Groups by drag-and-drop and by a context menu.
 - **Persistence** (#8): Groups (name, order, collapsed), Tabs (order, custom Title, last cwd), the
   active Tab, sidebar width and the Panel (view, collapsed, height) persist. On relaunch every Tab respawns a shell at its last cwd.
@@ -90,7 +99,8 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
 - **Interaction** (#13): Cmd-T new Tab, Cmd-Shift-N new Group, Cmd-W close Tab, Cmd-1..9 go to
   the Nth Group (the Tab last active in it, else its first; expands a collapsed Group), Cmd-` /
   Cmd-Shift-` next / previous Tab within the active Tab's Group (wrapping), Cmd-Shift-[ / ] previous
-  / next Tab across all Groups, Cmd-Opt-Up/Down move Tab, Cmd-B toggle sidebar, Cmd-, Settings.
+  / next Tab across all Groups, Cmd-Opt-Up/Down move Tab, Cmd-B toggle sidebar, Cmd-, Settings
+  (also the app menu's "Settings…"; the sidebar has no Settings button).
   These are defaults: every one is a Hotkey the user can rebind on the Settings page
   (`src/lib/hotkeys.ts` holds the actions and rules; overrides persist in `settings.json` next to
   `layout.json`). A Group header shows its go-to-Group Hotkey and its Tab count as `NAME (2)  ⌘1`.
@@ -123,13 +133,14 @@ on a background Tab is highlighted until the Tab is activated.
 ## Panel
 
 The Panel sits at the bottom of the sidebar, beneath the Groups and the New Tab / New Group
-buttons. Its header holds a strip of view tabs; clicking the shown view's tab (or the header)
-collapses the Panel to that header, and clicking another view's tab switches to it and expands.
-Its top edge drags to resize, up to 70% of the sidebar. It is hidden while the sidebar is narrower
-than 220 px. Which view, collapsed or not, and the height persist in the layout (`panel`).
+buttons. It is an accordion: every view has its own header, and at most one view is open.
+Clicking a closed view's header opens it and closes the open one; clicking the open view's header
+closes it, leaving only headers. A closed view's header shows its summary, so every view reads its
+data while the Panel is shown. With a view open, the Panel's top edge drags to resize, up to 70%
+of the sidebar. It is hidden while the sidebar is narrower than 220 px. The open view (`view`,
+with `collapsed` when none is) and the height persist in the layout (`panel`).
 
-Views are listed in `src/lib/panel/views.ts` and rendered by `Panel.svelte`. Activity is the only
-one so far; a view of coding agents' usage limits is planned.
+Views are listed in `src/lib/panel/views.ts` and rendered by `Panel.svelte`: Activity, then Usage.
 
 **Activity** shows two meters (CPU out of every core, memory out of physical memory), each split
 into one segment per Session in its Tab colour, in sidebar order, then one muted segment for
@@ -137,8 +148,7 @@ everything else; and a list of processes sortable by CPU or memory. A Session's 
 its Tab colour, and clicking one goes to its Tab. Every other process is muted grey. Collapsed, the
 header shows CPU and Memory Used instead.
 
-- Source: `/bin/ps -axo pid,ppid,rss,time,%cpu,comm`, every 2 s, only while the Panel shows
-  Activity (collapsed included). libproc's task info is EPERM for other users' processes, about a
+- Source: `/bin/ps -axo pid,ppid,rss,time,%cpu,comm`, every 2 s, only while the Panel is shown. libproc's task info is EPERM for other users' processes, about a
   third of all processes and usually the busiest (WindowServer, kernel_task); `ps` is setuid root.
   One run costs ~20 ms.
 - CPU% is the change in CPU time between samples over wall time, 100% = one core, as in Activity
@@ -148,6 +158,26 @@ header shows CPU and Memory Used instead.
 - Memory Used is Activity Monitor's: app memory + wired + compressed (`host_statistics64`).
 - Rust sends every Session process plus the top 40 others by CPU and the top 40 by memory.
 - Tab colour: the repo's Badge-dot colour, or `--tab-color-plain` outside a repo.
+
+**Usage** shows, for each agent chosen on the Settings page (Claude Code and Codex by default),
+one thin bar per limit window: its label (`5h`, `Week`), percent used and time until it resets.
+Bars are neutral grey, amber from 80% and red from 95%. A window whose reset time has passed reads
+0%. Numbers older than 5 minutes say how old; an agent whose numbers could not be read says why,
+with its last numbers dimmed. Closed, the header shows each agent's fullest window
+(`Claude 48%  Codex 3%`). Gemini CLI has no usage source yet.
+
+- Claude Code: `GET https://api.anthropic.com/api/oauth/usage` (undocumented; what Claude Code's
+  `/usage` calls; `anthropic-beta: oauth-2025-04-20`), every 60 s (5 min after a 429), with the
+  OAuth access token from the login Keychain item `Claude Code-credentials` (read with
+  `/usr/bin/security`; `~/.claude/.credentials.json` as fallback). Answer: `five_hour`,
+  `seven_day`, `seven_day_opus`, `seven_day_sonnet`, each `{utilization: percent, resets_at: RFC
+  3339}` or null. The token is only read, never refreshed: refreshing would rotate Claude Code's
+  refresh token and sign it out. It reaches `/usr/bin/curl` on stdin, never in argv.
+- Codex: the last `payload.rate_limits` record (`primary` / `secondary`: `used_percent`,
+  `window_minutes`, `resets_at` epoch s) in the most recently written of its session logs,
+  `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, newest 14 day directories. Codex writes one per
+  turn from its API's rate-limit headers, so the numbers are as fresh as the last Codex turn on
+  this Mac. A log is re-parsed only when its mtime or size changes.
 
 ## Window
 

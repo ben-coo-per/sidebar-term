@@ -1,5 +1,6 @@
-<!-- The Settings page: shown over the Terminal (⌘, or the sidebar's gear). v1 holds the Hotkeys:
-     click a binding, press the new combo; Escape cancels. See src/lib/hotkeys.ts for the rules. -->
+<!-- The Settings page: shown over the Terminal (⌘, or the app menu's "Settings…"). Holds which
+     agents the Panel's Usage view shows, and the Hotkeys: click a binding, press the new combo;
+     Escape cancels. See src/lib/hotkeys.ts for the rules. -->
 <script lang="ts">
   import {
     ACTIONS,
@@ -15,6 +16,10 @@
   } from "../hotkeys";
   import { hotkeys, resetAllBindings, resetBinding, setBinding } from "../hotkeys.svelte";
   import { closeSettings } from "./visibility.svelte";
+  import { USAGE_AGENTS } from "../panel/usage/model";
+  import { setUsageAgent, usageSettings } from "../panel/usage/settings.svelte";
+  import { AGENT_NAMES } from "../agentStatus";
+  import type { AgentKind } from "../types";
   import CloseIcon from "../sidebar/icons/CloseIcon.svelte";
 
   const CATEGORIES: ActionCategory[] = ["Tabs", "Groups", "App"];
@@ -22,6 +27,13 @@
     category,
     actions: ACTIONS.filter((a) => a.category === category),
   }));
+  /** Where each agent's usage comes from, said next to its checkbox. */
+  const USAGE_SOURCES: Record<AgentKind, string> = {
+    claude: "Asks api.anthropic.com every minute, signed in as Claude Code (from your Keychain).",
+    codex: "Read from Codex's session logs, which it updates on every turn.",
+    gemini: "",
+  };
+
   const labelOf = (id: ActionId) => ACTIONS.find((a) => a.id === id)?.label ?? id;
 
   /** The action whose binding is being recorded, if any. */
@@ -128,6 +140,32 @@
         <CloseIcon size={12} />
       </button>
     </header>
+
+    <section>
+      <div class="section-header">
+        <div>
+          <h2>Usage</h2>
+          <p class="hint">Agents whose usage limits the Panel's Usage view shows.</p>
+        </div>
+      </div>
+      <ul class="rows">
+        {#each USAGE_AGENTS as agent (agent)}
+          <li class="row">
+            <label class="check">
+              <span class="label">
+                {AGENT_NAMES[agent]}
+                <span class="detail">{USAGE_SOURCES[agent]}</span>
+              </span>
+              <input
+                type="checkbox"
+                checked={usageSettings.agents.includes(agent)}
+                onchange={(e) => setUsageAgent(agent, e.currentTarget.checked)}
+              />
+            </label>
+          </li>
+        {/each}
+      </ul>
+    </section>
 
     <section>
       <div class="section-header">
@@ -244,6 +282,9 @@
     font-size: 20px;
     font-weight: 600;
   }
+  section + section {
+    margin-top: 32px;
+  }
   .section-header {
     display: flex;
     align-items: flex-end;
@@ -286,6 +327,28 @@
   .label {
     flex: 1 1 auto;
     font-size: 13px;
+  }
+  .check {
+    flex: 1 1 auto;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 4px 0;
+    cursor: pointer;
+  }
+  .detail {
+    display: block;
+    margin-top: 1px;
+    font-size: 11.5px;
+    color: var(--text-tertiary);
+  }
+  .check input {
+    flex: none;
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
   }
   .controls {
     display: flex;
