@@ -50,6 +50,13 @@ fn session_kill(sessions: State<'_, SessionManager>, session_id: SessionId) -> R
     sessions.kill(session_id)
 }
 
+/// Kill every Session. The webview calls this once at startup so a webview reload does not
+/// leave the previous page's shells running with nowhere to send output.
+#[tauri::command]
+fn session_reset(sessions: State<'_, SessionManager>) {
+    sessions.kill_all();
+}
+
 /// On-demand probe, e.g. to decide whether closing a Tab needs confirmation.
 #[tauri::command]
 fn session_info(sessions: State<'_, SessionManager>, session_id: SessionId) -> Option<SessionInfo> {
@@ -85,6 +92,7 @@ pub fn run() {
             session_pause,
             session_resume,
             session_kill,
+            session_reset,
             session_info,
             layout_load,
             layout_save,

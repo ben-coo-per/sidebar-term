@@ -5,7 +5,7 @@
 // OWNER: sidebar agent. Session facts (SessionInfo, title, Agent status) live in
 // src/lib/sessions.svelte.ts, which reads this module's Tabs to know what to update.
 
-import { loadLayout as ipcLoadLayout, saveLayout as ipcSaveLayout } from "./ipc";
+import { loadLayout as ipcLoadLayout, resetSessions, saveLayout as ipcSaveLayout } from "./ipc";
 import { terminals } from "./terminal/manager";
 import type { SessionId } from "./types";
 
@@ -202,6 +202,8 @@ function validateAndMigrate(raw: unknown): PersistedLayout | null {
  * With nothing persisted, creates the default state: one Group "Tabs" with one Tab.
  */
 export async function initLayout(): Promise<void> {
+  // A webview reload keeps the Rust process: drop the previous page's Sessions first.
+  await resetSessions().catch(() => {});
   const raw = await ipcLoadLayout().catch(() => null);
   const parsed = validateAndMigrate(raw);
 

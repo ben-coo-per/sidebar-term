@@ -79,8 +79,10 @@ void onSessionInfo((info) => {
     if (tabId) setTabLastCwd(tabId, info.cwd);
   }
 
-  if (previousAgent && !info.agent && !isActiveTabForSession(info.sessionId)) {
-    s.finished = true;
+  if (previousAgent && !info.agent) {
+    // The agent's last title (Claude Code: conversation text) must not outlive it.
+    s.title = "";
+    if (!isActiveTabForSession(info.sessionId)) s.finished = true;
   }
   recompute(info.sessionId);
 });

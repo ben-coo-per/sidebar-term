@@ -62,6 +62,12 @@ export function killSession(sessionId: SessionId): Promise<void> {
   return invoke("session_kill", { sessionId });
 }
 
+/** Kill every Session. Called once at startup so a webview reload leaves no orphaned shells. */
+export function resetSessions(): Promise<void> {
+  if (!inTauri) return Promise.resolve();
+  return invoke("session_reset");
+}
+
 /** Fresh probe of one Session, bypassing the monitor tick. null if the Session is gone. */
 export function sessionInfo(sessionId: SessionId): Promise<SessionInfo | null> {
   if (!inTauri) return mock.sessionInfo(sessionId);

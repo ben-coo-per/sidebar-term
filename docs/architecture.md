@@ -23,6 +23,7 @@ stores each Tab's last cwd instead and respawns a shell there on relaunch.
 | `session_resize` | `sessionId, cols, rows` | - |
 | `session_pause` / `session_resume` | `sessionId` | - (flow control, see `docs/research/pty.md`) |
 | `session_kill` | `sessionId` | - (then `session-exit` fires) |
+| `session_reset` | - | - (kills every Session; called once at webview startup so a reload leaves no orphans) |
 | `session_info` | `sessionId` | `SessionInfo \| null` (fresh probe) |
 | `layout_load` / `layout_save` | `layout: json` | opaque JSON blob in the app data dir |
 
