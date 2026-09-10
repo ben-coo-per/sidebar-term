@@ -1,0 +1,68 @@
+/* Design tokens for sidebar-term. v1 is dark-only, tuned to sit next to the fixed
+   terminal background (#0f1115) without fighting it. System font, compact rows,
+   restrained motion. See docs/architecture.md "Design". */
+
+:root {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --term-bg: #0f1115; /* fixed: the terminal's own background */
+  --sidebar-bg: #15171c; /* slightly lifted off the terminal */
+  --sidebar-bg-raised: #1b1e25; /* rows on hover, menus, dialogs */
+  --sidebar-bg-active: #23262f; /* active tab row, pressed states */
+  --sidebar-border: #26292f;
+  --sidebar-divider: #212328;
+
+  /* Text */
+  --text-primary: #e7e8ea;
+  --text-secondary: #9a9ea7;
+  --text-tertiary: #6b6f78;
+  --text-on-accent: #ffffff;
+
+  /* Accent */
+  --accent: #5b93f5;
+  --accent-dim: #5b93f533;
+  --accent-strong: #7aa8f7;
+
+  /* Status */
+  --status-running: #5b93f5;
+  --status-needs-input: #e3a63e;
+  --status-done: #4bb679;
+  --status-finished: #9a9ea7;
+
+  /* Danger */
+  --danger: #e0605a;
+  --danger-dim: #e0605a26;
+
+  /* Chrome */
+  --focus-ring: #5b93f5;
+  --scrollbar-thumb: #33363f;
+
+  /* Metrics */
+  --row-height: 28px;
+  --group-header-height: 26px;
+  --radius-sm: 5px;
+  --radius-md: 7px;
+  --sidebar-min-width: 180px;
+  --sidebar-max-width: 420px;
+  --titlebar-inset: 28px;
+
+  /* Motion */
+  --ease-standard: cubic-bezier(0.2, 0.6, 0.2, 1);
+  --duration-fast: 120ms;
+  --duration-medium: 180ms;
+
+  /* Repo colour dots: distinct, desaturated, legible on dark surfaces. */
+  --repo-color-0: #5b93f5;
+  --repo-color-1: #4bb679;
+  --repo-color-2: #e3a63e;
+  --repo-color-3: #c77dd1;
+  --repo-color-4: #4fb8c4;
+  --repo-color-5: #e0605a;
+  --repo-color-6: #8f9bf0;
+  --repo-color-7: #cbb26a;
+}
+
+* {
+  box-sizing: border-box;
+}

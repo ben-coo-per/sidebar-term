@@ -1,0 +1,308 @@
+<!-- A Tab row: Agent/plain icon, Agent status, Title (inline rename), Badge, close button. -->
+<script lang="ts">
+  import type { Tab } from "../layout.svelte";
+  import { activateTab, layout, moveTab, newGroupFromTab, renameTab } from "../layout.svelte";
+  import { sessionState, tabTitle } from "../sessions.svelte";
+  import { AGENT_NAMES } from "../agentStatus";
+  import RobotIcon from "./icons/RobotIcon.svelte";
+  import TerminalIcon from "./icons/TerminalIcon.svelte";
+  import CheckIcon from "./icons/CheckIcon.svelte";
+  import CloseIcon from "./icons/CloseIcon.svelte";
+  import Badge from "./Badge.svelte";
+  import { dnd, startTabDrag, endDrag, overTabRow, dropOnTabRow } from "./dnd.svelte";
+  import { openContextMenu } from "./menu.svelte";
+  import type { MenuItem } from "./ContextMenu.svelte";
+  import { requestCloseTab } from "./closeTabFlow";
+
+  let { tab }: { tab: Tab } = $props();
+
+  const session = $derived(sessionState(tab.sessionId));
+  const agent = $derived(session?.info?.agent ?? null);
+  const status = $derived(session?.status ?? null);
+  const finished = $derived(session?.finished ?? false);
+  const highlight = $derived(session?.highlight ?? false);
+  const remote = $derived(session?.info?.remote ?? false);
+  const git = $derived(session?.info?.git ?? null);
+  const title = $derived(tabTitle(tab));
+  const isActive = $derived(layout.activeTabId === tab.id);
+
+  let editing = $state(false);
+  let draft = $state("");
+  let inputEl: HTMLInputElement | undefined = $state();
+
+  function beginRename() {
+    draft = tab.customTitle ?? "";
+    editing = true;
+  }
+
+  function startEdit(e: MouseEvent) {
+    e.stopPropagation();
+    beginRename();
+  }
+
+  function commit() {
+    if (editing) renameTab(tab.id, draft);
+    editing = false;
+  }
+
+  function cancel() {
+    editing = false;
+  }
+
+  function onEditKeydown(e: KeyboardEvent) {
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commit();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      cancel();
+    }
+  }
+
+  $effect(() => {
+    if (editing) inputEl?.focus();
+  });
+
+  function onRowClick() {
+    if (!editing) activateTab(tab.id);
+  }
+
+  function onRowKeydown(e: KeyboardEvent) {
+    if (editing) return;
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      activateTab(tab.id);
+    }
+  }
+
+  function menuItems(): MenuItem[] {
+    const otherGroups = layout.groups.filter((g) => g.id !== tab.groupId);
+    return [
+      { label: "Rename", action: beginRename },
+      {
+        label: "Move to Group",
+        submenu: otherGroups.length
+          ? otherGroups.map((g) => ({ label: g.name, action: () => moveTab(tab.id, g.id) }))
+          : [{ label: "No other Groups", disabled: true }],
+      },
+      { label: "New Group from Tab", action: () => void newGroupFromTab(tab.id) },
+      { label: "Close", action: () => void requestCloseTab(tab.id), danger: true, separatorBefore: true },
+    ];
+  }
+
+  const dropIndicatorClass = $derived(
+    dnd.overTabId === tab.id ? (dnd.overPosition === "before" ? "drop-before" : "drop-after") : "",
+  );
+</script>
+
+<div
+  class="row {dropIndicatorClass}"
+  class:active={isActive}
+  class:dragging={dnd.draggingTabId === tab.id}
+  class:highlight={highlight || finished}
+  role="button"
+  tabindex="0"
+  draggable="true"
+  title={agent ? `${AGENT_NAMES[agent]} session` : "Terminal session"}
+  ondragstart={(e) => startTabDrag(e, tab.id)}
+  ondragend={endDrag}
+  ondragover={(e) => overTabRow(e, tab.id)}
+  ondrop={(e) => dropOnTabRow(e, tab.groupId, tab.id)}
+  onclick={onRowClick}
+  onkeydown={onRowKeydown}
+  oncontextmenu={(e) => openContextMenu(e, menuItems())}
+>
+  <span class="icon" class:agent-icon={!!agent}>
+    {#if agent}
+      <RobotIcon size={14} />
+    {:else}
+      <TerminalIcon size={14} />
+    {/if}
+  </span>
+
+  <span class="status" aria-hidden="true">
+    {#if status === "running"}
+      <span class="dot running" title="Running"></span>
+    {:else if status === "needs-input"}
+      <span class="dot needs-input" title="Needs input"></span>
+    {:else if status === "done"}
+      <span class="check done" title="Done"><CheckIcon size={9} /></span>
+    {:else if finished}
+      <span class="check finished" title="Agent finished"><CheckIcon size={9} /></span>
+    {/if}
+  </span>
+
+  {#if editing}
+    <input
+      class="title-input"
+      bind:value={draft}
+      bind:this={inputEl}
+      onkeydown={onEditKeydown}
+      onblur={commit}
+      onclick={(e) => e.stopPropagation()}
+    />
+  {:else}
+    <span class="title" role="button" tabindex="-1" ondblclick={startEdit}>{title}</span>
+  {/if}
+
+  <span class="badge-slot">
+    <Badge {git} {remote} />
+  </span>
+
+  <button
+    type="button"
+    class="close"
+    tabindex="-1"
+    onclick={(e) => {
+      e.stopPropagation();
+      void requestCloseTab(tab.id);
+    }}
+    title="Close Tab"
+  >
+    <CloseIcon size={11} />
+  </button>
+</div>
+
+<style>
+  .row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: var(--row-height);
+    padding: 0 8px 0 20px;
+    border-radius: var(--radius-sm);
+    margin: 0 4px;
+    cursor: default;
+    user-select: none;
+    color: var(--text-secondary);
+    outline: none;
+  }
+  .row:hover {
+    background: var(--sidebar-bg-raised);
+  }
+  .row.active {
+    background: var(--sidebar-bg-active);
+    color: var(--text-primary);
+  }
+  .row.dragging {
+    opacity: 0.4;
+  }
+  .row.highlight:not(.active) .title {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+  .row.drop-before::before,
+  .row.drop-after::after {
+    content: "";
+    position: absolute;
+    left: 6px;
+    right: 6px;
+    height: 2px;
+    background: var(--accent);
+    border-radius: 1px;
+  }
+  .row.drop-before::before {
+    top: -1px;
+  }
+  .row.drop-after::after {
+    bottom: -1px;
+  }
+  .icon {
+    flex: none;
+    display: flex;
+    color: var(--text-tertiary);
+  }
+  .row.active .icon {
+    color: var(--text-secondary);
+  }
+  .icon.agent-icon {
+    color: var(--accent-strong);
+  }
+  .status {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 10px;
+  }
+  .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+  }
+  .dot.running {
+    background: var(--status-running);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  .dot.needs-input {
+    background: var(--status-needs-input);
+  }
+  .check {
+    display: flex;
+  }
+  .check.done {
+    color: var(--status-done);
+  }
+  .check.finished {
+    color: var(--status-finished);
+  }
+  .title {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12.5px;
+  }
+  .title-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    background: var(--sidebar-bg);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 12.5px;
+    padding: 1px 4px;
+    outline: none;
+  }
+  .badge-slot {
+    flex: none;
+    max-width: 40%;
+    overflow: hidden;
+  }
+  .close {
+    flex: none;
+    appearance: none;
+    border: none;
+    background: transparent;
+    color: var(--text-tertiary);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .row:hover .close {
+    display: flex;
+  }
+  .close:hover {
+    background: var(--sidebar-bg-active);
+    color: var(--text-primary);
+  }
+  @keyframes pulse {
+    0%,
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.45;
+      transform: scale(0.75);
+    }
+  }
+</style>
