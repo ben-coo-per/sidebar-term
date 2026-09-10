@@ -11,7 +11,9 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri",
-    "test": "vitest run"
+    "test": "vitest run",
+    "app:icon": "tauri icon src-tauri/icons/app-icon.png && rm -rf src-tauri/icons/android src-tauri/icons/ios",
+    "app:install": "bash scripts/install-app.sh"
   },
   "license": "MIT",
   "dependencies": {

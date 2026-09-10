@@ -5,3 +5,28 @@ A macOS terminal app with a vertical sidebar of tabs. Tabs can be renamed and ar
 Built on Tauri 2 + Svelte + xterm.js: an existing terminal emulator and pty, nothing custom in the terminal runtime.
 
 Status: planning. The design is being charted as a wayfinder map on this repo's GitHub issues (label `wayfinder:map`).
+
+## Install
+
+```sh
+pnpm install
+pnpm app:install      # release build -> /Applications/sidebar-term.app, pinned to the Dock once
+```
+
+Quit the app first; the script refuses to replace a running copy.
+
+## App icon
+
+The icon is generated from `src-tauri/icons/app-icon.png`, a 1024x1024 **full-bleed, fully opaque**
+square (no rounded corners or transparent margins: macOS 26 applies its own mask, and puts icons with
+transparent margins on a grey plate). The current one is a placeholder drawn by
+`scripts/icon/make-placeholder-icon.py`. To use your own design:
+
+```sh
+cp ~/Desktop/my-icon.png src-tauri/icons/app-icon.png
+pnpm app:icon         # regenerate every size
+pnpm app:install      # rebuild, reinstall, refresh the Dock
+```
+
+`scripts/demo/run.sh` starts the app in dev mode with fake Claude Code and Codex agents, to see the
+agent icon and status without running a real agent.
