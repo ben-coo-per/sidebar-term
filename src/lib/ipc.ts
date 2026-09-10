@@ -6,12 +6,16 @@ import { invoke, Channel, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   EVENT_ACTIVITY,
+  EVENT_MENU_SETTINGS,
   EVENT_SESSION_EXIT,
   EVENT_SESSION_INFO,
+  EVENT_USAGE,
   type ActivitySnapshot,
+  type AgentKind,
   type SessionExit,
   type SessionId,
   type SessionInfo,
+  type UsageSnapshot,
 } from "./types";
 import * as mock from "./mock";
 
@@ -97,6 +101,41 @@ export function onActivity(cb: (snapshot: ActivitySnapshot) => void): Promise<Un
   return listen<ActivitySnapshot>(EVENT_ACTIVITY, (e) => cb(e.payload));
 }
 
+/**
+ * Start (or change the agents of) or stop reading Usage. While on, `onUsage` fires right away and
+ * then whenever a number changes. Reading Claude Code's usage calls api.anthropic.com every minute.
+ */
+export function watchUsage(on: boolean, agents: AgentKind[]): Promise<void> {
+  if (!inTauri) return mock.watchUsage(on, agents);
+  return invoke("usage_watch", { on, agents });
+}
+
+export function onUsage(cb: (snapshot: UsageSnapshot) => void): Promise<UnlistenFn> {
+  if (!inTauri) return mock.onUsage(cb);
+  return listen<UsageSnapshot>(EVENT_USAGE, (e) => cb(e.payload));
+}
+
+/** The app menu's "Settings…" item. Never fires outside Tauri (the browser has no app menu). */
+export function onMenuSettings(cb: () => void): Promise<UnlistenFn> {
+  if (!inTauri) return Promise.resolve(() => {});
+  return listen(EVENT_MENU_SETTINGS, () => cb());
+}
+
+/**
+ * For each path printed in the Session (relative, `~/...` or absolute), the absolute path of the
+ * file or directory it names, or null when there is none (always null in a remote Session).
+ */
+export function resolvePaths(sessionId: SessionId, candidates: string[]): Promise<(string | null)[]> {
+  if (!inTauri) return mock.resolvePaths(sessionId, candidates);
+  return invoke("path_resolve", { sessionId, candidates });
+}
+
+/** Open a file or directory (an absolute path from `resolvePaths`) in its default app. */
+export function openPath(path: string): Promise<void> {
+  if (!inTauri) return mock.openPath(path);
+  return invoke("path_open", { path });
+}
+
 /** Real paths of the files in the drop just received (read off the macOS drag pasteboard). */
 export function dropPaths(): Promise<string[]> {
   if (!inTauri) return Promise.resolve([]);
@@ -121,7 +160,7 @@ export function saveLayout(layout: unknown): Promise<void> {
   return invoke("layout_save", { layout });
 }
 
-/** The persisted app settings blob (Hotkeys), or null on first run. Shape is owned by src/lib/hotkeys.svelte.ts. */
+/** The persisted app settings blob (Hotkeys, Usage agents), or null on first run. Shape is owned by src/lib/settings/store.ts. */
 export function loadSettings(): Promise<unknown | null> {
   if (!inTauri) return mock.loadSettings();
   return invoke("settings_load");

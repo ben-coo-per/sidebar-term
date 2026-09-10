@@ -1,7 +1,10 @@
-// The Panel's views, in tab-strip order. To add one (e.g. agent usage limits): add it here and
-// render its component in Panel.svelte. See docs/architecture.md "Panel".
+// The Panel's views, in accordion order, top to bottom. To add one: add it here and render its
+// view and its closed-header summary in Panel.svelte. See docs/architecture.md "Panel".
 
-export const PANEL_VIEWS = [{ id: "activity", label: "Activity" }] as const;
+export const PANEL_VIEWS = [
+  { id: "activity", label: "Activity" },
+  { id: "usage", label: "Usage" },
+] as const;
 
 export type PanelViewId = (typeof PANEL_VIEWS)[number]["id"];
 

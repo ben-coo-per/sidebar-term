@@ -45,9 +45,13 @@ The colour that stands for a tab: its repo's badge-dot colour, or a plain light 
 _Avoid_: Accent, tint
 
 **Panel**:
-The collapsible, resizable area at the bottom of the sidebar, beneath the groups. It shows one view at a time, picked from a strip of view tabs in its header. It hides when the sidebar is too narrow.
+The resizable area at the bottom of the sidebar, beneath the groups. An accordion of views (Activity, Usage): each has its own header, and opening one closes the others. A closed view's header carries a one-line summary. It hides when the sidebar is too narrow.
 _Avoid_: Drawer, dock, footer, pane
 
 **Activity**:
 The panel view showing the Mac's CPU and memory, split between sessions (each in its tab colour) and every other process (muted grey), with a list of the busiest processes.
 _Avoid_: Activity monitor (that is Apple's app), stats, usage
+
+**Usage**:
+The panel view showing how much of each chosen coding agent's usage limits is spent: one bar per limit window (Claude Code's 5 hours and week, Codex's), with the time until it resets. Which agents it shows is chosen on the Settings page.
+_Avoid_: Quota, credits, stats, Activity (that is CPU and memory)

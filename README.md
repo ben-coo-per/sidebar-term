@@ -22,8 +22,8 @@ running in them, agents included, is killed.
 
 The icon is generated from `src-tauri/icons/app-icon.png`, a 1024x1024 **full-bleed, fully opaque**
 square (no rounded corners or transparent margins: macOS 26 applies its own mask, and puts icons with
-transparent margins on a grey plate). The current one is a placeholder drawn by
-`scripts/icon/make-placeholder-icon.py`. To use your own design:
+transparent margins on a grey plate). The current one, an iridescent blob drawn as halftone dots on
+the terminal's background, is drawn by `scripts/icon/make-icon.py`. To use your own design:
 
 ```sh
 cp ~/Desktop/my-icon.png src-tauri/icons/app-icon.png

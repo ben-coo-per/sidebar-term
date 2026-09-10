@@ -35,6 +35,11 @@
   --activity-other-text: #5d616a; /* rows of every other process */
   --meter-track: #202329;
 
+  /* Usage (Panel): a neutral bar, amber when nearly spent, red when spent */
+  --usage-fill: #7b808a;
+  --usage-high: #e3a63e;
+  --usage-full: #e0605a;
+
   /* Danger */
   --danger: #e0605a;
   --danger-dim: #e0605a26;

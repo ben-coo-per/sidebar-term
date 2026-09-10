@@ -32,6 +32,7 @@ import { FlowController } from "./flow-control";
 import { TERMINAL_BACKGROUND, terminalOptions } from "./theme";
 import { attachWebgl, type WebglRenderer } from "./webgl";
 import { openLinkOnCmdClick, osc52Clipboard, osc8LinkHandler } from "./system";
+import { FileLinkProvider } from "./fileLinks";
 
 export interface TerminalEvents {
   /** OSC 0/2 title set by the Foreground process (e.g. Codex/Gemini status titles). "" clears. */
@@ -295,6 +296,8 @@ export const terminals: TerminalManager = {
       }),
       term.onTitleChange((title) => emit("title", sid, title)),
       term.onBell(() => emit("bell", sid)),
+      // After the web-links addon's provider, so a URL wins over a path inside it.
+      term.registerLinkProvider(new FileLinkProvider(term, sid)),
     );
 
     if (earlyExits.has(sid)) {

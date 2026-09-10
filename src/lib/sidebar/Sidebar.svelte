@@ -17,11 +17,9 @@
   import ContextMenu from "./ContextMenu.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import PlusIcon from "./icons/PlusIcon.svelte";
-  import GearIcon from "./icons/GearIcon.svelte";
   import { contextMenuBox, closeContextMenu } from "./menu.svelte";
   import { hotkeyLabel } from "../hotkeys.svelte";
   import type { ActionId } from "../hotkeys";
-  import { toggleSettings } from "../settings/visibility.svelte";
 
   /** "New Tab (⌘T)", or just "New Tab" when the action is unassigned. */
   function withHotkey(text: string, id: ActionId): string {
@@ -89,15 +87,6 @@
     <button type="button" class="footer-btn" onclick={() => newGroup()} title={withHotkey("New Group", "group.new")}>
       <PlusIcon size={10} />
       Group
-    </button>
-    <button
-      type="button"
-      class="footer-btn settings-btn"
-      onclick={toggleSettings}
-      title={withHotkey("Settings", "settings.toggle")}
-      aria-label="Settings"
-    >
-      <GearIcon size={12} />
     </button>
   </div>
 
@@ -182,9 +171,6 @@
   .footer-btn:hover {
     background: var(--sidebar-bg-raised);
     color: var(--text-secondary);
-  }
-  .settings-btn {
-    margin-left: auto;
   }
   .resize-handle {
     position: absolute;

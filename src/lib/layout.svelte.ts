@@ -28,12 +28,13 @@ export interface Tab {
   lastCwd: string | null;
 }
 
-/** The Panel at the bottom of the sidebar. */
+/** The Panel at the bottom of the sidebar: an accordion of views, at most one open. */
 export interface PanelState {
+  /** The open view, or the last one open while every view is closed. */
   view: PanelViewId;
-  /** Collapsed to its header. */
+  /** Every view closed to its header. */
   collapsed: boolean;
-  /** Expanded height in px, header included. */
+  /** Height in px while a view is open, headers included. */
   height: number;
 }
 
@@ -55,7 +56,8 @@ export const MIN_SIDEBAR_WIDTH = 180;
 export const MAX_SIDEBAR_WIDTH = 420;
 /** Below this sidebar width the Panel is hidden: its columns would not fit. */
 export const PANEL_MIN_SIDEBAR_WIDTH = 220;
-export const MIN_PANEL_HEIGHT = 96;
+/** Room for every view's header and a few lines of the open one. */
+export const MIN_PANEL_HEIGHT = 128;
 export const MAX_PANEL_HEIGHT = 640;
 const DEFAULT_PANEL: PanelState = { view: PANEL_VIEWS[0].id, collapsed: false, height: 220 };
 const SAVE_DEBOUNCE_MS = 500;
@@ -498,7 +500,7 @@ export function toggleSidebarVisible(): void {
   layout.sidebarVisible = !layout.sidebarVisible;
 }
 
-/** Show `view` in the Panel, expanding it if collapsed. */
+/** Open `view` in the Panel, closing whichever was open. */
 export function setPanelView(view: PanelViewId): void {
   layout.panel.view = view;
   layout.panel.collapsed = false;
