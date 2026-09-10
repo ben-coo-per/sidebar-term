@@ -3,6 +3,7 @@
 //! CONTRACT: command names and signatures here are mirrored by `src/lib/ipc.ts`.
 
 mod activity;
+mod caffeinate;
 mod detect;
 mod drop;
 mod layout;
@@ -12,7 +13,7 @@ mod paths;
 mod session;
 mod usage;
 
-use model::{AgentKind, SessionId, SessionInfo, EVENT_MENU_SETTINGS};
+use model::{AgentKind, SessionId, SessionInfo, EVENT_CAFFEINATE, EVENT_MENU_SETTINGS};
 use session::SessionManager;
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
@@ -88,6 +89,18 @@ fn activity_watch(activity: State<'_, activity::Activity>, on: bool) {
 #[tauri::command]
 fn usage_watch(usage: State<'_, usage::Usage>, on: bool, agents: Vec<AgentKind>) {
     usage.watch(on, agents);
+}
+
+/// Whether Caffeinate is keeping this Mac awake.
+#[tauri::command]
+fn caffeinate_state(caffeinate: State<'_, caffeinate::Caffeinate>) -> bool {
+    caffeinate.is_on()
+}
+
+/// Turn Caffeinate on or off; returns whether it is on now.
+#[tauri::command]
+fn caffeinate_set(caffeinate: State<'_, caffeinate::Caffeinate>, on: bool) -> Result<bool, String> {
+    caffeinate.set(on)
 }
 
 #[tauri::command]
@@ -182,6 +195,12 @@ pub fn run() {
             app.manage(activity::spawn(handle.clone(), move || {
                 for_activity.state::<SessionManager>().probe_targets()
             }));
+            let for_caffeinate = handle.clone();
+            app.manage(caffeinate::Caffeinate::new(move || {
+                if let Err(e) = for_caffeinate.emit(EVENT_CAFFEINATE, false) {
+                    eprintln!("caffeinate: emit failed: {e}");
+                }
+            }));
             app.manage(usage::spawn(handle));
             Ok(())
         })
@@ -196,6 +215,8 @@ pub fn run() {
             session_info,
             activity_watch,
             usage_watch,
+            caffeinate_state,
+            caffeinate_set,
             layout_load,
             layout_save,
             settings_load,

@@ -11,6 +11,7 @@
 // Layout persistence uses localStorage. Activity is invented: each fake Session has a shell (and
 // its foreground program, busy when it is an agent) next to a fixed cast of jittering system
 // processes. Usage is invented too: fixed limits, Claude Code's 5-hour window creeping up.
+// Caffeinate is only a flag: nothing is kept awake.
 
 import type { SpawnOptions } from "./ipc";
 import type {
@@ -380,6 +381,17 @@ export async function watchUsage(on: boolean, agents: AgentKind[]): Promise<void
 export async function onUsage(cb: UsageCb) {
   usageCbs.add(cb);
   return () => void usageCbs.delete(cb);
+}
+
+let caffeinated = false;
+
+export async function caffeinateState(): Promise<boolean> {
+  return caffeinated;
+}
+
+export async function setCaffeinate(on: boolean): Promise<boolean> {
+  caffeinated = on;
+  return caffeinated;
 }
 
 const SETTINGS_KEY = "sidebar-term:mock-settings";

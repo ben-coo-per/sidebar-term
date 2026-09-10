@@ -27,6 +27,8 @@ stores each Tab's last cwd instead and respawns a shell there on relaunch.
 | `session_info` | `sessionId` | `SessionInfo \| null` (fresh probe) |
 | `activity_watch` | `on: boolean` | - (start / stop sampling Activity) |
 | `usage_watch` | `on: boolean, agents: AgentKind[]` | - (start, change the agents of, or stop reading Usage) |
+| `caffeinate_state` | - | `boolean`: whether Caffeinate is on |
+| `caffeinate_set` | `on: boolean` | `boolean`: whether Caffeinate is on now |
 | `layout_load` / `layout_save` | `layout: json` | opaque JSON blob in the app data dir |
 | `settings_load` / `settings_save` | `settings: json` | opaque JSON blob in the app data dir; one section per owner (`hotkeys`, `usage`), merged by `src/lib/settings/store.ts` |
 
@@ -37,6 +39,7 @@ stores each Tab's last cwd instead and respawns a shell there on relaunch.
 | `activity` | `ActivitySnapshot` | every 2 s while `activity_watch(true)`; the first right away |
 | `usage` | `UsageSnapshot` | right away on `usage_watch(true, ..)`, then whenever a number changes (checked every 5 s) |
 | `menu-settings` | - | the app menu's "Settings…" was chosen |
+| `caffeinate` | `false` | Caffeinate's `caffeinate` run ended without being turned off |
 
 Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `ipc.ts` routes to
 `src/lib/mock.ts`, a fake backend for developing the UI in a browser (`pnpm dev`, then open
@@ -55,6 +58,8 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
   emits `activity` (see "Panel").
 - `usage.rs` — `Usage` (Tauri state): thread idle until watched, then every 5 s reads the chosen
   agents' usage limits and emits `usage` on change (see "Panel").
+- `caffeinate.rs` — `Caffeinate` (Tauri state): the background `caffeinate` run behind the Tray's
+  Caffeinate button (see "Tray").
 - `lib.rs` also builds the app menu: Tauri's default plus "Settings…" (no key equivalent: the
   Settings Hotkey stays the webview's, rebindable).
 - `layout.rs` — atomic JSON read/write of `layout.json` and `settings.json` in the app data dir.
@@ -72,6 +77,8 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
 - `src/lib/settings/*` — the Settings page (Usage agents, Hotkeys), shown over the Terminal; the
   settings blob's per-section store (`store.ts`).
 - `src/lib/sidebar/*` — sidebar components. `src/routes/+page.svelte` — app shell.
+- `src/lib/tray/*` — the Tray (`Tray.svelte`), its `TrayButton`, and Caffeinate (state mirror and
+  button).
 - `src/lib/panel/*` — the Panel (`Panel.svelte`), its view list (`views.ts`), the Activity view
   (`activity/`: snapshot store, pure sorting / formatting / meter maths, components) and the Usage
   view (`usage/`: snapshot store, chosen agents, pure formatting, components).
@@ -178,6 +185,20 @@ with its last numbers dimmed. Closed, the header shows each agent's fullest wind
   `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, newest 14 day directories. Codex writes one per
   turn from its API's rate-limit headers, so the numbers are as fresh as the last Codex turn on
   this Mac. A log is re-parsed only when its mtime or size changes.
+
+## Tray
+
+The Tray is a row of small icon buttons and indicators at the top of the sidebar, in the titlebar
+row, right of the traffic lights (which it never runs under: `--traffic-lights-width`). It shows
+whenever the sidebar does, whatever its width and the Panel's state. Items are listed in order in
+`src/lib/tray/Tray.svelte`; a button is a `TrayButton` (muted, lit in `--tray-on` while a toggle is
+on). Items so far: Caffeinate.
+
+**Caffeinate** keeps this Mac awake while on: Rust runs `/usr/bin/caffeinate -d -i -w <app pid>`
+as a hidden child of the app, in no Session, so no Terminal shows it (`-d` display, `-i` idle sleep;
+`-w` ends it with the app, a crash included). Off at launch, not persisted, and a webview reload
+leaves it as it was (the webview reads `caffeinate_state` at startup). If the run ends on its own
+(`killall caffeinate`), the next 1 s check turns Caffeinate off and sends `caffeinate`.
 
 ## Window
 
