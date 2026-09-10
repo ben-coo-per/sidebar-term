@@ -13,7 +13,10 @@ pnpm install
 pnpm app:install      # release build -> /Applications/sidebar-term.app, pinned to the Dock once
 ```
 
-Quit the app first; the script refuses to replace a running copy.
+Run the same command to update the installed app after pulling or changing code. It's safe to run
+from inside the app: it builds first, then quits the app, installs the new build and relaunches it
+(log in `$TMPDIR/sidebar-term-install.log`). Tabs come back at their last cwd, but whatever was
+running in them, agents included, is killed.
 
 ## App icon
 
