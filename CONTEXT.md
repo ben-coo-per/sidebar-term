@@ -1,0 +1,37 @@
+# sidebar-term
+
+A macOS terminal app whose sidebar organises terminal sessions into named groups and shows, per session, whether a coding agent is running and which repo, worktree and branch the shell is in.
+
+## Language
+
+**Session**:
+One running shell on its own pty. A session is what a tab points at.
+_Avoid_: Terminal, shell instance, pane
+
+**Tab**:
+The sidebar entry for one session. It has a title, an icon and a badge, and belongs to exactly one group.
+_Avoid_: Item, row, entry
+
+**Group**:
+A user-named, user-ordered container of tabs in the sidebar. Groups are manual; the app never creates or reorders them on its own.
+_Avoid_: Folder, workspace, section
+
+**Agent session**:
+A session whose foreground process is a known coding agent: Claude Code, Codex CLI or Gemini CLI. An agent session shows the robot icon instead of the plain-session icon.
+_Avoid_: AI tab, bot session
+
+**Foreground process**:
+The process currently in control of a session's pty. What the session "is doing" is read from it.
+_Avoid_: Running command, child
+
+**Badge**:
+The compact repo / worktree / branch indicator on a tab, derived from the session's working directory.
+_Avoid_: Label, tag, chip
+
+**Worktree**:
+A git worktree: one checkout of a repo at its own path, on its own branch. Sessions in different worktrees of the same repo are related, and the sidebar shows that.
+_Avoid_: Checkout, clone
+
+**Title**:
+The text shown on a tab. Either automatic (derived from the session) or a rename the user typed, which sticks.
+_Avoid_: Name, label
