@@ -18,7 +18,15 @@ export const AGENT_NAMES: Record<AgentKind, string> = {
 /** A braille spinner frame, per Codex's `tui.terminal_title` "activity" item. */
 const BRAILLE_SPINNER = /^[⠀-⣿]/;
 
-/** How long Claude Code counts as "Running" after the last output activity. */
+/** Claude Code's title prefix while busy: alternates ◐ / ◑ (frozen on one frame when unfocused). */
+const CLAUDE_BUSY_PREFIX = /^[◐◑]/;
+/** Claude Code's title prefix while idle or waiting on a prompt. */
+const CLAUDE_IDLE_PREFIX = "✳";
+
+/**
+ * How long Claude Code counts as "Running" after the last output activity. Only a fallback, for
+ * when its title carries no state prefix (CLAUDE_CODE_DISABLE_TERMINAL_TITLE, older versions).
+ */
 export const CLAUDE_RUNNING_WINDOW_MS = 3000;
 
 export interface AgentStatusInput {
@@ -54,9 +62,12 @@ export function computeAgentStatus(input: AgentStatusInput): AgentStatus | null 
     return "done"; // "◇" (Ready), or no marker yet: treat as idle/done.
   }
 
-  // Claude Code: no state in the title; derive from activity and BEL instead.
+  // Claude Code: its title prefix says busy vs not. Without a prefix, fall back to output activity
+  // (which also counts keystroke echo and redraws, hence only a fallback).
+  if (CLAUDE_BUSY_PREFIX.test(title)) return "running";
+  const hasIdlePrefix = title.startsWith(CLAUDE_IDLE_PREFIX);
   const activeRecently = lastActivityAt !== null && now - lastActivityAt < CLAUDE_RUNNING_WINDOW_MS;
-  if (activeRecently) return "running";
+  if (!hasIdlePrefix && activeRecently) return "running";
   // A BEL that landed after the last activity (and hasn't been superseded by fresh activity)
   // means the agent is still waiting on that prompt.
   if (lastBellAt !== null && (lastActivityAt === null || lastBellAt >= lastActivityAt)) {

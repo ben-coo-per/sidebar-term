@@ -27,7 +27,6 @@
   /* Status */
   --status-running: #5b93f5;
   --status-needs-input: #e3a63e;
-  --status-done: #4bb679;
   --status-finished: #9a9ea7;
 
   /* Activity (Panel): Tabs in their colour, everything else muted */

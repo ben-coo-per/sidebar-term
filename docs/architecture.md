@@ -86,7 +86,7 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
 - **Agent icon** (#12): one robot icon for any agent (tooltip names it); a plain-session icon
   otherwise. The icon reverts when the agent exits.
 - **Agent status** (new issue, see map): every Agent session shows Running / Needs input / Done
-  (see "Agent status" below).
+  in the Tab's icon slot (see "Agent status" below).
 - **Interaction** (#13): Cmd-T new Tab, Cmd-Shift-N new Group, Cmd-W close Tab, Cmd-1..9 go to
   the Nth Group (the Tab last active in it, else its first; expands a collapsed Group), Cmd-` /
   Cmd-Shift-` next / previous Tab within the active Tab's Group (wrapping), Cmd-Shift-[ / ] previous
@@ -105,12 +105,19 @@ Derived in the webview from `SessionInfo.agent`, the Terminal's OSC title, BEL a
 
 | Status | Codex | Gemini | Claude Code |
 |---|---|---|---|
-| Running | title starts with a braille spinner char (U+2800-U+28FF) | title starts with `✦` | output activity within the last ~3 s |
+| Running | title starts with a braille spinner char (U+2800-U+28FF) | title starts with `✦` | title starts with `◐` or `◑` |
 | Needs input | title contains `Action Required` | title starts with `✋` | BEL while the agent is foreground |
-| Done | title without spinner / after activity stops | title starts with `◇` | no output for ~3 s after Running |
+| Done | title without spinner / after activity stops | title starts with `◇` | title starts with `✳` |
 
-When the agent exits, the Tab stops being an Agent session; if that happens while the Tab is not
-active, the Tab keeps a "finished" marker until it is next activated. A Done or Needs-input status
+Claude Code (2.1.267) prefixes its title with `◐`/`◑` while busy, alternating every ~1 s while its
+terminal is focused, frozen on one frame otherwise. It uses `✳` when idle or waiting on a prompt.
+Read from its bundled source. There is no prefix under tmux (always `✳`), with
+`CLAUDE_CODE_DISABLE_TERMINAL_TITLE`, or in older versions. With no prefix we fall back to "output
+within the last ~3 s", which keystroke echo and redraws also trip.
+
+The Tab's icon slot shows the status: a spinner while Running, the robot once stopped (amber for
+Needs input). When the agent exits, the Tab stops being an Agent session; if that happens while the
+Tab is not active, the icon is a check until the Tab is next activated. A Done or Needs-input status
 on a background Tab is highlighted until the Tab is activated.
 
 ## Panel

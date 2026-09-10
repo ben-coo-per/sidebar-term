@@ -149,6 +149,26 @@ describe("computeAgentStatus", () => {
         computeAgentStatus({ agent: "claude", title: "", now: 0, lastActivityAt: null, lastBellAt: null }),
       ).toBe("done");
     });
+
+    it("is running while the title starts with either busy frame, even with no recent output", () => {
+      for (const title of ["◐ Fix the badge", "◑ Fix the badge"]) {
+        expect(
+          computeAgentStatus({ agent: "claude", title, now: 60_000, lastActivityAt: 0, lastBellAt: null }),
+        ).toBe("running");
+      }
+    });
+
+    it("is done under the idle prefix, even while output (keystroke echo) is flowing", () => {
+      expect(
+        computeAgentStatus({ agent: "claude", title: "✳ Fix the badge", now: 1000, lastActivityAt: 999, lastBellAt: null }),
+      ).toBe("done");
+    });
+
+    it("needs input under the idle prefix after a bell", () => {
+      expect(
+        computeAgentStatus({ agent: "claude", title: "✳ Fix the badge", now: 10_000, lastActivityAt: 5000, lastBellAt: 5500 }),
+      ).toBe("needs-input");
+    });
   });
 });
 

@@ -38,8 +38,9 @@ use the terminal's own OSC parser (xterm.js) for state; do not depend on hooks f
 3. There is no macOS event for "foreground pgrp changed", so polling is the only presence source.
    Keep the tick at 1 s; the UI never needs sub-second presence.
 4. State (working / waiting / finished) comes from what the agents already write to the pty:
-   - **Title** (OSC 0/2): Codex and Gemini encode state in the title by default; Claude Code writes
-     a conversation-derived title (not a state signal).
+   - **Title** (OSC 0/2): Codex and Gemini encode state in the title by default. Claude Code writes
+     a conversation-derived title with a state prefix: `◐`/`◑` while busy, `✳` when idle or
+     waiting. Found later, in the 2.1.267 bundle; see docs/architecture.md "Agent status".
    - **Notifications** (OSC 9 / OSC 777 / BEL): all three can emit "turn complete" and "needs
      approval" as terminal notifications; xterm.js can intercept these. Some require user settings.
    - **Hooks** are the richest state source but are user-installed config, so treat as an optional

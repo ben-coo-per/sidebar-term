@@ -7,6 +7,7 @@
   import RobotIcon from "./icons/RobotIcon.svelte";
   import TerminalIcon from "./icons/TerminalIcon.svelte";
   import CheckIcon from "./icons/CheckIcon.svelte";
+  import SpinnerIcon from "./icons/SpinnerIcon.svelte";
   import CloseIcon from "./icons/CloseIcon.svelte";
   import Badge from "./Badge.svelte";
   import { dnd, startTabDrag, endDrag, overTabRow, dropOnTabRow } from "./dnd.svelte";
@@ -25,6 +26,9 @@
   const git = $derived(session?.info?.git ?? null);
   const title = $derived(tabTitle(tab));
   const isActive = $derived(layout.activeTabId === tab.id);
+  const stateLabel = $derived(
+    status === "running" ? "working" : status === "needs-input" ? "needs input" : agent ? "idle" : undefined,
+  );
 
   let editing = $state(false);
   let draft = $state("");
@@ -104,7 +108,7 @@
   role="button"
   tabindex="0"
   draggable="true"
-  title={agent ? `${AGENT_NAMES[agent]} session` : "Terminal session"}
+  title={agent ? `${AGENT_NAMES[agent]}: ${stateLabel}` : finished ? "Agent finished" : "Terminal session"}
   ondragstart={(e) => startTabDrag(e, tab.id)}
   ondragend={endDrag}
   ondragover={(e) => overTabRow(e, tab.id)}
@@ -113,23 +117,16 @@
   onkeydown={onRowKeydown}
   oncontextmenu={(e) => openContextMenu(e, menuItems())}
 >
-  <span class="icon" class:agent-icon={!!agent}>
-    {#if agent}
+  <!-- The icon slot carries Agent status: spinning while working, a still robot once stopped. -->
+  <span class="icon {agent ? (status ?? 'done') : finished ? 'finished' : ''}" aria-label={stateLabel}>
+    {#if agent && status === "running"}
+      <SpinnerIcon size={14} />
+    {:else if agent}
       <RobotIcon size={14} />
+    {:else if finished}
+      <CheckIcon size={14} />
     {:else}
       <TerminalIcon size={14} />
-    {/if}
-  </span>
-
-  <span class="status" aria-hidden="true">
-    {#if status === "running"}
-      <span class="dot running" title="Running"></span>
-    {:else if status === "needs-input"}
-      <span class="dot needs-input" title="Needs input"></span>
-    {:else if status === "done"}
-      <span class="check done" title="Done"><CheckIcon size={9} /></span>
-    {:else if finished}
-      <span class="check finished" title="Agent finished"><CheckIcon size={9} /></span>
     {/if}
   </span>
 
@@ -220,35 +217,15 @@
   .row.active .icon {
     color: var(--text-secondary);
   }
-  .icon.agent-icon {
-    color: var(--accent-strong);
+  /* Working is the only moving state; a stopped agent is as quiet as a plain session.
+     `.row` prefix: these must beat `.row.active .icon` above. */
+  .row .icon.running {
+    color: var(--status-running);
   }
-  .status {
-    flex: none;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 10px;
+  .row .icon.needs-input {
+    color: var(--status-needs-input);
   }
-  .dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-  }
-  .dot.running {
-    background: var(--status-running);
-    animation: pulse 1.4s ease-in-out infinite;
-  }
-  .dot.needs-input {
-    background: var(--status-needs-input);
-  }
-  .check {
-    display: flex;
-  }
-  .check.done {
-    color: var(--status-done);
-  }
-  .check.finished {
+  .row .icon.finished {
     color: var(--status-finished);
   }
   .title {
@@ -303,16 +280,5 @@
   .close:hover {
     background: var(--sidebar-bg-active);
     color: var(--text-primary);
-  }
-  @keyframes pulse {
-    0%,
-    100% {
-      opacity: 1;
-      transform: scale(1);
-    }
-    50% {
-      opacity: 0.45;
-      transform: scale(0.75);
-    }
   }
 </style>
