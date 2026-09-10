@@ -7,13 +7,25 @@
 //   cd ~/Dev/jack             -> main Worktree on `main`
 //   cd ~/Dev/jack/.claude/worktrees/navbar -> linked Worktree `navbar` on `navbar-new-gift`
 //   cd ~/Dev/detached         -> detached HEAD
-// Layout persistence uses localStorage.
+// Layout persistence uses localStorage. Activity is invented: each fake Session has a shell (and
+// its foreground program, busy when it is an agent) next to a fixed cast of jittering system
+// processes.
 
 import type { SpawnOptions } from "./ipc";
-import type { AgentKind, GitInfo, SessionExit, SessionId, SessionInfo } from "./types";
+import type {
+  ActivityProcess,
+  ActivitySession,
+  ActivitySnapshot,
+  AgentKind,
+  GitInfo,
+  SessionExit,
+  SessionId,
+  SessionInfo,
+} from "./types";
 
 type InfoCb = (i: SessionInfo) => void;
 type ExitCb = (e: SessionExit) => void;
+type ActivityCb = (a: ActivitySnapshot) => void;
 
 interface FakeSession {
   id: SessionId;
@@ -225,4 +237,74 @@ export async function saveLayout(layout: unknown): Promise<void> {
   } catch {
     /* ignore */
   }
+}
+
+const activityCbs = new Set<ActivityCb>();
+let activityTimer: ReturnType<typeof setInterval> | null = null;
+const MB = 1024 * 1024;
+const SYSTEM_PROCESSES: [name: string, cpu: number, mem: number][] = [
+  ["WindowServer", 18, 420 * MB],
+  ["kernel_task", 6, 12 * MB],
+  ["Google Chrome Helper (Renderer)", 9, 610 * MB],
+  ["Google Chrome", 3, 380 * MB],
+  ["Slack Helper (Renderer)", 2, 290 * MB],
+  ["mds_stores", 4, 60 * MB],
+  ["Finder", 0.3, 140 * MB],
+  ["coreaudiod", 0.8, 24 * MB],
+  ["launchd", 0.1, 18 * MB],
+  ["com.apple.WebKit.WebContent", 1.2, 210 * MB],
+];
+
+function jitter(v: number): number {
+  return v * (0.5 + Math.random());
+}
+
+function activitySnapshot(): ActivitySnapshot {
+  const processes: ActivityProcess[] = SYSTEM_PROCESSES.map(([name, cpu, mem], i) => ({
+    pid: 100 + i,
+    name,
+    cpu: jitter(cpu),
+    mem,
+    sessionId: null,
+  }));
+  for (const s of sessions.values()) {
+    processes.push({ pid: 5000 + s.id * 10, name: "zsh", cpu: 0, mem: 3 * MB, sessionId: s.id });
+    if (s.fg !== "zsh") {
+      processes.push({ pid: 5001 + s.id * 10, name: s.fg, cpu: jitter(s.agent ? 35 : 5), mem: 240 * MB, sessionId: s.id });
+    }
+  }
+  const bySession = new Map<SessionId, ActivitySession>();
+  for (const p of processes) {
+    if (p.sessionId === null) continue;
+    const a = bySession.get(p.sessionId) ?? { sessionId: p.sessionId, cpu: 0, mem: 0, processes: 0 };
+    a.cpu += p.cpu;
+    a.mem += p.mem;
+    a.processes += 1;
+    bySession.set(p.sessionId, a);
+  }
+  return {
+    cpuCount: 10,
+    cpuTotal: processes.reduce((sum, p) => sum + p.cpu, 0),
+    memUsed: 14.2 * 1024 * MB,
+    memTotal: 32 * 1024 * MB,
+    sessions: [...bySession.values()],
+    processes,
+  };
+}
+
+export async function watchActivity(on: boolean): Promise<void> {
+  if (activityTimer !== null) clearInterval(activityTimer);
+  activityTimer = null;
+  if (!on) return;
+  const tick = () => {
+    const snapshot = activitySnapshot();
+    activityCbs.forEach((cb) => cb(snapshot));
+  };
+  tick();
+  activityTimer = setInterval(tick, 2000);
+}
+
+export async function onActivity(cb: ActivityCb) {
+  activityCbs.add(cb);
+  return () => void activityCbs.delete(cb);
 }

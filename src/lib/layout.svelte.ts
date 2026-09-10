@@ -1,4 +1,4 @@
-// The layout model: Groups, Tabs, order, active Tab, sidebar width. Persistence via
+// The layout model: Groups, Tabs, order, active Tab, sidebar width, the Panel. Persistence via
 // layout_load/layout_save (src/lib/ipc.ts), debounced ~500ms. See docs/architecture.md
 // "Persistence" and "Naming", and CONTEXT.md for vocabulary.
 //
@@ -8,6 +8,7 @@
 import { loadLayout as ipcLoadLayout, resetSessions, saveLayout as ipcSaveLayout } from "./ipc";
 import { terminals } from "./terminal/manager";
 import type { SessionId } from "./types";
+import { isPanelViewId, PANEL_VIEWS, type PanelViewId } from "./panel/views";
 
 export interface Group {
   id: string;
@@ -27,6 +28,15 @@ export interface Tab {
   lastCwd: string | null;
 }
 
+/** The Panel at the bottom of the sidebar. */
+export interface PanelState {
+  view: PanelViewId;
+  /** Collapsed to its header. */
+  collapsed: boolean;
+  /** Expanded height in px, header included. */
+  height: number;
+}
+
 interface LayoutState {
   groups: Group[];
   tabs: Record<string, Tab>;
@@ -34,6 +44,7 @@ interface LayoutState {
   sidebarWidth: number;
   /** Cmd-B toggle. Not persisted: the sidebar is visible again on relaunch. */
   sidebarVisible: boolean;
+  panel: PanelState;
   /** True once startup load + Session respawn has finished. Gates persistence. */
   ready: boolean;
 }
@@ -42,6 +53,11 @@ const LAYOUT_VERSION = 1;
 const DEFAULT_SIDEBAR_WIDTH = 240;
 export const MIN_SIDEBAR_WIDTH = 180;
 export const MAX_SIDEBAR_WIDTH = 420;
+/** Below this sidebar width the Panel is hidden: its columns would not fit. */
+export const PANEL_MIN_SIDEBAR_WIDTH = 220;
+export const MIN_PANEL_HEIGHT = 96;
+export const MAX_PANEL_HEIGHT = 640;
+const DEFAULT_PANEL: PanelState = { view: PANEL_VIEWS[0].id, collapsed: false, height: 220 };
 const SAVE_DEBOUNCE_MS = 500;
 const DEFAULT_GROUP_NAME = "Tabs";
 
@@ -51,6 +67,7 @@ export const layout = $state<LayoutState>({
   activeTabId: null,
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   sidebarVisible: true,
+  panel: { ...DEFAULT_PANEL },
   ready: false,
 });
 
@@ -63,6 +80,10 @@ function newId(prefix: string): string {
 
 function clampWidth(px: number): number {
   return Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, Math.round(px)));
+}
+
+function clampPanelHeight(px: number): number {
+  return Math.max(MIN_PANEL_HEIGHT, Math.min(MAX_PANEL_HEIGHT, Math.round(px)));
 }
 
 function allTabIdsInOrder(): string[] {
@@ -109,6 +130,7 @@ function serialize() {
     })),
     activeTabId: layout.activeTabId,
     sidebarWidth: layout.sidebarWidth,
+    panel: { ...layout.panel },
   };
 }
 
@@ -131,6 +153,17 @@ interface PersistedLayout {
   tabs: PersistedTab[];
   activeTabId: string | null;
   sidebarWidth: number;
+  panel: PanelState;
+}
+
+/** Missing or bad fields fall back to the defaults (layouts saved before the Panel have none). */
+function parsePanel(raw: unknown): PanelState {
+  const p = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    view: isPanelViewId(p.view) ? p.view : DEFAULT_PANEL.view,
+    collapsed: typeof p.collapsed === "boolean" ? p.collapsed : DEFAULT_PANEL.collapsed,
+    height: typeof p.height === "number" ? clampPanelHeight(p.height) : DEFAULT_PANEL.height,
+  };
 }
 
 /** Defensive parse of whatever `layout_load` returned: unknown JSON, possibly stale or hand-edited. */
@@ -194,7 +227,7 @@ function validateAndMigrate(raw: unknown): PersistedLayout | null {
   const activeTabId = typeof r.activeTabId === "string" && finalTabIds.has(r.activeTabId) ? r.activeTabId : null;
   const sidebarWidth = typeof r.sidebarWidth === "number" ? clampWidth(r.sidebarWidth) : DEFAULT_SIDEBAR_WIDTH;
 
-  return { groups, tabs: finalTabs, activeTabId, sidebarWidth };
+  return { groups, tabs: finalTabs, activeTabId, sidebarWidth, panel: parsePanel(r.panel) };
 }
 
 /**
@@ -206,6 +239,7 @@ export async function initLayout(): Promise<void> {
   await resetSessions().catch(() => {});
   const raw = await ipcLoadLayout().catch(() => null);
   const parsed = validateAndMigrate(raw);
+  if (parsed) layout.panel = parsed.panel;
 
   if (parsed && parsed.tabs.length > 0) {
     layout.groups = parsed.groups.map((g) => ({ ...g, tabIds: [] }));
@@ -449,4 +483,21 @@ export function setSidebarWidth(px: number): void {
 
 export function toggleSidebarVisible(): void {
   layout.sidebarVisible = !layout.sidebarVisible;
+}
+
+/** Show `view` in the Panel, expanding it if collapsed. */
+export function setPanelView(view: PanelViewId): void {
+  layout.panel.view = view;
+  layout.panel.collapsed = false;
+  scheduleSave();
+}
+
+export function togglePanelCollapsed(): void {
+  layout.panel.collapsed = !layout.panel.collapsed;
+  scheduleSave();
+}
+
+export function setPanelHeight(px: number): void {
+  layout.panel.height = clampPanelHeight(px);
+  scheduleSave();
 }

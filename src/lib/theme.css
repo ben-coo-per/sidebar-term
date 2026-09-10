@@ -30,6 +30,12 @@
   --status-done: #4bb679;
   --status-finished: #9a9ea7;
 
+  /* Activity (Panel): Tabs in their colour, everything else muted */
+  --tab-color-plain: #d4d6db; /* a Tab outside any repo, which has no repo colour */
+  --activity-other: #454952; /* meter share of every other process */
+  --activity-other-text: #5d616a; /* rows of every other process */
+  --meter-track: #202329;
+
   /* Danger */
   --danger: #e0605a;
   --danger-dim: #e0605a26;

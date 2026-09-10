@@ -1,8 +1,17 @@
-<!-- The sidebar: Group headers + Tab rows, resizable, with the shared context menu and confirm
-     dialog mounted once. Runs to the top of the window; its header is the Tauri drag region
-     (see docs/architecture.md "Window"). -->
+<!-- The sidebar: Group headers + Tab rows, resizable, with the Panel beneath them and the shared
+     context menu and confirm dialog mounted once. Runs to the top of the window; its header is the
+     Tauri drag region (see docs/architecture.md "Window"). -->
 <script lang="ts">
-  import { layout, newGroup, newTab, setSidebarWidth, MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH } from "../layout.svelte";
+  import {
+    layout,
+    newGroup,
+    newTab,
+    setSidebarWidth,
+    MIN_SIDEBAR_WIDTH,
+    MAX_SIDEBAR_WIDTH,
+    PANEL_MIN_SIDEBAR_WIDTH,
+  } from "../layout.svelte";
+  import Panel from "../panel/Panel.svelte";
   import GroupHeader from "./GroupHeader.svelte";
   import TabRow from "./TabRow.svelte";
   import ContextMenu from "./ContextMenu.svelte";
@@ -72,6 +81,10 @@
       Group
     </button>
   </div>
+
+  {#if layout.ready && layout.sidebarWidth >= PANEL_MIN_SIDEBAR_WIDTH}
+    <Panel />
+  {/if}
 
   <div
     class="resize-handle"

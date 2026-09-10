@@ -78,7 +78,7 @@ pub fn probe(target: &ProbeTarget) -> SessionInfo {
 }
 
 /// The command a user types to start `kind`.
-fn agent_command(kind: AgentKind) -> &'static str {
+pub(crate) fn agent_command(kind: AgentKind) -> &'static str {
     match kind {
         AgentKind::Claude => "claude",
         AgentKind::Codex => "codex",

@@ -2,6 +2,7 @@
 //! the webview owns the sidebar layout. See docs/architecture.md.
 //! CONTRACT: command names and signatures here are mirrored by `src/lib/ipc.ts`.
 
+mod activity;
 mod detect;
 mod layout;
 mod model;
@@ -50,17 +51,25 @@ fn session_kill(sessions: State<'_, SessionManager>, session_id: SessionId) -> R
     sessions.kill(session_id)
 }
 
-/// Kill every Session. The webview calls this once at startup so a webview reload does not
-/// leave the previous page's shells running with nowhere to send output.
+/// Kill every Session and stop Activity sampling. The webview calls this once at startup so a
+/// webview reload does not leave the previous page's shells (or `ps` runs) going with nowhere to
+/// send output.
 #[tauri::command]
-fn session_reset(sessions: State<'_, SessionManager>) {
+fn session_reset(sessions: State<'_, SessionManager>, activity: State<'_, activity::Activity>) {
     sessions.kill_all();
+    activity.watch(false);
 }
 
 /// On-demand probe, e.g. to decide whether closing a Tab needs confirmation.
 #[tauri::command]
 fn session_info(sessions: State<'_, SessionManager>, session_id: SessionId) -> Option<SessionInfo> {
     sessions.probe_target(session_id).map(|t| detect::probe(&t))
+}
+
+/// Start or stop the Activity sampler; while on, `activity` fires every 2 s.
+#[tauri::command]
+fn activity_watch(activity: State<'_, activity::Activity>, on: bool) {
+    activity.watch(on);
 }
 
 #[tauri::command]
@@ -82,7 +91,13 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             let for_targets = handle.clone();
-            monitor::spawn(handle, move || for_targets.state::<SessionManager>().probe_targets());
+            monitor::spawn(handle.clone(), move || {
+                for_targets.state::<SessionManager>().probe_targets()
+            });
+            let for_activity = handle.clone();
+            app.manage(activity::spawn(handle, move || {
+                for_activity.state::<SessionManager>().probe_targets()
+            }));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -94,6 +109,7 @@ pub fn run() {
             session_kill,
             session_reset,
             session_info,
+            activity_watch,
             layout_load,
             layout_save,
         ])

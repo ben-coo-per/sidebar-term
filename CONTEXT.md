@@ -35,3 +35,15 @@ _Avoid_: Checkout, clone
 **Title**:
 The text shown on a tab. Either automatic (derived from the session) or a rename the user typed, which sticks.
 _Avoid_: Name, label
+
+**Tab colour**:
+The colour that stands for a tab: its repo's badge-dot colour, or a plain light grey when the session is not in a repo. Tabs in worktrees of one repo share a colour.
+_Avoid_: Accent, tint
+
+**Panel**:
+The collapsible, resizable area at the bottom of the sidebar, beneath the groups. It shows one view at a time, picked from a strip of view tabs in its header. It hides when the sidebar is too narrow.
+_Avoid_: Drawer, dock, footer, pane
+
+**Activity**:
+The panel view showing the Mac's CPU and memory, split between sessions (each in its tab colour) and every other process (muted grey), with a list of the busiest processes.
+_Avoid_: Activity monitor (that is Apple's app), stats, usage

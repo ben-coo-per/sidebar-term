@@ -23,14 +23,16 @@ stores each Tab's last cwd instead and respawns a shell there on relaunch.
 | `session_resize` | `sessionId, cols, rows` | - |
 | `session_pause` / `session_resume` | `sessionId` | - (flow control, see `docs/research/pty.md`) |
 | `session_kill` | `sessionId` | - (then `session-exit` fires) |
-| `session_reset` | - | - (kills every Session; called once at webview startup so a reload leaves no orphans) |
+| `session_reset` | - | - (kills every Session and stops Activity sampling; called once at webview startup so a reload leaves no orphans) |
 | `session_info` | `sessionId` | `SessionInfo \| null` (fresh probe) |
+| `activity_watch` | `on: boolean` | - (start / stop sampling Activity) |
 | `layout_load` / `layout_save` | `layout: json` | opaque JSON blob in the app data dir |
 
 | Event | Payload | When |
 |---|---|---|
 | `session-info` | `SessionInfo` | first probe of a Session, then on every change (monitor tick 500 ms) |
 | `session-exit` | `SessionExit` | the shell exited or was killed |
+| `activity` | `ActivitySnapshot` | every 2 s while `activity_watch(true)`; the first right away |
 
 Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `ipc.ts` routes to
 `src/lib/mock.ts`, a fake backend for developing the UI in a browser (`pnpm dev`, then open
@@ -44,6 +46,9 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
 - `detect/` — `probe(&ProbeTarget) -> SessionInfo`: libproc for the Foreground process group,
   agent classification, remote-hop detection, cwd; `.git` file reading for repo / Worktree / branch.
 - `monitor.rs` — thread ticking every 500 ms: probe every target, emit `session-info` on change.
+- `activity.rs` — `Activity` (Tauri state): thread idle until watched, then every 2 s runs
+  `/bin/ps` over every process, attributes each to a Session by ppid descent from its shell, and
+  emits `activity` (see "Panel").
 - `layout.rs` — atomic JSON read/write of `layout.json` in the app data dir.
 
 ## Webview modules
@@ -54,13 +59,15 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
 - `src/lib/layout.svelte.ts` — Groups/Tabs model, actions, persistence (debounced `layout_save`).
 - `src/lib/sessions.svelte.ts` — reactive `SessionInfo` per Session plus derived Agent status.
 - `src/lib/sidebar/*` — sidebar components. `src/routes/+page.svelte` — app shell.
+- `src/lib/panel/*` — the Panel (`Panel.svelte`), its view list (`views.ts`) and the Activity
+  view (`activity/`: snapshot store, pure sorting / formatting / meter maths, components).
 
 ## v1 product defaults (provisional)
 
 - **Scope** (#7): one window, no split panes, no profiles, no settings UI, no quick switcher. Tabs
   move between Groups by drag-and-drop and by a context menu.
 - **Persistence** (#8): Groups (name, order, collapsed), Tabs (order, custom Title, last cwd), the
-  active Tab and sidebar width persist. On relaunch every Tab respawns a shell at its last cwd.
+  active Tab, sidebar width and the Panel (view, collapsed, height) persist. On relaunch every Tab respawns a shell at its last cwd.
 - **Naming** (#10): automatic Title priority: agent name ("Claude Code", "Codex", "Gemini") when an
   Agent session; else the OSC title if the Foreground process set one; else the Foreground process
   name when it is not the shell; else the cwd basename (`~` for home). A rename sticks until the
@@ -95,6 +102,35 @@ Derived in the webview from `SessionInfo.agent`, the Terminal's OSC title, BEL a
 When the agent exits, the Tab stops being an Agent session; if that happens while the Tab is not
 active, the Tab keeps a "finished" marker until it is next activated. A Done or Needs-input status
 on a background Tab is highlighted until the Tab is activated.
+
+## Panel
+
+The Panel sits at the bottom of the sidebar, beneath the Groups and the New Tab / New Group
+buttons. Its header holds a strip of view tabs; clicking the shown view's tab (or the header)
+collapses the Panel to that header, and clicking another view's tab switches to it and expands.
+Its top edge drags to resize, up to 70% of the sidebar. It is hidden while the sidebar is narrower
+than 220 px. Which view, collapsed or not, and the height persist in the layout (`panel`).
+
+Views are listed in `src/lib/panel/views.ts` and rendered by `Panel.svelte`. Activity is the only
+one so far; a view of coding agents' usage limits is planned.
+
+**Activity** shows two meters (CPU out of every core, memory out of physical memory), each split
+into one segment per Session in its Tab colour, in sidebar order, then one muted segment for
+everything else; and a list of processes sortable by CPU or memory. A Session's processes show in
+its Tab colour, and clicking one goes to its Tab. Every other process is muted grey. Collapsed, the
+header shows CPU and Memory Used instead.
+
+- Source: `/bin/ps -axo pid,ppid,rss,time,%cpu,comm`, every 2 s, only while the Panel shows
+  Activity (collapsed included). libproc's task info is EPERM for other users' processes, about a
+  third of all processes and usually the busiest (WindowServer, kernel_task); `ps` is setuid root.
+  One run costs ~20 ms.
+- CPU% is the change in CPU time between samples over wall time, 100% = one core, as in Activity
+  Monitor. A process seen for the first time uses `ps`'s own decaying %cpu.
+- A process belongs to a Session if it is the Session's shell or descends from it by ppid, so
+  background jobs count and a daemon that detaches (reparents to launchd) does not.
+- Memory Used is Activity Monitor's: app memory + wired + compressed (`host_statistics64`).
+- Rust sends every Session process plus the top 40 others by CPU and the top 40 by memory.
+- Tab colour: the repo's Badge-dot colour, or `--tab-color-plain` outside a repo.
 
 ## Window
 

@@ -16,3 +16,8 @@ function hash(input: string): number {
 export function repoColorVar(commonDir: string): string {
   return `var(--repo-color-${hash(commonDir) % PALETTE_SIZE})`;
 }
+
+/** A Tab's colour: its repo's dot colour, or a plain one when it is not in a repo. */
+export function tabColorVar(commonDir: string | null): string {
+  return commonDir ? repoColorVar(commonDir) : "var(--tab-color-plain)";
+}

@@ -5,8 +5,10 @@
 import { invoke, Channel, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
+  EVENT_ACTIVITY,
   EVENT_SESSION_EXIT,
   EVENT_SESSION_INFO,
+  type ActivitySnapshot,
   type SessionExit,
   type SessionId,
   type SessionInfo,
@@ -82,6 +84,17 @@ export function onSessionInfo(cb: (info: SessionInfo) => void): Promise<Unlisten
 export function onSessionExit(cb: (exit: SessionExit) => void): Promise<UnlistenFn> {
   if (!inTauri) return mock.onSessionExit(cb);
   return listen<SessionExit>(EVENT_SESSION_EXIT, (e) => cb(e.payload));
+}
+
+/** Start or stop sampling Activity; while on, `onActivity` fires every ~2 s. Sampling runs `ps`. */
+export function watchActivity(on: boolean): Promise<void> {
+  if (!inTauri) return mock.watchActivity(on);
+  return invoke("activity_watch", { on });
+}
+
+export function onActivity(cb: (snapshot: ActivitySnapshot) => void): Promise<UnlistenFn> {
+  if (!inTauri) return mock.onActivity(cb);
+  return listen<ActivitySnapshot>(EVENT_ACTIVITY, (e) => cb(e.payload));
 }
 
 /** The persisted sidebar layout blob, or null on first run. Shape is owned by src/lib/layout. */

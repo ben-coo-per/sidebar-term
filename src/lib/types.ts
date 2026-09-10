@@ -41,5 +41,42 @@ export interface SessionExit {
   code: number | null;
 }
 
+/** One process in an ActivitySnapshot. */
+export interface ActivityProcess {
+  pid: number;
+  /** Executable file name; an agent's command name ("claude") for a coding agent. */
+  name: string;
+  /** Percent of one core over the last interval (two busy cores read 200). */
+  cpu: number;
+  /** Resident memory, bytes. */
+  mem: number;
+  /** The Session whose shell this process is or descends from; null for everything else. */
+  sessionId: SessionId | null;
+}
+
+/** Totals over every process of one Session. */
+export interface ActivitySession {
+  sessionId: SessionId;
+  cpu: number;
+  mem: number;
+  processes: number;
+}
+
+/** CPU and memory of the whole Mac, with each Session's share. Pushed on the `activity` event. */
+export interface ActivitySnapshot {
+  /** Logical cores: the machine's capacity is cpuCount * 100 percent. */
+  cpuCount: number;
+  /** Sum of every process's cpu, in percent of one core. */
+  cpuTotal: number;
+  /** Bytes in use as Activity Monitor counts "Memory Used". */
+  memUsed: number;
+  memTotal: number;
+  /** Every Session with at least one live process. */
+  sessions: ActivitySession[];
+  /** Every Session's processes plus the busiest others by CPU and by memory. Unordered. */
+  processes: ActivityProcess[];
+}
+
 export const EVENT_SESSION_INFO = "session-info";
 export const EVENT_SESSION_EXIT = "session-exit";
+export const EVENT_ACTIVITY = "activity";

@@ -89,6 +89,52 @@ pub struct ProbeTarget {
     pub fg_pgid: Option<i32>,
 }
 
+/// One process in an `ActivitySnapshot`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityProcess {
+    pub pid: i32,
+    /// Executable file name (`WindowServer`, `cargo`); an agent's command name (`claude`) when
+    /// the executable is a coding agent's.
+    pub name: String,
+    /// Percent of one core over the last sample interval, as Activity Monitor shows it
+    /// (a process using two cores reads 200).
+    pub cpu: f32,
+    /// Resident memory in bytes.
+    pub mem: u64,
+    /// The Session whose shell this process is or descends from; `None` for everything else.
+    pub session_id: Option<SessionId>,
+}
+
+/// Totals over every process of one Session.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivitySession {
+    pub session_id: SessionId,
+    pub cpu: f32,
+    pub mem: u64,
+    pub processes: u32,
+}
+
+/// CPU and memory of the whole Mac, with each Session's share. Payload of `activity`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivitySnapshot {
+    /// Logical cores: the machine's capacity is `cpu_count * 100` percent.
+    pub cpu_count: u32,
+    /// Sum of every process's `cpu`, in percent of one core.
+    pub cpu_total: f32,
+    /// Bytes in use as Activity Monitor counts "Memory Used": app + wired + compressed.
+    pub mem_used: u64,
+    pub mem_total: u64,
+    /// Every Session with at least one live process.
+    pub sessions: Vec<ActivitySession>,
+    /// Every Session's processes, plus the busiest others by CPU and by memory. Unordered.
+    pub processes: Vec<ActivityProcess>,
+}
+
 /// Event names. Frontend listens with `listen(EVENT_SESSION_INFO, ...)`.
 pub const EVENT_SESSION_INFO: &str = "session-info";
 pub const EVENT_SESSION_EXIT: &str = "session-exit";
+/// Sent every activity tick while the webview watches (`activity_watch`).
+pub const EVENT_ACTIVITY: &str = "activity";
