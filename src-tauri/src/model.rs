@@ -176,3 +176,5 @@ pub const EVENT_ACTIVITY: &str = "activity";
 pub const EVENT_USAGE: &str = "usage";
 /// The app menu's "Settings…" was chosen: the webview opens the Settings page.
 pub const EVENT_MENU_SETTINGS: &str = "menu-settings";
+/// Caffeinate turned off on its own (its `caffeinate` run ended); payload `false`.
+pub const EVENT_CAFFEINATE: &str = "caffeinate";

@@ -6,6 +6,7 @@ import { invoke, Channel, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   EVENT_ACTIVITY,
+  EVENT_CAFFEINATE,
   EVENT_MENU_SETTINGS,
   EVENT_SESSION_EXIT,
   EVENT_SESSION_INFO,
@@ -113,6 +114,24 @@ export function watchUsage(on: boolean, agents: AgentKind[]): Promise<void> {
 export function onUsage(cb: (snapshot: UsageSnapshot) => void): Promise<UnlistenFn> {
   if (!inTauri) return mock.onUsage(cb);
   return listen<UsageSnapshot>(EVENT_USAGE, (e) => cb(e.payload));
+}
+
+/** Whether Caffeinate is keeping this Mac awake (a background `caffeinate` run). */
+export function caffeinateState(): Promise<boolean> {
+  if (!inTauri) return mock.caffeinateState();
+  return invoke("caffeinate_state");
+}
+
+/** Turn Caffeinate on or off; resolves to whether it is on now. */
+export function setCaffeinate(on: boolean): Promise<boolean> {
+  if (!inTauri) return mock.setCaffeinate(on);
+  return invoke("caffeinate_set", { on });
+}
+
+/** Caffeinate turned off on its own. Never fires outside Tauri. */
+export function onCaffeinate(cb: (on: boolean) => void): Promise<UnlistenFn> {
+  if (!inTauri) return Promise.resolve(() => {});
+  return listen<boolean>(EVENT_CAFFEINATE, (e) => cb(e.payload));
 }
 
 /** The app menu's "Settings…" item. Never fires outside Tauri (the browser has no app menu). */

@@ -40,6 +40,10 @@
   --usage-high: #e3a63e;
   --usage-full: #e0605a;
 
+  /* Tray: a toggle that is on (Caffeinate) */
+  --tray-on: #e3a63e;
+  --tray-on-dim: #e3a63e26;
+
   /* Danger */
   --danger: #e0605a;
   --danger-dim: #e0605a26;
@@ -56,6 +60,7 @@
   --sidebar-min-width: 180px;
   --sidebar-max-width: 420px;
   --titlebar-inset: 28px;
+  --traffic-lights-width: 78px; /* close / minimise / zoom, from the window's left edge */
 
   /* Motion */
   --ease-standard: cubic-bezier(0.2, 0.6, 0.2, 1);

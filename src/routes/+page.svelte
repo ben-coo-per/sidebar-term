@@ -9,6 +9,7 @@
   import { initShortcuts } from "$lib/shortcuts";
   import { initHotkeys } from "$lib/hotkeys.svelte";
   import { initUsageSettings } from "$lib/panel/usage/settings.svelte";
+  import { initCaffeinate } from "$lib/tray/caffeinate.svelte";
   import { onMenuSettings } from "$lib/ipc";
   import { initDropGuard } from "$lib/terminal/drop";
   import SettingsPage from "$lib/settings/SettingsPage.svelte";
@@ -21,10 +22,12 @@
     void initUsageSettings();
     const stopShortcuts = initShortcuts();
     const stopDropGuard = initDropGuard();
+    const stopCaffeinate = initCaffeinate();
     const menuSettings = onMenuSettings(openSettings);
     return () => {
       stopShortcuts();
       stopDropGuard();
+      stopCaffeinate();
       void menuSettings.then((stop) => stop());
     };
   });

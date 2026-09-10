@@ -48,6 +48,14 @@ _Avoid_: Accent, tint
 The resizable area at the bottom of the sidebar, beneath the groups. An accordion of views (Activity, Usage): each has its own header, and opening one closes the others. A closed view's header carries a one-line summary. It hides when the sidebar is too narrow.
 _Avoid_: Drawer, dock, footer, pane
 
+**Tray**:
+The row of small icon buttons and indicators at the top of the sidebar, beside the traffic lights. Shown whenever the sidebar is.
+_Avoid_: Toolbar, titlebar buttons, status bar
+
+**Caffeinate**:
+The Tray toggle that keeps the Mac awake (display and system) while on, by running macOS's `caffeinate` in the background, never in a Session.
+_Avoid_: Keep awake, no-sleep, Amphetamine
+
 **Activity**:
 The panel view showing the Mac's CPU and memory, split between sessions (each in its tab colour) and every other process (muted grey), with a list of the busiest processes.
 _Avoid_: Activity monitor (that is Apple's app), stats, usage

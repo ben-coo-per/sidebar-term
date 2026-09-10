@@ -1,6 +1,7 @@
 <!-- The sidebar: Group headers + Tab rows, resizable, with the Panel beneath them and the shared
      context menu and confirm dialog mounted once. Runs to the top of the window; its header is the
-     Tauri drag region (see docs/architecture.md "Window"). -->
+     Tauri drag region (see docs/architecture.md "Window") and holds the Tray, right of the traffic
+     lights. -->
 <script lang="ts">
   import {
     layout,
@@ -12,6 +13,7 @@
     PANEL_MIN_SIDEBAR_WIDTH,
   } from "../layout.svelte";
   import Panel from "../panel/Panel.svelte";
+  import Tray from "../tray/Tray.svelte";
   import GroupHeader from "./GroupHeader.svelte";
   import TabRow from "./TabRow.svelte";
   import ContextMenu from "./ContextMenu.svelte";
@@ -51,7 +53,9 @@
 </script>
 
 <aside class="sidebar" style:width="{layout.sidebarWidth}px">
-  <div class="drag-region" data-tauri-drag-region></div>
+  <div class="drag-region" data-tauri-drag-region>
+    <Tray />
+  </div>
 
   <div class="groups" role="tree" aria-label="Tabs">
     {#if !layout.ready}
@@ -131,7 +135,12 @@
   }
   .drag-region {
     flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
     height: var(--titlebar-inset);
+    /* The Tray never runs under the traffic lights. */
+    padding: 0 6px 0 var(--traffic-lights-width);
     -webkit-app-region: drag;
   }
   .groups {

@@ -111,3 +111,5 @@ export const EVENT_ACTIVITY = "activity";
 export const EVENT_USAGE = "usage";
 /** The app menu's "Settings…" was chosen. */
 export const EVENT_MENU_SETTINGS = "menu-settings";
+/** Caffeinate turned off on its own (its `caffeinate` run ended); payload `false`. */
+export const EVENT_CAFFEINATE = "caffeinate";
