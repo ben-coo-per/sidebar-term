@@ -29,7 +29,7 @@ stores each Tab's last cwd instead and respawns a shell there on relaunch.
 
 | Event | Payload | When |
 |---|---|---|
-| `session-info` | `SessionInfo` | first probe of a Session, then on every change (monitor tick ~1 s) |
+| `session-info` | `SessionInfo` | first probe of a Session, then on every change (monitor tick 500 ms) |
 | `session-exit` | `SessionExit` | the shell exited or was killed |
 
 Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `ipc.ts` routes to
@@ -43,7 +43,7 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
   pause/resume, kill, `probe_targets()`.
 - `detect/` — `probe(&ProbeTarget) -> SessionInfo`: libproc for the Foreground process group,
   agent classification, remote-hop detection, cwd; `.git` file reading for repo / Worktree / branch.
-- `monitor.rs` — thread ticking ~1 s: probe every target, emit `session-info` on change.
+- `monitor.rs` — thread ticking every 500 ms: probe every target, emit `session-info` on change.
 - `layout.rs` — atomic JSON read/write of `layout.json` in the app data dir.
 
 ## Webview modules

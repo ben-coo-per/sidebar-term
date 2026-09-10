@@ -57,6 +57,7 @@ pub struct SessionInfo {
 }
 
 impl SessionInfo {
+    #[allow(dead_code)] // used by tests and as a safe default
     pub fn empty(session_id: SessionId) -> Self {
         Self {
             session_id,
