@@ -308,3 +308,21 @@ export async function onActivity(cb: ActivityCb) {
   activityCbs.add(cb);
   return () => void activityCbs.delete(cb);
 }
+
+const SETTINGS_KEY = "sidebar-term:mock-settings";
+export async function loadSettings(): Promise<unknown | null> {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveSettings(settings: unknown): Promise<void> {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  } catch {
+    /* ignore */
+  }
+}

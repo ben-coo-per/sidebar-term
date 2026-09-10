@@ -74,6 +74,16 @@ export const layout = $state<LayoutState>({
 /** SessionId -> Tab id, kept in step with `layout.tabs` for O(1) exit handling. */
 const sessionToTab = new Map<SessionId, string>();
 
+/** Group id -> the Tab last active in it, so jumping to a Group lands where you left off. */
+const lastActiveInGroup = new Map<string, string>();
+
+$effect.root(() => {
+  $effect(() => {
+    const tab = layout.activeTabId ? layout.tabs[layout.activeTabId] : null;
+    if (tab) lastActiveInGroup.set(tab.groupId, tab.id);
+  });
+});
+
 function newId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID()}`;
 }
@@ -88,10 +98,6 @@ function clampPanelHeight(px: number): number {
 
 function allTabIdsInOrder(): string[] {
   return layout.groups.flatMap((g) => g.tabIds);
-}
-
-function visibleTabIdsInOrder(): string[] {
-  return layout.groups.filter((g) => !g.collapsed).flatMap((g) => g.tabIds);
 }
 
 export function tabIdForSession(sessionId: SessionId): string | null {
@@ -297,11 +303,6 @@ export function groupOf(tab: Tab): Group | null {
   return layout.groups.find((g) => g.id === tab.groupId) ?? null;
 }
 
-/** Tab ids in top-to-bottom sidebar order, skipping Tabs inside collapsed Groups. */
-export function visibleTabIds(): string[] {
-  return visibleTabIdsInOrder();
-}
-
 /** Tab ids in top-to-bottom sidebar order, including collapsed Groups. */
 export function orderedTabIds(): string[] {
   return allTabIdsInOrder();
@@ -383,6 +384,18 @@ export function activateTab(tabId: string): void {
   if (!layout.tabs[tabId] || layout.activeTabId === tabId) return;
   layout.activeTabId = tabId;
   scheduleSave();
+}
+
+/**
+ * Go to the Group at `index` (0-based, sidebar order): activate the Tab last active in it, else
+ * its first Tab, expanding the Group so the active Tab shows. A no-op for an empty Group.
+ */
+export function jumpToGroup(index: number): void {
+  const group = layout.groups[index];
+  if (!group || group.tabIds.length === 0) return;
+  const remembered = lastActiveInGroup.get(group.id);
+  setGroupCollapsed(group.id, false);
+  activateTab(remembered && group.tabIds.includes(remembered) ? remembered : group.tabIds[0]);
 }
 
 export function newGroup(name = "New Group"): string {

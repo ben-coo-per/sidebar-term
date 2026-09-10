@@ -32,6 +32,10 @@ _Avoid_: Label, tag, chip
 A git worktree: one checkout of a repo at its own path, on its own branch. Sessions in different worktrees of the same repo are related, and the sidebar shows that.
 _Avoid_: Checkout, clone
 
+**Hotkey**:
+A key combination bound to one app action (new Tab, go to Group 3, next Tab in Group...). Each has a default; the user can rebind or unassign it on the Settings page. One combination drives at most one action.
+_Avoid_: Shortcut, keybinding, accelerator
+
 **Title**:
 The text shown on a tab. Either automatic (derived from the session) or a rename the user typed, which sticks.
 _Avoid_: Name, label

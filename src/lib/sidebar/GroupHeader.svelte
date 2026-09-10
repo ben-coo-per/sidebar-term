@@ -1,4 +1,5 @@
-<!-- A Group header: chevron, name (inline rename), Tab count, drag handle, context menu. -->
+<!-- A Group header: chevron, name (inline rename), Tab count, its go-to-Group Hotkey, drag
+     handle, context menu. -->
 <script lang="ts">
   import type { Group } from "../layout.svelte";
   import { deleteGroup, layout, newTab, renameGroup, toggleGroupCollapsed } from "../layout.svelte";
@@ -7,8 +8,13 @@
   import { openContextMenu } from "./menu.svelte";
   import type { MenuItem } from "./ContextMenu.svelte";
   import { requestConfirm } from "./confirm.svelte";
+  import { GROUP_JUMP_COUNT, groupJumpAction } from "../hotkeys";
+  import { hotkeyLabel } from "../hotkeys.svelte";
 
   let { group }: { group: Group } = $props();
+
+  const position = $derived(layout.groups.indexOf(group) + 1);
+  const hotkey = $derived(position >= 1 && position <= GROUP_JUMP_COUNT ? hotkeyLabel(groupJumpAction(position)) : "");
 
   let editing = $state(false);
   let draft = $state("");
@@ -109,10 +115,15 @@
       onclick={(e) => e.stopPropagation()}
     />
   {:else}
-    <span class="name" role="button" tabindex="-1" ondblclick={startEdit}>{group.name}</span>
+    <span class="title">
+      <span class="name" role="button" tabindex="-1" ondblclick={startEdit}>{group.name}</span>
+      <span class="count">({group.tabIds.length})</span>
+    </span>
   {/if}
 
-  <span class="count">{group.tabIds.length}</span>
+  {#if hotkey}
+    <kbd class="hotkey" title="Go to Group {position} ({hotkey})">{hotkey}</kbd>
+  {/if}
 </div>
 
 <style>
@@ -146,8 +157,15 @@
   .chevron.collapsed {
     transform: rotate(0deg);
   }
-  .name {
+  .title {
     flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+  }
+  .name {
+    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -176,9 +194,23 @@
   }
   .count {
     flex: none;
-    font-size: 10px;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
     color: var(--text-tertiary);
-    min-width: 12px;
-    text-align: right;
+  }
+  .hotkey {
+    flex: none;
+    font-family: inherit;
+    font-size: 10.5px;
+    line-height: 16px;
+    padding: 0 5px;
+    border: 1px solid var(--sidebar-border);
+    border-radius: 4px;
+    background: var(--sidebar-bg-raised);
+    color: var(--text-secondary);
+    letter-spacing: 0.04em;
+  }
+  .header:hover .hotkey {
+    color: var(--text-primary);
   }
 </style>

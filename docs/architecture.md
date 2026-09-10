@@ -27,6 +27,7 @@ stores each Tab's last cwd instead and respawns a shell there on relaunch.
 | `session_info` | `sessionId` | `SessionInfo \| null` (fresh probe) |
 | `activity_watch` | `on: boolean` | - (start / stop sampling Activity) |
 | `layout_load` / `layout_save` | `layout: json` | opaque JSON blob in the app data dir |
+| `settings_load` / `settings_save` | `settings: json` | opaque JSON blob (Hotkey overrides) in the app data dir |
 
 | Event | Payload | When |
 |---|---|---|
@@ -49,7 +50,7 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
 - `activity.rs` — `Activity` (Tauri state): thread idle until watched, then every 2 s runs
   `/bin/ps` over every process, attributes each to a Session by ppid descent from its shell, and
   emits `activity` (see "Panel").
-- `layout.rs` — atomic JSON read/write of `layout.json` in the app data dir.
+- `layout.rs` — atomic JSON read/write of `layout.json` and `settings.json` in the app data dir.
 
 ## Webview modules
 
@@ -58,14 +59,18 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
 - `src/lib/terminal/TerminalPane.svelte` — shows the active Session's Terminal.
 - `src/lib/layout.svelte.ts` — Groups/Tabs model, actions, persistence (debounced `layout_save`).
 - `src/lib/sessions.svelte.ts` — reactive `SessionInfo` per Session plus derived Agent status.
+- `src/lib/hotkeys.ts` — Hotkey actions, defaults and the pure rules for combos;
+  `src/lib/hotkeys.svelte.ts` — the live bindings (persisted overrides); `src/lib/shortcuts.ts` —
+  the window listener that dispatches them.
+- `src/lib/settings/*` — the Settings page (Hotkeys), shown over the Terminal.
 - `src/lib/sidebar/*` — sidebar components. `src/routes/+page.svelte` — app shell.
 - `src/lib/panel/*` — the Panel (`Panel.svelte`), its view list (`views.ts`) and the Activity
   view (`activity/`: snapshot store, pure sorting / formatting / meter maths, components).
 
 ## v1 product defaults (provisional)
 
-- **Scope** (#7): one window, no split panes, no profiles, no settings UI, no quick switcher. Tabs
-  move between Groups by drag-and-drop and by a context menu.
+- **Scope** (#7): one window, no split panes, no profiles, no settings UI beyond Hotkeys, no quick
+  switcher. Tabs move between Groups by drag-and-drop and by a context menu.
 - **Persistence** (#8): Groups (name, order, collapsed), Tabs (order, custom Title, last cwd), the
   active Tab, sidebar width and the Panel (view, collapsed, height) persist. On relaunch every Tab respawns a shell at its last cwd.
 - **Naming** (#10): automatic Title priority: agent name ("Claude Code", "Codex", "Gemini") when an
@@ -82,10 +87,15 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
   otherwise. The icon reverts when the agent exits.
 - **Agent status** (new issue, see map): every Agent session shows Running / Needs input / Done
   (see "Agent status" below).
-- **Interaction** (#13): Cmd-T new Tab, Cmd-Shift-N new Group, Cmd-W close Tab, Cmd-1..9 jump to
-  the Nth visible Tab, Cmd-Shift-[ / ] previous / next Tab, Cmd-Opt-Up/Down move Tab, Cmd-B toggle
-  sidebar. Closing a Tab whose Foreground process is not the shell asks for confirmation in an
-  in-app dialog (never `window.confirm`). Sidebar width is draggable.
+- **Interaction** (#13): Cmd-T new Tab, Cmd-Shift-N new Group, Cmd-W close Tab, Cmd-1..9 go to
+  the Nth Group (the Tab last active in it, else its first; expands a collapsed Group), Cmd-` /
+  Cmd-Shift-` next / previous Tab within the active Tab's Group (wrapping), Cmd-Shift-[ / ] previous
+  / next Tab across all Groups, Cmd-Opt-Up/Down move Tab, Cmd-B toggle sidebar, Cmd-, Settings.
+  These are defaults: every one is a Hotkey the user can rebind on the Settings page
+  (`src/lib/hotkeys.ts` holds the actions and rules; overrides persist in `settings.json` next to
+  `layout.json`). A Group header shows its go-to-Group Hotkey and its Tab count as `NAME (2)  ⌘1`.
+  Closing a Tab whose Foreground process is not the shell asks for confirmation in an in-app dialog
+  (never `window.confirm`). Sidebar width is draggable.
 - **Architecture** (#14): as above; ADR `docs/adr/0001-rust-owns-sessions-webview-owns-layout.md`.
 
 ## Agent status

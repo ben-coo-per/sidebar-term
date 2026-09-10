@@ -75,12 +75,22 @@ fn activity_watch(activity: State<'_, activity::Activity>, on: bool) {
 
 #[tauri::command]
 fn layout_load(app: AppHandle) -> Result<Option<serde_json::Value>, String> {
-    layout::load(&app)
+    layout::load(&app, layout::LAYOUT)
 }
 
 #[tauri::command]
 fn layout_save(app: AppHandle, layout: serde_json::Value) -> Result<(), String> {
-    layout::save(&app, &layout)
+    layout::save(&app, layout::LAYOUT, &layout)
+}
+
+#[tauri::command]
+fn settings_load(app: AppHandle) -> Result<Option<serde_json::Value>, String> {
+    layout::load(&app, layout::SETTINGS)
+}
+
+#[tauri::command]
+fn settings_save(app: AppHandle, settings: serde_json::Value) -> Result<(), String> {
+    layout::save(&app, layout::SETTINGS, &settings)
 }
 
 /// Paths of the files on the macOS drag pasteboard, i.e. those of the drop just received.
@@ -125,6 +135,8 @@ pub fn run() {
             activity_watch,
             layout_load,
             layout_save,
+            settings_load,
+            settings_save,
             drop_paths,
             drop_save,
         ])

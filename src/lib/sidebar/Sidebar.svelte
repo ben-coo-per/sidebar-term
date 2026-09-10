@@ -17,7 +17,17 @@
   import ContextMenu from "./ContextMenu.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import PlusIcon from "./icons/PlusIcon.svelte";
+  import GearIcon from "./icons/GearIcon.svelte";
   import { contextMenuBox, closeContextMenu } from "./menu.svelte";
+  import { hotkeyLabel } from "../hotkeys.svelte";
+  import type { ActionId } from "../hotkeys";
+  import { toggleSettings } from "../settings/visibility.svelte";
+
+  /** "New Tab (⌘T)", or just "New Tab" when the action is unassigned. */
+  function withHotkey(text: string, id: ActionId): string {
+    const key = hotkeyLabel(id);
+    return key ? `${text} (${key})` : text;
+  }
 
   const totalTabs = $derived(Object.keys(layout.tabs).length);
 
@@ -55,7 +65,7 @@
           <PlusIcon size={11} />
           New Tab
         </button>
-        <p class="empty-hint">⌘T</p>
+        <p class="empty-hint">{hotkeyLabel("tab.new")}</p>
       </div>
     {:else}
       {#each layout.groups as group (group.id)}
@@ -72,13 +82,22 @@
   </div>
 
   <div class="footer">
-    <button type="button" class="footer-btn" onclick={() => void newTab()} title="New Tab (⌘T)">
+    <button type="button" class="footer-btn" onclick={() => void newTab()} title={withHotkey("New Tab", "tab.new")}>
       <PlusIcon size={10} />
       Tab
     </button>
-    <button type="button" class="footer-btn" onclick={() => newGroup()} title="New Group (⌘⇧N)">
+    <button type="button" class="footer-btn" onclick={() => newGroup()} title={withHotkey("New Group", "group.new")}>
       <PlusIcon size={10} />
       Group
+    </button>
+    <button
+      type="button"
+      class="footer-btn settings-btn"
+      onclick={toggleSettings}
+      title={withHotkey("Settings", "settings.toggle")}
+      aria-label="Settings"
+    >
+      <GearIcon size={12} />
     </button>
   </div>
 
@@ -163,6 +182,9 @@
   .footer-btn:hover {
     background: var(--sidebar-bg-raised);
     color: var(--text-secondary);
+  }
+  .settings-btn {
+    margin-left: auto;
   }
   .resize-handle {
     position: absolute;

@@ -7,16 +7,27 @@
   import TerminalPane from "$lib/terminal/TerminalPane.svelte";
   import { activeTab, initLayout, layout } from "$lib/layout.svelte";
   import { initShortcuts } from "$lib/shortcuts";
+  import { initHotkeys } from "$lib/hotkeys.svelte";
   import { initDropGuard } from "$lib/terminal/drop";
+  import SettingsPage from "$lib/settings/SettingsPage.svelte";
+  import { closeSettings, settingsPage } from "$lib/settings/visibility.svelte";
+  import { untrack } from "svelte";
 
   $effect(() => {
     void initLayout();
+    void initHotkeys();
     const stopShortcuts = initShortcuts();
     const stopDropGuard = initDropGuard();
     return () => {
       stopShortcuts();
       stopDropGuard();
     };
+  });
+
+  // Going to a Tab (click, Hotkey, new Tab) leaves the Settings page.
+  $effect(() => {
+    void layout.activeTabId;
+    untrack(closeSettings);
   });
 
   const active = $derived(activeTab());
@@ -28,6 +39,9 @@
   {/if}
   <section class="main">
     <TerminalPane sessionId={active?.sessionId ?? null} />
+    {#if settingsPage.open}
+      <SettingsPage />
+    {/if}
   </section>
 </main>
 
@@ -43,6 +57,7 @@
     height: 100vh;
   }
   .main {
+    position: relative;
     flex: 1 1 auto;
     min-width: 0;
     height: 100%;

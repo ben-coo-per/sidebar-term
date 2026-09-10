@@ -120,3 +120,14 @@ export function saveLayout(layout: unknown): Promise<void> {
   if (!inTauri) return mock.saveLayout(layout);
   return invoke("layout_save", { layout });
 }
+
+/** The persisted app settings blob (Hotkeys), or null on first run. Shape is owned by src/lib/hotkeys.svelte.ts. */
+export function loadSettings(): Promise<unknown | null> {
+  if (!inTauri) return mock.loadSettings();
+  return invoke("settings_load");
+}
+
+export function saveSettings(settings: unknown): Promise<void> {
+  if (!inTauri) return mock.saveSettings(settings);
+  return invoke("settings_save", { settings });
+}

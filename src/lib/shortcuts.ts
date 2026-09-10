@@ -1,125 +1,97 @@
-// Capture-phase keydown on window for the app's global shortcuts (docs/architecture.md
-// "Interaction"). Only the combinations below are intercepted (preventDefault + stopPropagation);
+// Capture-phase keydown on window for the app's Hotkeys (docs/architecture.md "Interaction").
+// Which combo drives which action comes from ./hotkeys.svelte.ts (user-rebindable on the
+// Settings page). Only bound combos are intercepted (preventDefault + stopPropagation);
 // everything else, including Cmd-C/V/A/Q, passes through untouched.
 
 import {
   activateTab,
+  activeTab,
+  groupOf,
+  jumpToGroup,
   layout,
   moveTab,
   newGroup,
   newTab,
-  toggleSidebarVisible,
-  visibleTabIds,
   orderedTabIds,
-  groupOf,
+  toggleSidebarVisible,
 } from "./layout.svelte";
 import { requestCloseTab } from "./sidebar/closeTabFlow";
-
-function isMac(): boolean {
-  return typeof navigator !== "undefined" && /Mac/.test(navigator.platform ?? navigator.userAgent);
-}
-
-/** Cmd on macOS, Ctrl elsewhere (v1 targets macOS only, but this keeps dev-in-browser sane). */
-function primary(e: KeyboardEvent): boolean {
-  return isMac() ? e.metaKey : e.ctrlKey;
-}
+import { actionFor, comboFromEvent, isMac, isModifierOnly, type ActionId } from "./hotkeys";
+import { hotkeys } from "./hotkeys.svelte";
+import { toggleSettings } from "./settings/visibility.svelte";
 
 function moveActiveTab(direction: 1 | -1): void {
-  const id = layout.activeTabId;
-  if (!id) return;
-  const tab = layout.tabs[id];
+  const tab = activeTab();
   const group = tab && groupOf(tab);
   if (!tab || !group) return;
-  const idx = group.tabIds.indexOf(id);
-  const targetIndex = idx + direction;
+  const targetIndex = group.tabIds.indexOf(tab.id) + direction;
   if (targetIndex < 0 || targetIndex >= group.tabIds.length) return;
-  moveTab(id, group.id, targetIndex);
+  moveTab(tab.id, group.id, targetIndex);
 }
 
-function stepTab(direction: 1 | -1): void {
-  const order = orderedTabIds();
+/** Activate the Tab `direction` steps from the active one in `order`, wrapping at the ends. */
+function stepThrough(order: string[], direction: 1 | -1): void {
   if (order.length === 0) return;
-  const id = layout.activeTabId;
-  const idx = id ? order.indexOf(id) : -1;
+  const idx = layout.activeTabId ? order.indexOf(layout.activeTabId) : -1;
   const nextIdx = idx === -1 ? 0 : (idx + direction + order.length) % order.length;
   activateTab(order[nextIdx]);
 }
 
-function jumpToVisibleTab(n: number): void {
-  const id = visibleTabIds()[n - 1];
-  if (id) activateTab(id);
+function stepTabInGroup(direction: 1 | -1): void {
+  const tab = activeTab();
+  const group = tab && groupOf(tab);
+  if (group) stepThrough(group.tabIds, direction);
+}
+
+function run(action: ActionId): void {
+  switch (action) {
+    case "tab.new":
+      void newTab();
+      return;
+    case "tab.close":
+      // Asks for confirmation when the Tab's Foreground process isn't the shell.
+      if (layout.activeTabId) void requestCloseTab(layout.activeTabId);
+      return;
+    case "tab.next":
+      stepThrough(orderedTabIds(), 1);
+      return;
+    case "tab.prev":
+      stepThrough(orderedTabIds(), -1);
+      return;
+    case "tab.nextInGroup":
+      stepTabInGroup(1);
+      return;
+    case "tab.prevInGroup":
+      stepTabInGroup(-1);
+      return;
+    case "tab.moveUp":
+      moveActiveTab(-1);
+      return;
+    case "tab.moveDown":
+      moveActiveTab(1);
+      return;
+    case "group.new":
+      newGroup();
+      return;
+    case "sidebar.toggle":
+      toggleSidebarVisible();
+      return;
+    case "settings.toggle":
+      toggleSettings();
+      return;
+    default:
+      // group.jump.N
+      jumpToGroup(Number(action.slice("group.jump.".length)) - 1);
+  }
 }
 
 function handleKeydown(e: KeyboardEvent): void {
-  if (!primary(e)) return;
-
-  // Cmd-T: new Tab
-  if (!e.shiftKey && !e.altKey && e.key.toLowerCase() === "t") {
-    e.preventDefault();
-    e.stopPropagation();
-    void newTab();
-    return;
-  }
-
-  // Cmd-Shift-N: new Group
-  if (e.shiftKey && !e.altKey && e.key.toLowerCase() === "n") {
-    e.preventDefault();
-    e.stopPropagation();
-    newGroup();
-    return;
-  }
-
-  // Cmd-W: close Tab (with confirmation when its Foreground process isn't the shell)
-  if (!e.shiftKey && !e.altKey && e.key.toLowerCase() === "w") {
-    e.preventDefault();
-    e.stopPropagation();
-    if (layout.activeTabId) void requestCloseTab(layout.activeTabId);
-    return;
-  }
-
-  // Cmd-1..9: jump to the Nth visible Tab
-  if (!e.shiftKey && !e.altKey && e.key >= "1" && e.key <= "9") {
-    e.preventDefault();
-    e.stopPropagation();
-    jumpToVisibleTab(Number(e.key));
-    return;
-  }
-
-  // Cmd-Shift-[ / Cmd-Shift-]: previous / next Tab
-  if (e.shiftKey && !e.altKey && (e.key === "[" || e.key === "{")) {
-    e.preventDefault();
-    e.stopPropagation();
-    stepTab(-1);
-    return;
-  }
-  if (e.shiftKey && !e.altKey && (e.key === "]" || e.key === "}")) {
-    e.preventDefault();
-    e.stopPropagation();
-    stepTab(1);
-    return;
-  }
-
-  // Cmd-Opt-Up / Cmd-Opt-Down: move the active Tab within its Group
-  if (e.altKey && !e.shiftKey && e.key === "ArrowUp") {
-    e.preventDefault();
-    e.stopPropagation();
-    moveActiveTab(-1);
-    return;
-  }
-  if (e.altKey && !e.shiftKey && e.key === "ArrowDown") {
-    e.preventDefault();
-    e.stopPropagation();
-    moveActiveTab(1);
-    return;
-  }
-
-  // Cmd-B: toggle sidebar
-  if (!e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") {
-    e.preventDefault();
-    e.stopPropagation();
-    toggleSidebarVisible();
-    return;
-  }
+  if (hotkeys.recording || isModifierOnly(e)) return;
+  const action = actionFor(hotkeys.bindings, comboFromEvent(e, isMac()));
+  if (!action) return;
+  e.preventDefault();
+  e.stopPropagation();
+  run(action);
 }
 
 /** Install the global shortcut listener. Returns a cleanup function. */
