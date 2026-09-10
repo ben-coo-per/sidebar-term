@@ -121,6 +121,21 @@ export function onMenuSettings(cb: () => void): Promise<UnlistenFn> {
   return listen(EVENT_MENU_SETTINGS, () => cb());
 }
 
+/**
+ * For each path printed in the Session (relative, `~/...` or absolute), the absolute path of the
+ * file or directory it names, or null when there is none (always null in a remote Session).
+ */
+export function resolvePaths(sessionId: SessionId, candidates: string[]): Promise<(string | null)[]> {
+  if (!inTauri) return mock.resolvePaths(sessionId, candidates);
+  return invoke("path_resolve", { sessionId, candidates });
+}
+
+/** Open a file or directory (an absolute path from `resolvePaths`) in its default app. */
+export function openPath(path: string): Promise<void> {
+  if (!inTauri) return mock.openPath(path);
+  return invoke("path_open", { path });
+}
+
 /** Real paths of the files in the drop just received (read off the macOS drag pasteboard). */
 export function dropPaths(): Promise<string[]> {
   if (!inTauri) return Promise.resolve([]);

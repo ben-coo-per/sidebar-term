@@ -1,10 +1,10 @@
-// Bridges from a Terminal to macOS: OSC 52 clipboard writes and opening links.
+// Bridges from a Terminal to macOS: OSC 52 clipboard writes and opening links and files.
 
 import type { IClipboardProvider } from "@xterm/addon-clipboard";
 import type { ILinkHandler } from "@xterm/xterm";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { inTauri } from "../ipc";
+import { inTauri, openPath } from "../ipc";
 
 /**
  * OSC 52 provider for `@xterm/addon-clipboard`. The addon's default provider uses
@@ -40,6 +40,17 @@ export function openLinkOnCmdClick(event: MouseEvent, uri: string): void {
   } else {
     window.open(uri, "_blank", "noopener,noreferrer");
   }
+}
+
+/**
+ * Open a file path from the terminal in its default app on double-click, or on Cmd-click like a
+ * URL. The double-click still selects the word under it, as it does anywhere in the terminal.
+ */
+export function openPathOnDoubleClick(event: MouseEvent, path: string): void {
+  // `detail` is the click count: exactly one open per double-click, none for a triple-click.
+  if (event.detail !== (event.metaKey ? 1 : 2)) return;
+  event.preventDefault();
+  openPath(path).catch((err) => console.warn("[terminal] opening file failed", path, err));
 }
 
 /**

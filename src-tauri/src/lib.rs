@@ -8,6 +8,7 @@ mod drop;
 mod layout;
 mod model;
 mod monitor;
+mod paths;
 mod session;
 mod usage;
 
@@ -109,6 +110,31 @@ fn settings_save(app: AppHandle, settings: serde_json::Value) -> Result<(), Stri
     layout::save(&app, layout::SETTINGS, &settings)
 }
 
+/// For each path printed in the Session, the absolute path of the file or directory it names, or
+/// null when there is none. Async so a slow disk stalls a worker thread, not the main thread.
+#[tauri::command]
+async fn path_resolve(
+    sessions: State<'_, SessionManager>,
+    session_id: SessionId,
+    candidates: Vec<String>,
+) -> Result<Vec<Option<String>>, String> {
+    let bases = sessions
+        .probe_target(session_id)
+        .map(|t| paths::bases(&detect::probe(&t)))
+        .unwrap_or_default();
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    Ok(candidates
+        .iter()
+        .map(|c| paths::resolve(c, &bases, home.as_deref()))
+        .collect())
+}
+
+/// Open a file or directory (an absolute path from `path_resolve`) in its default app.
+#[tauri::command]
+async fn path_open(path: String) -> Result<(), String> {
+    paths::open(&path)
+}
+
 /// Paths of the files on the macOS drag pasteboard, i.e. those of the drop just received.
 #[tauri::command]
 fn drop_paths() -> Vec<String> {
@@ -174,6 +200,8 @@ pub fn run() {
             layout_save,
             settings_load,
             settings_save,
+            path_resolve,
+            path_open,
             drop_paths,
             drop_save,
         ])

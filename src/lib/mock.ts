@@ -7,6 +7,7 @@
 //   cd ~/Dev/jack             -> main Worktree on `main`
 //   cd ~/Dev/jack/.claude/worktrees/navbar -> linked Worktree `navbar` on `navbar-new-gift`
 //   cd ~/Dev/detached         -> detached HEAD
+//   ls                        -> file paths to double-click (opening one logs it to the console)
 // Layout persistence uses localStorage. Activity is invented: each fake Session has a shell (and
 // its foreground program, busy when it is an agent) next to a fixed cast of jittering system
 // processes. Usage is invented too: fixed limits, Claude Code's 5-hour window creeping up.
@@ -211,6 +212,23 @@ export async function killSession(id: SessionId): Promise<void> {
 export async function sessionInfo(id: SessionId): Promise<SessionInfo | null> {
   const s = sessions.get(id);
   return s ? info(s) : null;
+}
+
+/** What `ls` lists: every fake cwd holds these, so its output has paths to double-click. */
+const FAKE_FILES = ["README.md", "src", "package.json"];
+
+export async function resolvePaths(id: SessionId, candidates: string[]): Promise<(string | null)[]> {
+  const s = sessions.get(id);
+  return candidates.map((c) => {
+    if (!s || s.remote) return null;
+    const abs = c.startsWith("~/") ? HOME + c.slice(1) : c.startsWith("/") ? c : `${s.cwd}/${c}`;
+    const name = abs.slice(abs.lastIndexOf("/") + 1);
+    return FAKE_FILES.includes(name) ? abs : null;
+  });
+}
+
+export async function openPath(path: string): Promise<void> {
+  console.info("[mock] open", path);
 }
 
 export async function onSessionInfo(cb: InfoCb) {
