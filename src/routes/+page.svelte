@@ -7,11 +7,16 @@
   import TerminalPane from "$lib/terminal/TerminalPane.svelte";
   import { activeTab, initLayout, layout } from "$lib/layout.svelte";
   import { initShortcuts } from "$lib/shortcuts";
+  import { initDropGuard } from "$lib/terminal/drop";
 
   $effect(() => {
     void initLayout();
     const stopShortcuts = initShortcuts();
-    return stopShortcuts;
+    const stopDropGuard = initDropGuard();
+    return () => {
+      stopShortcuts();
+      stopDropGuard();
+    };
   });
 
   const active = $derived(activeTab());

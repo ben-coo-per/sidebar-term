@@ -2,10 +2,12 @@
 <script lang="ts">
   import { terminals } from "./manager";
   import { TERMINAL_BACKGROUND } from "./theme";
+  import { carriesFiles, resolveDroppedPaths, shellEscape } from "./drop";
   import type { SessionId } from "../types";
 
   let { sessionId }: { sessionId: SessionId | null } = $props();
   let el: HTMLDivElement;
+  let dropTarget = $state(false);
 
   $effect(() => {
     const id = sessionId;
@@ -22,18 +24,49 @@
       terminals.focus(id);
     };
     const onClick = () => terminals.focus(id);
+    // Dropped files paste as shell-escaped paths (see ./drop.ts).
+    const onDragOver = (ev: DragEvent) => {
+      if (!carriesFiles(ev)) return;
+      ev.preventDefault();
+      ev.dataTransfer!.dropEffect = "copy";
+      dropTarget = true;
+    };
+    const onDragLeave = (ev: DragEvent) => {
+      if (!el.contains(ev.relatedTarget as Node | null)) dropTarget = false;
+    };
+    const onDrop = (ev: DragEvent) => {
+      if (!carriesFiles(ev)) return;
+      ev.preventDefault();
+      dropTarget = false;
+      const files = Array.from(ev.dataTransfer!.files);
+      void resolveDroppedPaths(files).then((paths) => {
+        if (paths.length) terminals.paste(id, paths.map(shellEscape).join(" ") + " ");
+      });
+    };
     el.addEventListener("mousedown", onMouseDown);
     el.addEventListener("click", onClick);
+    el.addEventListener("dragover", onDragOver);
+    el.addEventListener("dragleave", onDragLeave);
+    el.addEventListener("drop", onDrop);
     return () => {
       ro.disconnect();
       el.removeEventListener("mousedown", onMouseDown);
       el.removeEventListener("click", onClick);
+      el.removeEventListener("dragover", onDragOver);
+      el.removeEventListener("dragleave", onDragLeave);
+      el.removeEventListener("drop", onDrop);
+      dropTarget = false;
       terminals.unmount(id);
     };
   });
 </script>
 
-<div class="terminal-pane" bind:this={el} style:--terminal-bg={TERMINAL_BACKGROUND}></div>
+<div
+  class="terminal-pane"
+  class:drop-target={dropTarget}
+  bind:this={el}
+  style:--terminal-bg={TERMINAL_BACKGROUND}
+></div>
 
 <style>
   .terminal-pane {
@@ -44,5 +77,9 @@
     padding: 6px 4px 4px 10px;
     overflow: hidden;
     background: var(--terminal-bg);
+  }
+  /* Drawn in the padding, around the Terminal. */
+  .terminal-pane.drop-target {
+    box-shadow: inset 0 0 0 2px var(--accent);
   }
 </style>

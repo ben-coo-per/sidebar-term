@@ -136,4 +136,7 @@ header shows CPU and Memory Used instead.
 
 `titleBarStyle: Overlay`, hidden title: the sidebar runs to the top of the window, leaves ~28 px for
 the traffic lights, and marks its header `data-tauri-drag-region`. `dragDropEnabled: false` so HTML5
-drag-and-drop works in the sidebar.
+drag-and-drop works in the sidebar: on macOS Tauri's handler claims every drag, including the
+webview's own. Files dropped on a Terminal therefore arrive as DOM `File`s; they paste as
+shell-escaped paths read off the drag pasteboard, or saved to a temp dir when they have none
+(`src/lib/terminal/drop.ts`, `src-tauri/src/drop.rs`).

@@ -97,6 +97,19 @@ export function onActivity(cb: (snapshot: ActivitySnapshot) => void): Promise<Un
   return listen<ActivitySnapshot>(EVENT_ACTIVITY, (e) => cb(e.payload));
 }
 
+/** Real paths of the files in the drop just received (read off the macOS drag pasteboard). */
+export function dropPaths(): Promise<string[]> {
+  if (!inTauri) return Promise.resolve([]);
+  return invoke("drop_paths");
+}
+
+/** Save a dropped file that has no path (e.g. a file promise) to a temp dir; resolves to its path. */
+export async function saveDroppedFile(file: File): Promise<string> {
+  if (!inTauri) return file.name;
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  return invoke("drop_save", bytes, { headers: { "x-file-name": encodeURIComponent(file.name) } });
+}
+
 /** The persisted sidebar layout blob, or null on first run. Shape is owned by src/lib/layout. */
 export function loadLayout(): Promise<unknown | null> {
   if (!inTauri) return mock.loadLayout();

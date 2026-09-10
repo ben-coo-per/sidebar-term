@@ -4,6 +4,7 @@
 
 mod activity;
 mod detect;
+mod drop;
 mod layout;
 mod model;
 mod monitor;
@@ -82,6 +83,18 @@ fn layout_save(app: AppHandle, layout: serde_json::Value) -> Result<(), String> 
     layout::save(&app, &layout)
 }
 
+/// Paths of the files on the macOS drag pasteboard, i.e. those of the drop just received.
+#[tauri::command]
+fn drop_paths() -> Vec<String> {
+    drop::pasteboard_paths()
+}
+
+/// Save a dropped file that has no path (raw body, name in `x-file-name`); returns its new path.
+#[tauri::command]
+fn drop_save(request: tauri::ipc::Request<'_>) -> Result<String, String> {
+    drop::save(request)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -112,6 +125,8 @@ pub fn run() {
             activity_watch,
             layout_load,
             layout_save,
+            drop_paths,
+            drop_save,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

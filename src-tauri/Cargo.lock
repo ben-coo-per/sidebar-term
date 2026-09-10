@@ -3390,6 +3390,8 @@ name = "sidebar-term"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "objc2-app-kit",
+ "objc2-foundation",
  "portable-pty",
  "serde",
  "serde_json",

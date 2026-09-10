@@ -52,6 +52,8 @@ export interface TerminalManager {
   /** Detach the Terminal from the DOM; the Session and its scrollback live on. */
   unmount(sessionId: SessionId): void;
   focus(sessionId: SessionId): void;
+  /** Paste text as if from the clipboard (bracket-wrapped when the app asked for it), and focus. */
+  paste(sessionId: SessionId, text: string): void;
   /** Re-fit the mounted Terminal to its container and resize the pty. */
   fit(sessionId: SessionId): void;
   /** Kill the Session and dispose its Terminal. */
@@ -334,6 +336,13 @@ export const terminals: TerminalManager = {
 
   focus(sessionId) {
     entries.get(sessionId)?.term.focus();
+  },
+
+  paste(sessionId, text) {
+    const e = entries.get(sessionId);
+    if (!e) return;
+    e.term.paste(text);
+    e.term.focus();
   },
 
   fit(sessionId) {
