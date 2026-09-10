@@ -133,21 +133,24 @@
     {/if}
   </span>
 
-  {#if editing}
-    <input
-      class="title-input"
-      bind:value={draft}
-      bind:this={inputEl}
-      onkeydown={onEditKeydown}
-      onblur={commit}
-      onclick={(e) => e.stopPropagation()}
-    />
-  {:else}
-    <span class="title" role="button" tabindex="-1" ondblclick={startEdit}>{title}</span>
-  {/if}
-
-  <span class="badge-slot">
-    <Badge {git} {remote} />
+  <span class="text">
+    {#if editing}
+      <input
+        class="title-input"
+        bind:value={draft}
+        bind:this={inputEl}
+        onkeydown={onEditKeydown}
+        onblur={commit}
+        onclick={(e) => e.stopPropagation()}
+      />
+    {:else}
+      <span class="title" role="button" tabindex="-1" ondblclick={startEdit}>{title}</span>
+    {/if}
+    {#if git || remote}
+      <span class="badge-line">
+        <Badge {git} {remote} />
+      </span>
+    {/if}
   </span>
 
   <button
@@ -170,8 +173,8 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    height: var(--row-height);
-    padding: 0 8px 0 20px;
+    min-height: var(--row-height);
+    padding: 4px 8px 4px 20px;
     border-radius: var(--radius-sm);
     margin: 0 4px;
     cursor: default;
@@ -268,9 +271,16 @@
     padding: 1px 4px;
     outline: none;
   }
-  .badge-slot {
-    flex: none;
-    max-width: 40%;
+  .text {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .badge-line {
+    display: flex;
+    min-width: 0;
     overflow: hidden;
   }
   .close {

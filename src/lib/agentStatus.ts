@@ -85,14 +85,16 @@ function basename(path: string): string {
 }
 
 /**
- * The automatic Title: agent name, else the OSC title, else the Foreground process when it
+ * The automatic Title: agent name, else the OSC title of a running program, else the Foreground process when it
  * isn't the shell, else the cwd basename (`~` for home). Per docs/architecture.md "Naming".
  * A user rename always wins over this and is applied by the caller, not here.
  */
 export function computeAutomaticTitle(input: AutomaticTitleInput): string {
   const { agent, oscTitle, foreground, shellIsForeground, cwd, home } = input;
   if (agent) return AGENT_NAMES[agent];
-  if (oscTitle && oscTitle.trim() !== "") return oscTitle.trim();
+  // While the shell sits at its prompt, its own title (typically `user@host:path` from the
+  // user's zsh theme) says nothing the cwd doesn't; only a running program's title is useful.
+  if (!shellIsForeground && oscTitle && oscTitle.trim() !== "") return oscTitle.trim();
   if (foreground && !shellIsForeground) return foreground;
   if (!cwd) return "~";
   if (home && cwd === home) return "~";

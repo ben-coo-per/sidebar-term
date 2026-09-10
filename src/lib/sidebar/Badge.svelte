@@ -7,10 +7,10 @@
 
   let { git, remote }: { git: GitInfo | null; remote: boolean } = $props();
 
-  const refLabel = $derived(git ? (git.branch ?? (git.headShort ? `#${git.headShort}` : "?")) : "");
-  const summary = $derived(
-    git ? (git.worktreeName ? `${git.repoName} ⎇ ${git.worktreeName} · ${refLabel}` : `${git.repoName} · ${refLabel}`) : "",
-  );
+  const refLabel = $derived(git ? (git.branch ?? (git.headShort ? `@${git.headShort}` : "?")) : "");
+  /** Linked Worktree: `repo/worktree`, then the branch unless it just repeats the worktree name. */
+  const place = $derived(git ? (git.worktreeName ? `${git.repoName}/${git.worktreeName}` : git.repoName) : "");
+  const showRef = $derived(!!git && !(git.worktreeName && git.branch === git.worktreeName));
   const tooltip = $derived(
     git
       ? [
@@ -32,7 +32,7 @@
 {:else if git}
   <span class="badge" title={tooltip}>
     <span class="dot" style:background={repoColorVar(git.commonDir)}></span>
-    <span class="label">{summary}</span>
+    <span class="place" class:linked={!!git.worktreeName}>{place}</span>{#if showRef}<span class="sep">·</span><span class="ref">{refLabel}</span>{/if}
   </span>
 {/if}
 
@@ -54,6 +54,29 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
+  }
+  /* Branch stays readable; the repo/worktree part gives up width first. */
+  .place,
+  .ref {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .place {
+    flex: 0 3 auto;
+    min-width: 5ch; /* the repo name never disappears entirely */
+  }
+  .place.linked {
+    font-style: italic;
+  }
+  .ref {
+    flex: 0 1 auto;
+    color: var(--text-secondary);
+  }
+  .sep {
+    flex: none;
+    margin: 0 1px;
   }
   .label {
     overflow: hidden;

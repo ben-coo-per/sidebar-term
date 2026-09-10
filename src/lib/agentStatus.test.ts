@@ -181,6 +181,17 @@ describe("computeAutomaticTitle", () => {
     ).toBe("vim: notes.md");
   });
 
+  it("ignores the shell's own OSC title while the shell is at its prompt", () => {
+    expect(
+      computeAutomaticTitle({
+        ...base,
+        oscTitle: "you@mac:~/Dev/jack",
+        shellIsForeground: true,
+        cwd: "/Users/you/Dev/jack",
+      }),
+    ).toBe("jack");
+  });
+
   it("falls back to the foreground process when it is not the shell and there is no title", () => {
     expect(computeAutomaticTitle({ ...base, foreground: "vim", shellIsForeground: false })).toBe("vim");
   });
