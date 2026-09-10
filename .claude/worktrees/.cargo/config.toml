@@ -1,0 +1,13 @@
+# Every worktree under .claude/worktrees/ builds into the main checkout's src-tauri/target, so a
+# new worktree reuses the ~400 already-compiled dependencies instead of adding gigabytes of its own.
+#
+# Cargo reads .cargo/config.toml from every ancestor of the directory it runs in. A worktree at
+# <repo>/.claude/worktrees/<name>/ finds the main checkout's copy of this file (its own copy is in a
+# subdirectory, off its search path); the main checkout never sees it. Relative paths here resolve
+# against <repo>/.claude/worktrees/.
+#
+# Shared consequences: builds in two checkouts at once wait on each other's lock, and
+# `cargo clean` in any worktree clears the main checkout's build too.
+
+[build]
+target-dir = "../../src-tauri/target"

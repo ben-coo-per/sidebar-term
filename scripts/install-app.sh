@@ -6,7 +6,9 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 name="sidebar-term"
 dest="/Applications/$name.app"
-target="${CARGO_TARGET_DIR:-$root/src-tauri/target}"
+# Ask cargo: a worktree builds into the main checkout's target (.claude/worktrees/.cargo/config.toml).
+target="$(cargo metadata --format-version 1 --no-deps --manifest-path "$root/src-tauri/Cargo.toml" |
+  node -e 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => console.log(JSON.parse(s).target_directory))')"
 
 if pgrep -x "$name" >/dev/null; then
   echo "Quit $name first (Cmd-Q), then run this again." >&2

@@ -28,5 +28,12 @@ pnpm app:icon         # regenerate every size
 pnpm app:install      # rebuild, reinstall, refresh the Dock
 ```
 
+## Worktrees
+
+Worktrees under `.claude/worktrees/` build Rust into the main checkout's `src-tauri/target`
+(`.claude/worktrees/.cargo/config.toml`), so a new worktree doesn't compile and store its own copy of
+every dependency (~2-4 GB). Builds in two checkouts at once wait for each other, and `cargo clean`
+anywhere clears the shared build.
+
 `scripts/demo/run.sh` starts the app in dev mode with fake Claude Code and Codex agents, to see the
 agent icon and status without running a real agent.
