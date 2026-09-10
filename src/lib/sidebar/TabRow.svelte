@@ -276,7 +276,7 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 1px;
   }
   .badge-line {
     display: flex;

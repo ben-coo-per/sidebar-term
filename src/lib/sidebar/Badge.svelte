@@ -44,7 +44,8 @@
     min-width: 0;
     font-size: 11px;
     color: var(--text-tertiary);
-    line-height: 1;
+    /* Tall enough for descenders: .place/.ref clip to their line box (overflow: hidden). */
+    line-height: 1.3;
   }
   .badge.remote {
     color: var(--text-secondary);
