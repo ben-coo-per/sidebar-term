@@ -3,6 +3,7 @@
 // the fake monitor reports, so every sidebar state can be exercised by hand:
 //   claude | codex | gemini   -> Agent session (type `exit` to return to the shell)
 //   ssh                       -> remote hop
+//   npm | pnpm | uv ...       -> a long-running command (`exit` or Ctrl-C to stop it)
 //   cd <path>                 -> cwd; paths under the fake repos below get git info
 //   cd ~/Dev/jack             -> main Worktree on `main`
 //   cd ~/Dev/jack/.claude/worktrees/navbar -> linked Worktree `navbar` on `navbar-new-gift`
@@ -11,7 +12,8 @@
 // Layout persistence uses localStorage. Activity is invented: each fake Session has a shell (and
 // its foreground program, busy when it is an agent) next to a fixed cast of jittering system
 // processes. Usage is invented too: fixed limits, Claude Code's 5-hour window creeping up.
-// Caffeinate is only a flag: nothing is kept awake.
+// Caffeinate is only a flag: nothing is kept awake. Resume is kept in localStorage like Rust's
+// resume.json: start `claude` or `npm run dev` in a Tab, reload the page, and the banner offers it.
 
 import type { SpawnOptions } from "./ipc";
 import type {
@@ -21,6 +23,7 @@ import type {
   AgentKind,
   AgentUsage,
   GitInfo,
+  ResumeEntry,
   SessionExit,
   SessionId,
   SessionInfo,
@@ -39,6 +42,9 @@ interface FakeSession {
   fg: string;
   agent: AgentKind | null;
   remote: boolean;
+  /** The command line of a fake long-running command, while one runs. */
+  command: string | null;
+  resumeKey: string | null;
 }
 
 const HOME = "/Users/you";
@@ -84,6 +90,7 @@ function info(s: FakeSession): SessionInfo {
 }
 
 function emit(s: FakeSession) {
+  recordResume();
   const i = info(s);
   setTimeout(() => infoCbs.forEach((cb) => cb(i)), 50);
 }
@@ -104,6 +111,7 @@ function run(s: FakeSession, cmd: string) {
       s.fg = "zsh";
       s.agent = null;
       s.remote = false;
+      s.command = null;
       out(s, "\x1b]0;\x07");
       emit(s);
     } else if (head) {
@@ -138,6 +146,14 @@ function run(s: FakeSession, cmd: string) {
       if (head === "gemini") out(s, "\x1b]0;◇ Ready (jack)\x07");
       emit(s);
       break;
+    case "npm":
+    case "pnpm":
+    case "uv":
+      s.fg = head;
+      s.command = cmd.trim();
+      out(s, `\x1b[2m(fake) ${s.command}: listening on http://localhost:3000\x1b[0m\r\n`);
+      emit(s);
+      break;
     case "ssh":
       s.fg = "ssh";
       s.remote = true;
@@ -146,10 +162,11 @@ function run(s: FakeSession, cmd: string) {
       break;
     case "exit":
       sessions.delete(s.id);
+      recordResume();
       exitCbs.forEach((cb) => cb({ sessionId: s.id, code: 0 }));
       return;
     case "help":
-      out(s, "fake shell: cd, claude, codex, gemini, ssh, exit, ls\r\n");
+      out(s, "fake shell: cd, claude, codex, gemini, ssh, npm, pnpm, uv, exit, ls\r\n");
       break;
     case "ls":
       out(s, "README.md  src  package.json\r\n");
@@ -169,6 +186,8 @@ export async function spawnSession(opts: SpawnOptions): Promise<SessionId> {
     fg: "zsh",
     agent: null,
     remote: false,
+    command: null,
+    resumeKey: opts.resumeKey ?? null,
   };
   sessions.set(s.id, s);
   setTimeout(() => {
@@ -196,7 +215,15 @@ export async function writeSession(id: SessionId, data: string): Promise<void> {
     } else if (ch === "\x03") {
       s.line = "";
       out(s, "^C\r\n");
+      if (s.command) {
+        s.fg = "zsh";
+        s.command = null;
+        emit(s);
+      }
       prompt(s);
+    } else if (ch === "\x15") {
+      out(s, "\b \b".repeat(s.line.length));
+      s.line = "";
     } else if (ch >= " ") {
       s.line += ch;
       out(s, ch);
@@ -207,7 +234,9 @@ export async function writeSession(id: SessionId, data: string): Promise<void> {
 export async function resizeSession(_id: SessionId, _c: number, _r: number): Promise<void> {}
 
 export async function killSession(id: SessionId): Promise<void> {
-  if (sessions.delete(id)) exitCbs.forEach((cb) => cb({ sessionId: id, code: null }));
+  if (!sessions.delete(id)) return;
+  recordResume();
+  exitCbs.forEach((cb) => cb({ sessionId: id, code: null }));
 }
 
 export async function sessionInfo(id: SessionId): Promise<SessionInfo | null> {
@@ -410,4 +439,59 @@ export async function saveSettings(settings: unknown): Promise<void> {
   } catch {
     /* ignore */
   }
+}
+
+// --- Resume: localStorage stands in for resume.json ---------------------------------------------
+
+const RESUME_KEY = "sidebar-term:mock-resume";
+
+interface MockResume {
+  running: ResumeEntry[];
+  leftover: ResumeEntry[];
+}
+
+function readResume(): MockResume {
+  try {
+    const raw = JSON.parse(localStorage.getItem(RESUME_KEY) ?? "null");
+    return { running: raw?.running ?? [], leftover: raw?.leftover ?? [] };
+  } catch {
+    return { running: [], leftover: [] };
+  }
+}
+
+function writeResume(r: MockResume): void {
+  try {
+    localStorage.setItem(RESUME_KEY, JSON.stringify(r));
+  } catch {
+    /* ignore */
+  }
+}
+
+// Loading this module is a launch: what the last page was running becomes leftover.
+if (typeof localStorage !== "undefined") {
+  const r = readResume();
+  const keys = new Set(r.running.map((e) => e.key));
+  writeResume({ running: [], leftover: [...r.leftover.filter((e) => !keys.has(e.key)), ...r.running] });
+}
+
+function recordResume(): void {
+  const running: ResumeEntry[] = [];
+  for (const s of sessions.values()) {
+    if (!s.resumeKey) continue;
+    if (s.agent === "claude") {
+      running.push({ key: s.resumeKey, kind: "claude", line: "claude --resume 5b6d103b-fake", cwd: s.cwd });
+    } else if (s.command) {
+      running.push({ key: s.resumeKey, kind: "command", line: s.command, cwd: s.cwd });
+    }
+  }
+  writeResume({ ...readResume(), running });
+}
+
+export async function resumeLeftover(): Promise<ResumeEntry[]> {
+  return readResume().leftover;
+}
+
+export async function resumeForget(keys: string[]): Promise<void> {
+  const r = readResume();
+  writeResume({ ...r, leftover: r.leftover.filter((e) => !keys.includes(e.key)) });
 }

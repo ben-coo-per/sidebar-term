@@ -167,6 +167,30 @@ pub struct UsageSnapshot {
     pub agents: Vec<AgentUsage>,
 }
 
+/// What a Resume brings back in a Tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResumeKind {
+    /// A Claude Code conversation, reopened with `claude --resume <session id>`.
+    Claude,
+    /// Any other Foreground job, rerun from its argv (`npm run dev`, `uv run app.py`).
+    Command,
+}
+
+/// How to start again what one Session was running, should the app close while it runs.
+/// Recorded by `resume.rs`; the Resume banner offers the previous run's entries.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResumeEntry {
+    /// The key the webview gave the Session at spawn (its Tab id). Opaque to Rust.
+    pub key: String,
+    pub kind: ResumeKind,
+    /// The shell command line to type, quoted for zsh/bash: `claude --resume 5b6d…`, `npm run dev`.
+    pub line: String,
+    /// Canonical directory to run `line` in.
+    pub cwd: Option<String>,
+}
+
 /// Event names. Frontend listens with `listen(EVENT_SESSION_INFO, ...)`.
 pub const EVENT_SESSION_INFO: &str = "session-info";
 pub const EVENT_SESSION_EXIT: &str = "session-exit";

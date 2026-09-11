@@ -3,6 +3,7 @@
 
 pub mod git;
 pub mod process;
+pub mod resume;
 #[cfg(test)]
 pub(crate) mod testutil;
 

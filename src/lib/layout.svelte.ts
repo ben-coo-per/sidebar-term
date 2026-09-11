@@ -257,7 +257,7 @@ export async function initLayout(): Promise<void> {
     for (const t of parsed.tabs) {
       let sessionId: SessionId | null = null;
       try {
-        sessionId = await terminals.create({ cwd: t.lastCwd });
+        sessionId = await terminals.create({ cwd: t.lastCwd, resumeKey: t.id });
       } catch {
         sessionId = null; // respawn failed (e.g. bad cwd); keep the Tab, session-less
       }
@@ -277,8 +277,9 @@ export async function initLayout(): Promise<void> {
   } else {
     const group: Group = { id: newId("group"), name: DEFAULT_GROUP_NAME, collapsed: false, tabIds: [] };
     layout.groups = [group];
-    const sessionId = await terminals.create({});
-    const tab: Tab = { id: newId("tab"), sessionId, groupId: group.id, customTitle: null, lastCwd: null };
+    const id = newId("tab");
+    const sessionId = await terminals.create({ resumeKey: id });
+    const tab: Tab = { id, sessionId, groupId: group.id, customTitle: null, lastCwd: null };
     layout.tabs[tab.id] = tab;
     group.tabIds.push(tab.id);
     sessionToTab.set(sessionId, tab.id);
@@ -321,8 +322,8 @@ export async function newTab(opts?: { cwd?: string | null; groupId?: string }): 
   if (!groupId) throw new Error("layout: no Group to add a Tab to");
   const cwd = opts?.cwd ?? active?.lastCwd ?? null;
 
-  const sessionId = await terminals.create({ cwd });
   const id = newId("tab");
+  const sessionId = await terminals.create({ cwd, resumeKey: id });
   const tab: Tab = { id, sessionId, groupId, customTitle: null, lastCwd: cwd };
   layout.tabs[id] = tab;
   sessionToTab.set(sessionId, id);

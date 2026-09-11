@@ -13,11 +13,14 @@
   import { onMenuSettings } from "$lib/ipc";
   import { initDropGuard } from "$lib/terminal/drop";
   import SettingsPage from "$lib/settings/SettingsPage.svelte";
+  import ResumeBanner from "$lib/resume/ResumeBanner.svelte";
+  import { initResume } from "$lib/resume/resume.svelte";
   import { closeSettings, openSettings, settingsPage } from "$lib/settings/visibility.svelte";
   import { untrack } from "svelte";
 
   $effect(() => {
-    void initLayout();
+    // Resume needs the Tabs: it drops entries whose Tab is gone.
+    void initLayout().then(initResume);
     void initHotkeys();
     void initUsageSettings();
     const stopShortcuts = initShortcuts();
@@ -46,7 +49,10 @@
     <Sidebar />
   {/if}
   <section class="main">
-    <TerminalPane sessionId={active?.sessionId ?? null} />
+    <div class="terminal">
+      <TerminalPane sessionId={active?.sessionId ?? null} />
+    </div>
+    <ResumeBanner />
     {#if settingsPage.open}
       <SettingsPage />
     {/if}
@@ -66,9 +72,16 @@
   }
   .main {
     position: relative;
+    display: flex;
+    flex-direction: column;
     flex: 1 1 auto;
     min-width: 0;
     height: 100%;
     background: var(--term-bg);
+  }
+  /* The Resume banner, when shown, takes its height from the Terminal, which refits. */
+  .terminal {
+    flex: 1 1 auto;
+    min-height: 0;
   }
 </style>

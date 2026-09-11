@@ -13,6 +13,7 @@ import {
   EVENT_USAGE,
   type ActivitySnapshot,
   type AgentKind,
+  type ResumeEntry,
   type SessionExit,
   type SessionId,
   type SessionInfo,
@@ -26,6 +27,8 @@ export interface SpawnOptions {
   cwd?: string | null;
   cols: number;
   rows: number;
+  /** Key for this Session in Resume entries: its Tab id. A Session without one is never resumed. */
+  resumeKey?: string | null;
   /** Raw pty output bytes, in order. Feed straight to `terminal.write(bytes)`. */
   onData: (bytes: Uint8Array) => void;
 }
@@ -40,6 +43,7 @@ export async function spawnSession(opts: SpawnOptions): Promise<SessionId> {
     cwd: opts.cwd ?? null,
     cols: opts.cols,
     rows: opts.rows,
+    resumeKey: opts.resumeKey ?? null,
     onData,
   });
 }
@@ -166,6 +170,18 @@ export async function saveDroppedFile(file: File): Promise<string> {
   if (!inTauri) return file.name;
   const bytes = new Uint8Array(await file.arrayBuffer());
   return invoke("drop_save", bytes, { headers: { "x-file-name": encodeURIComponent(file.name) } });
+}
+
+/** What earlier runs left running and was not yet resumed or dismissed: the Resume banner's rows. */
+export function resumeLeftover(): Promise<ResumeEntry[]> {
+  if (!inTauri) return mock.resumeLeftover();
+  return invoke("resume_leftover");
+}
+
+/** Drop leftover Resume entries by key (resumed, dismissed, or their Tab is gone). */
+export function resumeForget(keys: string[]): Promise<void> {
+  if (!inTauri) return mock.resumeForget(keys);
+  return invoke("resume_forget", { keys });
 }
 
 /** The persisted sidebar layout blob, or null on first run. Shape is owned by src/lib/layout. */

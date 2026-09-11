@@ -10,10 +10,11 @@ mod layout;
 mod model;
 mod monitor;
 mod paths;
+mod resume;
 mod session;
 mod usage;
 
-use model::{AgentKind, SessionId, SessionInfo, EVENT_CAFFEINATE, EVENT_MENU_SETTINGS};
+use model::{AgentKind, ResumeEntry, SessionId, SessionInfo, EVENT_CAFFEINATE, EVENT_MENU_SETTINGS};
 use session::SessionManager;
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
@@ -29,9 +30,10 @@ fn session_spawn(
     cwd: Option<String>,
     cols: u16,
     rows: u16,
+    resume_key: Option<String>,
     on_data: Channel<InvokeResponseBody>,
 ) -> Result<SessionId, String> {
-    sessions.spawn(app, cwd, cols, rows, on_data)
+    sessions.spawn(app, cwd, cols, rows, resume_key, on_data)
 }
 
 #[tauri::command]
@@ -61,13 +63,15 @@ fn session_kill(sessions: State<'_, SessionManager>, session_id: SessionId) -> R
 
 /// Kill every Session and stop Activity and Usage reading. The webview calls this once at startup
 /// so a webview reload does not leave the previous page's shells (or `ps` runs) going with nowhere
-/// to send output.
+/// to send output. What those shells were running becomes Resume leftover, for the new page.
 #[tauri::command]
 fn session_reset(
     sessions: State<'_, SessionManager>,
     activity: State<'_, activity::Activity>,
     usage: State<'_, usage::Usage>,
+    resume: State<'_, resume::Resume>,
 ) {
+    resume.end_run(resume::entries(&sessions.keyed_targets()));
     sessions.kill_all();
     activity.watch(false);
     usage.watch(false, Vec::new());
@@ -101,6 +105,18 @@ fn caffeinate_state(caffeinate: State<'_, caffeinate::Caffeinate>) -> bool {
 #[tauri::command]
 fn caffeinate_set(caffeinate: State<'_, caffeinate::Caffeinate>, on: bool) -> Result<bool, String> {
     caffeinate.set(on)
+}
+
+/// What earlier runs left running and the webview has not yet resumed or dismissed (Resume).
+#[tauri::command]
+fn resume_leftover(resume: State<'_, resume::Resume>) -> Vec<ResumeEntry> {
+    resume.leftover()
+}
+
+/// Drop leftover Resume entries by key: resumed, dismissed, or their Tab is gone.
+#[tauri::command]
+fn resume_forget(resume: State<'_, resume::Resume>, keys: Vec<String>) {
+    resume.forget(&keys);
 }
 
 #[tauri::command]
@@ -201,6 +217,17 @@ pub fn run() {
                     eprintln!("caffeinate: emit failed: {e}");
                 }
             }));
+            let resume_file = layout::path(&handle, layout::RESUME)
+                .inspect_err(|e| eprintln!("resume: no app data dir ({e}); not persisted"))
+                .ok();
+            app.manage(resume::Resume::open(resume_file));
+            let for_resume = handle.clone();
+            resume::spawn(move || {
+                let targets = for_resume.state::<SessionManager>().keyed_targets();
+                for_resume
+                    .state::<resume::Resume>()
+                    .record(resume::entries(&targets));
+            });
             app.manage(usage::spawn(handle));
             Ok(())
         })
@@ -217,6 +244,8 @@ pub fn run() {
             usage_watch,
             caffeinate_state,
             caffeinate_set,
+            resume_leftover,
+            resume_forget,
             layout_load,
             layout_save,
             settings_load,
@@ -231,7 +260,12 @@ pub fn run() {
 
     app.run(|handle, event| {
         if let RunEvent::Exit = event {
-            handle.state::<SessionManager>().kill_all();
+            let sessions = handle.state::<SessionManager>();
+            // Record what is running before killing it, so the next launch can resume it.
+            if let Some(resume) = handle.try_state::<resume::Resume>() {
+                resume.finish(resume::entries(&sessions.keyed_targets()));
+            }
+            sessions.kill_all();
         }
     });
 }

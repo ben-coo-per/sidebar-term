@@ -56,6 +56,14 @@ _Avoid_: Toolbar, titlebar buttons, status bar
 The Tray toggle that keeps the Mac awake (display and system) while on, by running macOS's `caffeinate` in the background, never in a Session.
 _Avoid_: Keep awake, no-sleep, Amphetamine
 
+**Resume**:
+Starting again, in the same Tab, what its Session was running when the app last closed (a crash, a quit, a restart to install): a Claude Code conversation (`claude --resume <id>`) or any other command, rerun from its command line. Codex and Gemini conversations are not resumed.
+_Avoid_: Restore, recover, reopen (and not the flow-control resume of a paused Session)
+
+**Resume banner**:
+The dismissable bar at the bottom of the Terminal area, shown after a launch when the last run closed with Tabs still running something. It lists them, resumes every Claude Code conversation or reruns every command with one button each, or one Tab at a time.
+_Avoid_: Toast, notification, crash dialog
+
 **Activity**:
 The panel view showing the Mac's CPU and memory, split between sessions (each in its tab colour) and every other process (muted grey), with a list of the busiest processes.
 _Avoid_: Activity monitor (that is Apple's app), stats, usage

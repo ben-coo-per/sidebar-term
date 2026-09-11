@@ -16,7 +16,9 @@ pnpm app:install      # release build -> /Applications/sidebar-term.app, pinned 
 Run the same command to update the installed app after pulling or changing code. It's safe to run
 from inside the app: it builds first, then quits the app, installs the new build and relaunches it
 (log in `$TMPDIR/sidebar-term-install.log`). Tabs come back at their last cwd, but whatever was
-running in them, agents included, is killed.
+running in them, agents included, is killed. The relaunched app then offers to bring it back: a banner at
+the bottom resumes each Claude Code conversation (`claude --resume <id>`) and reruns other commands
+(`npm run dev`, `uv run ...`) in their Tabs. It does the same after a crash or any quit.
 
 ## App icon
 
