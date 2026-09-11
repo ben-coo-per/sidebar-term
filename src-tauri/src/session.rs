@@ -92,23 +92,28 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 #[derive(Default)]
 pub struct SessionManager {
     host: PtyHost,
+    /// The webview's key for each Session that has one (its Tab id), for Resume. Keys of Sessions
+    /// that have exited are dropped by `keyed_targets`.
+    resume_keys: Mutex<HashMap<SessionId, String>>,
 }
 
 impl SessionManager {
     /// Spawn the user's login shell (`$SHELL -l`, fallback `/bin/zsh`) on a new pty of `cols`x`rows`
     /// in `cwd` (fallback `$HOME`). Output bytes go to `on_data` as `InvokeResponseBody::Raw`.
     /// When the shell exits, emit `EVENT_SESSION_EXIT` with `SessionExit` via `app`,
-    /// then drop the Session from the registry.
+    /// then drop the Session from the registry. `resume_key` is the webview's key for the Session
+    /// in Resume entries (`resume.rs`); a Session without one is never resumed.
     pub fn spawn(
         &self,
         app: AppHandle,
         cwd: Option<String>,
         cols: u16,
         rows: u16,
+        resume_key: Option<String>,
         on_data: Channel<InvokeResponseBody>,
     ) -> Result<SessionId, String> {
         let spec = SpawnSpec::login_shell(cwd.as_deref(), cols, rows);
-        self.host.spawn(
+        let id = self.host.spawn(
             spec,
             move |bytes| {
                 // Err only when the webview is gone; nothing useful to do about it here.
@@ -117,7 +122,11 @@ impl SessionManager {
             move |session_id, code| {
                 let _ = app.emit(EVENT_SESSION_EXIT, SessionExit { session_id, code });
             },
-        )
+        )?;
+        if let Some(key) = resume_key {
+            lock(&self.resume_keys).insert(id, key);
+        }
+        Ok(id)
     }
 
     pub fn write(&self, id: SessionId, data: &[u8]) -> Result<(), String> {
@@ -150,6 +159,17 @@ impl SessionManager {
 
     pub fn probe_target(&self, id: SessionId) -> Option<ProbeTarget> {
         self.host.probe_target(id)
+    }
+
+    /// `probe_targets` of the Sessions with a Resume key, with their key.
+    pub fn keyed_targets(&self) -> Vec<(String, ProbeTarget)> {
+        let targets = self.host.probe_targets();
+        let mut keys = lock(&self.resume_keys);
+        keys.retain(|id, _| targets.iter().any(|t| t.session_id == *id));
+        targets
+            .into_iter()
+            .filter_map(|t| Some((keys.get(&t.session_id)?.clone(), t)))
+            .collect()
     }
 
     /// Kill every Session. Called on app exit.

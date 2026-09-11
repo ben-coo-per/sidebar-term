@@ -105,6 +105,21 @@ export interface UsageSnapshot {
   agents: AgentUsage[];
 }
 
+/** What a Resume brings back in a Tab. */
+export type ResumeKind = "claude" | "command";
+
+/** How to start again what one Session was running when the app closed. From `resume_leftover`. */
+export interface ResumeEntry {
+  /** The key the Session was spawned with: its Tab id. */
+  key: string;
+  /** "claude": `claude --resume <id>`; "command": any other job, rerun from its argv. */
+  kind: ResumeKind;
+  /** The shell command line to type, already quoted: "claude --resume 5b6d…", "npm run dev". */
+  line: string;
+  /** Canonical directory to run `line` in. */
+  cwd: string | null;
+}
+
 export const EVENT_SESSION_INFO = "session-info";
 export const EVENT_SESSION_EXIT = "session-exit";
 export const EVENT_ACTIVITY = "activity";

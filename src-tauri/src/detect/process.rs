@@ -23,6 +23,8 @@ const MAX_ARGS: usize = 4096;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Proc {
     pub pid: pid_t,
+    /// Parent pid (`pbsi_ppid`).
+    pub ppid: pid_t,
     /// `pbsi_comm`: the exec'd file name, truncated to 16 bytes (`MAXCOMLEN`).
     pub comm: String,
 }
@@ -90,6 +92,7 @@ pub fn short_info(pid: pid_t) -> Option<Proc> {
     }
     Some(Proc {
         pid,
+        ppid: info.pbsi_ppid as pid_t,
         comm: c_chars_to_string(&info.pbsi_comm),
     })
 }
@@ -141,6 +144,20 @@ pub fn cwd(pid: pid_t) -> Option<String> {
 
 /// Full argv (`sysctl KERN_PROCARGS2`). Same-uid processes only; `None` otherwise.
 pub fn argv(pid: pid_t) -> Option<Vec<String>> {
+    parse_procargs2(&procargs2(pid)?)
+}
+
+/// Full argv and the environment the process was exec'd with (`KERN_PROCARGS2`), as
+/// `KEY=value` strings. Same-uid processes only; `None` otherwise. The environment is empty for
+/// Apple's platform binaries (`/bin/sleep`, `/bin/zsh`): the kernel withholds it (verified).
+pub fn argv_env(pid: pid_t) -> Option<(Vec<String>, Vec<String>)> {
+    let buf = procargs2(pid)?;
+    let (argv, rest) = split_procargs2(&buf)?;
+    Some((argv, parse_env(rest)))
+}
+
+/// The raw `KERN_PROCARGS2` buffer of `pid`.
+fn procargs2(pid: pid_t) -> Option<Vec<u8>> {
     if pid <= 0 {
         return None;
     }
@@ -178,12 +195,17 @@ pub fn argv(pid: pid_t) -> Option<Vec<String>> {
         return None;
     }
     buf.truncate(size);
-    parse_procargs2(&buf)
+    Some(buf)
 }
 
 /// Parse a `KERN_PROCARGS2` buffer: `int argc`, the exec path, NUL padding, then `argc`
 /// NUL-terminated argv strings (then env, ignored).
 pub(crate) fn parse_procargs2(buf: &[u8]) -> Option<Vec<String>> {
+    split_procargs2(buf).map(|(argv, _)| argv)
+}
+
+/// The argv of a `KERN_PROCARGS2` buffer and the bytes after it (the environment).
+fn split_procargs2(buf: &[u8]) -> Option<(Vec<String>, &[u8])> {
     let argc = i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?);
     if argc <= 0 {
         return None;
@@ -200,7 +222,16 @@ pub(crate) fn parse_procargs2(buf: &[u8]) -> Option<Vec<String>> {
         args.push(String::from_utf8_lossy(&rest[..end]).into_owned());
         rest = rest.get(end + 1..).unwrap_or(&[]);
     }
-    Some(args)
+    Some((args, rest))
+}
+
+/// The environment strings after argv: NUL-terminated, ended by an empty string (what follows
+/// that is the kernel's own `apple` strings, not the environment).
+fn parse_env(buf: &[u8]) -> Vec<String> {
+    buf.split(|&b| b == 0)
+        .take_while(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect()
 }
 
 /// Whether `classify_agent` / `is_remote` can use argv for a process with this `comm`.
@@ -495,6 +526,10 @@ mod tests {
     use crate::detect::testutil::{spawn_in_own_group, TempDir};
     use AgentKind::{Claude, Codex, Gemini};
 
+    fn strings(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
     const NO_ARGS: &[&str] = &[];
 
     #[test]
@@ -739,6 +774,16 @@ mod tests {
     }
 
     #[test]
+    fn procargs2_environment_stops_at_the_apple_strings() {
+        let mut buf = 1i32.to_ne_bytes().to_vec();
+        buf.extend_from_slice(b"/bin/sleep\0\0sleep\0HOME=/x\0PATH=/bin\0\0executable_path=/y\0");
+        let (argv, rest) = split_procargs2(&buf).unwrap();
+        assert_eq!(argv, ["sleep"]);
+        assert_eq!(parse_env(rest), ["HOME=/x", "PATH=/bin"]);
+        assert!(parse_env(&[]).is_empty());
+    }
+
+    #[test]
     fn reads_a_real_process_group() {
         let dir = TempDir::new("proc");
         let mut child = spawn_in_own_group("/bin/sleep", &["30"], dir.path());
@@ -750,12 +795,16 @@ mod tests {
             info,
             Proc {
                 pid,
+                ppid: std::process::id() as pid_t,
                 comm: "sleep".into()
             }
         );
         assert_eq!(exe_path(pid).as_deref(), Some("/bin/sleep"));
         assert_eq!(cwd(pid).as_deref(), Some(dir.canonical_str()));
         assert_eq!(argv(pid).unwrap(), ["/bin/sleep", "30"]);
+        // A platform binary: the kernel withholds its environment. Other binaries' is parsed as
+        // in `procargs2_environment_stops_at_the_apple_strings` (checked live by `resume_live`).
+        assert_eq!(argv_env(pid).unwrap(), (strings(&["/bin/sleep", "30"]), vec![]));
 
         child.kill();
         assert!(short_info(pid).is_none());

@@ -18,17 +18,19 @@ stores each Tab's last cwd instead and respawns a shell there on relaunch.
 
 | Command | Args (JS names) | Returns |
 |---|---|---|
-| `session_spawn` | `cwd?, cols, rows, onData: Channel` | `SessionId`; output bytes stream on `onData` as raw `ArrayBuffer` |
+| `session_spawn` | `cwd?, cols, rows, resumeKey?, onData: Channel` | `SessionId`; output bytes stream on `onData` as raw `ArrayBuffer`; `resumeKey` (the Tab id) names the Session in Resume entries |
 | `session_write` | `sessionId, data: string` | - |
 | `session_resize` | `sessionId, cols, rows` | - |
 | `session_pause` / `session_resume` | `sessionId` | - (flow control, see `docs/research/pty.md`) |
 | `session_kill` | `sessionId` | - (then `session-exit` fires) |
-| `session_reset` | - | - (kills every Session and stops Activity and Usage reading; called once at webview startup so a reload leaves no orphans) |
+| `session_reset` | - | - (kills every Session and stops Activity and Usage reading; called once at webview startup so a reload leaves no orphans; what the killed Sessions ran becomes Resume leftover) |
 | `session_info` | `sessionId` | `SessionInfo \| null` (fresh probe) |
 | `activity_watch` | `on: boolean` | - (start / stop sampling Activity) |
 | `usage_watch` | `on: boolean, agents: AgentKind[]` | - (start, change the agents of, or stop reading Usage) |
 | `caffeinate_state` | - | `boolean`: whether Caffeinate is on |
 | `caffeinate_set` | `on: boolean` | `boolean`: whether Caffeinate is on now |
+| `resume_leftover` | - | `ResumeEntry[]`: what earlier runs left running, not yet resumed or dismissed (see "Resume") |
+| `resume_forget` | `keys: string[]` | - (drop leftover entries: resumed, dismissed, or their Tab is gone) |
 | `layout_load` / `layout_save` | `layout: json` | opaque JSON blob in the app data dir |
 | `settings_load` / `settings_save` | `settings: json` | opaque JSON blob in the app data dir; one section per owner (`hotkeys`, `usage`), merged by `src/lib/settings/store.ts` |
 
@@ -52,6 +54,7 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
   pause/resume, kill, `probe_targets()`.
 - `detect/` — `probe(&ProbeTarget) -> SessionInfo`: libproc for the Foreground process group,
   agent classification, remote-hop detection, cwd; `.git` file reading for repo / Worktree / branch.
+  `detect/resume.rs`: the Resume entry of a Session's Foreground job (see "Resume").
 - `monitor.rs` — thread ticking every 500 ms: probe every target, emit `session-info` on change.
 - `activity.rs` — `Activity` (Tauri state): thread idle until watched, then every 2 s runs
   `/bin/ps` over every process, attributes each to a Session by ppid descent from its shell, and
@@ -60,9 +63,11 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
   agents' usage limits and emits `usage` on change (see "Panel").
 - `caffeinate.rs` — `Caffeinate` (Tauri state): the background `caffeinate` run behind the Tray's
   Caffeinate button (see "Tray").
+- `resume.rs` — `Resume` (Tauri state): a thread records every keyed Session's Resume entry to
+  `resume.json` each second it changes, and a last time on exit (see "Resume").
 - `lib.rs` also builds the app menu: Tauri's default plus "Settings…" (no key equivalent: the
   Settings Hotkey stays the webview's, rebindable).
-- `layout.rs` — atomic JSON read/write of `layout.json` and `settings.json` in the app data dir.
+- `layout.rs` — atomic JSON read/write of `layout.json`, `settings.json` and `resume.json` in the app data dir.
 
 ## Webview modules
 
@@ -79,6 +84,8 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
 - `src/lib/sidebar/*` — sidebar components. `src/routes/+page.svelte` — app shell.
 - `src/lib/tray/*` — the Tray (`Tray.svelte`), its `TrayButton`, and Caffeinate (state mirror and
   button).
+- `src/lib/resume/*` — the Resume banner (`ResumeBanner.svelte`), its state and actions
+  (`resume.svelte.ts`) and the pure rule for what to type (`model.ts`).
 - `src/lib/panel/*` — the Panel (`Panel.svelte`), its view list (`views.ts`), the Activity view
   (`activity/`: snapshot store, pure sorting / formatting / meter maths, components) and the Usage
   view (`usage/`: snapshot store, chosen agents, pure formatting, components).
@@ -199,6 +206,51 @@ as a hidden child of the app, in no Session, so no Terminal shows it (`-d` displ
 `-w` ends it with the app, a crash included). Off at launch, not persisted, and a webview reload
 leaves it as it was (the webview reads `caffeinate_state` at startup). If the run ends on its own
 (`killall caffeinate`), the next 1 s check turns Caffeinate off and sends `caffeinate`.
+
+## Resume
+
+When the app closes with Tabs still running something, the next launch offers to start it again
+in the same Tabs. Every way of closing counts: a crash, Cmd-Q, `pnpm app:install`'s restart, a
+webview reload. A close with every shell at its prompt offers nothing.
+
+**Recording** (Rust, `resume.rs` + `detect/resume.rs`). The webview spawns each Session with its
+Tab id as `resumeKey`. Every second a thread works out each keyed Session's `ResumeEntry` (`kind`,
+`line`, `cwd`) from its Foreground process group, and rewrites `resume.json` when the list
+changed. On `RunEvent::Exit` Rust records once more, before killing the shells, then writes no
+more, so the dying shells cannot empty it. A crash leaves the last second's list. Rust, not the
+webview, keeps it because only Rust is still running at exit: the webview's debounced save would
+lose a job that ended in the last half second, and see the shells die.
+
+- **Claude Code** (`kind: "claude"`): Claude Code 2.1+ writes `<config dir>/sessions/<pid>.json`
+  for each running instance (`sessionId`, `cwd`, `kind`), and rewrites it as the conversation
+  changes (it follows `/clear`). The config dir is the process's own `$CLAUDE_CONFIG_DIR`, else
+  `$HOME/.claude`. Line: `claude --resume <sessionId>`, with the flags that shape a session carried
+  over (`--dangerously-skip-permissions`, `--model`, `--permission-mode`, `--effort`, `--agent`,
+  ...), in the file's `cwd`: Claude Code only finds a conversation from the directory it started in.
+  No file (older versions, `--print`) means no entry.
+- **Anything else** (`kind: "command"`): the argv of each pipeline stage (the group's members
+  whose parent is the shell), quoted for zsh/bash and joined with ` | `, in the first stage's
+  cwd. A script run through its `#!` line (`node /opt/homebrew/bin/npm run dev`) is typed as its
+  name (`npm run dev`) when that name finds the same file on the process's `PATH` (read from its
+  environment; Apple's platform binaries withhold theirs, so they stay as run).
+- **No entry**: a shell at its prompt; Codex and Gemini (not resumable by id yet); a job of
+  another uid (`sudo`: argv unreadable); a line with control characters or over 4 KiB.
+  Environment variables set on the command line (`PORT=1 npm run dev`) are not recovered.
+
+**Leftover**. `resume.json` holds `running` (this run) and `leftover`. At launch and on
+`session_reset`, `running` moves into `leftover`, replacing older entries per key. Leftover stays
+until the webview forgets it (resumed, dismissed, Tab gone), so quitting again before acting on
+the banner loses nothing.
+
+**Resume banner** (webview, `src/lib/resume/`). After `initLayout`, `resume_leftover` gives the
+rows; entries whose Tab is gone are forgotten. The banner sits under the Terminal, which gives it
+its height and refits. It shows the Tab's Title and the line per row. Buttons: "Resume Claude
+Code" (every `claude` entry), "Rerun commands" (every `command` entry), per row "Resume" /
+"Rerun", and Dismiss. Resuming types into the Tab's shell: Ctrl-U (clear the prompt), then
+`cd -- <cwd> && ` when the shell is elsewhere, the line, Enter. It first re-probes the Session
+and never types into one that is not at its prompt: that row stays, marked Busy. An entry is
+dropped once its Tab closes or becomes an Agent session (resumed by hand). Other jobs do not
+count, since shell startup files run commands too.
 
 ## Window
 

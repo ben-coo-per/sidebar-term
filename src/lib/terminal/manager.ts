@@ -46,8 +46,11 @@ export interface TerminalEvents {
 }
 
 export interface TerminalManager {
-  /** Spawn a Session (shell on a pty) with a hidden Terminal. Resolves once the pty exists. */
-  create(opts?: { cwd?: string | null }): Promise<SessionId>;
+  /**
+   * Spawn a Session (shell on a pty) with a hidden Terminal. Resolves once the pty exists.
+   * `resumeKey` (the Tab id) names the Session in Resume entries.
+   */
+  create(opts?: { cwd?: string | null; resumeKey?: string | null }): Promise<SessionId>;
   /** Show this Session's Terminal inside `el` (replacing whatever was shown), fit, and focus. */
   mount(sessionId: SessionId, el: HTMLElement): void;
   /** Detach the Terminal from the DOM; the Session and its scrollback live on. */
@@ -255,6 +258,7 @@ export const terminals: TerminalManager = {
     try {
       sid = await spawnSession({
         cwd: opts?.cwd ?? null,
+        resumeKey: opts?.resumeKey ?? null,
         cols,
         rows,
         onData: (bytes) => (entry ? feed(entry, bytes) : early.push(bytes)),
