@@ -259,4 +259,7 @@ the traffic lights, and marks its header `data-tauri-drag-region`. `dragDropEnab
 drag-and-drop works in the sidebar: on macOS Tauri's handler claims every drag, including the
 webview's own. Files dropped on a Terminal therefore arrive as DOM `File`s; they paste as
 shell-escaped paths read off the drag pasteboard, or saved to a temp dir when they have none
-(`src/lib/terminal/drop.ts`, `src-tauri/src/drop.rs`).
+(`src/lib/terminal/drop.ts`, `src-tauri/src/drop.rs`). A pasteboard path in a `TemporaryItems`
+staging dir, or one the app cannot open, counts as none. The screenshot thumbnail's drag carries its
+staging copy (`TemporaryItems/NSIRD_screencaptureui_*`), which macOS keeps shells from reading, so
+the screenshot is saved from the bytes WebKit received for its file promise.

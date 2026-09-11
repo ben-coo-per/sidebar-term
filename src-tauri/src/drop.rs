@@ -2,7 +2,8 @@
 //! sidebar's HTML5 drags), so the webview gets the drop as DOM `File`s, which WebKit strips of
 //! their paths. The real paths are still on the macOS drag pasteboard; files that are not there
 //! (file promises such as the screenshot thumbnail, images dragged out of a browser) are saved to
-//! a temp dir from the bytes the webview read.
+//! a temp dir from the bytes the webview read. So are files whose pasteboard path is no use to a
+//! shell (see `pasteable`): the screenshot thumbnail also puts its own staging copy there.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -27,8 +28,23 @@ pub fn pasteboard_paths() -> Vec<String> {
             .filter_map(|url| NSURL::URLWithString(&url))
             .filter_map(|url| url.path())
             .map(|path| path.to_string())
+            .filter(|path| pasteable(Path::new(path)))
             .collect()
     }
+}
+
+/// Whether a path from the drag pasteboard can be pasted as is: the app can open it, and it is not
+/// in a `TemporaryItems` staging directory. A file promise's provider stages the file there while
+/// it is in flight: the screenshot thumbnail's drag carries a URL to
+/// `$TMPDIR/TemporaryItems/NSIRD_screencaptureui_*/Screenshot ….png`, which macOS keeps other
+/// processes from reading (Claude Code pasted it as text) and which goes once the drop is done.
+/// The webview then saves the file from the bytes WebKit received for the promise instead.
+fn pasteable(path: &Path) -> bool {
+    !staged(path) && std::fs::File::open(path).is_ok()
+}
+
+fn staged(path: &Path) -> bool {
+    path.components().any(|c| c.as_os_str() == "TemporaryItems")
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -85,7 +101,28 @@ fn percent_decode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::percent_decode;
+    use super::{pasteable, percent_decode, staged};
+    use std::path::Path;
+
+    #[test]
+    fn only_readable_paths_outside_staging_dirs_are_pasted() {
+        let dir = std::env::temp_dir().join(format!("sidebar-term-pasteable-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Screenshot\u{202f}PM.png");
+        std::fs::write(&file, b"png").unwrap();
+
+        assert!(pasteable(&file));
+        assert!(pasteable(&dir), "a dropped folder");
+        assert!(!pasteable(&dir.join("gone.png")));
+        assert!(!pasteable(Path::new("/var/root/.profile")), "another user's file");
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        // Checked on the path alone: macOS will not let a test delete a `TemporaryItems` dir.
+        let thumbnail = "/var/folders/xf/abc/T/TemporaryItems/NSIRD_screencaptureui_wOXp1M/Screenshot 2026-09-11 at 1.30.41\u{202f}PM.png";
+        assert!(staged(Path::new(thumbnail)));
+        assert!(!staged(Path::new("/Users/you/Downloads/Screenshot.png")));
+        assert!(!staged(Path::new("/Users/you/TemporaryItemsBackup/x.png")));
+    }
 
     #[test]
     fn decodes_uri_component() {

@@ -1,7 +1,8 @@
 // Files dragged onto a Terminal are pasted as shell-quoted paths, like Terminal.app and iTerm2, so
 // e.g. Claude Code picks up a dropped image. `dragDropEnabled` is off (Tauri's handler swallows
 // the sidebar's HTML5 drags on macOS), so drops arrive here as DOM Files without paths; the paths
-// come from the drag pasteboard, and files that have none are saved to a temp dir first.
+// come from the drag pasteboard, and files that have none (or only an unreadable staging copy, as
+// the screenshot thumbnail's) are saved to a temp dir first.
 // See src-tauri/src/drop.rs.
 
 import { dropPaths, saveDroppedFile } from "../ipc";
