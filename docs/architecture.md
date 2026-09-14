@@ -22,17 +22,20 @@ stores each Tab's last cwd instead and respawns a shell there on relaunch.
 | `session_write` | `sessionId, data: string` | - |
 | `session_resize` | `sessionId, cols, rows` | - |
 | `session_pause` / `session_resume` | `sessionId` | - (flow control, see `docs/research/pty.md`) |
-| `session_kill` | `sessionId` | - (then `session-exit` fires) |
-| `session_reset` | - | - (kills every Session and stops Activity and Usage reading; called once at webview startup so a reload leaves no orphans; what the killed Sessions ran becomes Resume leftover) |
+| `session_kill` | `sessionId` | - (thaws it if Memory Guard froze it, then kills it; then `session-exit` fires) |
+| `session_reset` | - | - (thaws every frozen Session, kills every Session and stops Activity and Usage reading; called once at webview startup so a reload leaves no orphans; what the killed Sessions ran becomes Resume leftover) |
 | `session_info` | `sessionId` | `SessionInfo \| null` (fresh probe) |
 | `activity_watch` | `on: boolean` | - (start / stop sampling Activity) |
+| `guard_state` | - | `GuardSnapshot`: Memory Guard's state |
+| `guard_set` | `on: boolean, limitPercent: number` | `GuardSnapshot` (turn Memory Guard on or off, set its limit, clamped to 50..95; off thaws every frozen Tab) |
+| `guard_visible` | `sessionId: SessionId \| null` | - (the Session in view: never frozen, thawed if frozen) |
 | `usage_watch` | `on: boolean, agents: AgentKind[]` | - (start, change the agents of, or stop reading Usage) |
 | `caffeinate_state` | - | `boolean`: whether Caffeinate is on |
 | `caffeinate_set` | `on: boolean` | `boolean`: whether Caffeinate is on now |
 | `resume_leftover` | - | `ResumeEntry[]`: what earlier runs left running, not yet resumed or dismissed (see "Resume") |
 | `resume_forget` | `keys: string[]` | - (drop leftover entries: resumed, dismissed, or their Tab is gone) |
 | `layout_load` / `layout_save` | `layout: json` | opaque JSON blob in the app data dir |
-| `settings_load` / `settings_save` | `settings: json` | opaque JSON blob in the app data dir; one section per owner (`hotkeys`, `usage`), merged by `src/lib/settings/store.ts` |
+| `settings_load` / `settings_save` | `settings: json` | opaque JSON blob in the app data dir; one section per owner (`hotkeys`, `usage`, `activity`, `memoryGuard`), merged by `src/lib/settings/store.ts` |
 
 | Event | Payload | When |
 |---|---|---|
@@ -42,6 +45,7 @@ stores each Tab's last cwd instead and respawns a shell there on relaunch.
 | `usage` | `UsageSnapshot` | right away on `usage_watch(true, ..)`, then whenever a number changes (checked every 5 s) |
 | `menu-settings` | - | the app menu's "Settings…" was chosen |
 | `caffeinate` | `false` | Caffeinate's `caffeinate` run ended without being turned off |
+| `memory-guard` | `GuardSnapshot` | Memory Guard froze or thawed a Tab, or was turned on or off |
 
 Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `ipc.ts` routes to
 `src/lib/mock.ts`, a fake backend for developing the UI in a browser (`pnpm dev`, then open
@@ -56,9 +60,12 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
   agent classification, remote-hop detection, cwd; `.git` file reading for repo / Worktree / branch.
   `detect/resume.rs`: the Resume entry of a Session's Foreground job (see "Resume").
 - `monitor.rs` — thread ticking every 500 ms: probe every target, emit `session-info` on change.
-- `activity.rs` — `Activity` (Tauri state): thread idle until watched, then every 2 s runs
-  `/bin/ps` over every process, attributes each to a Session by ppid descent from its shell, and
-  emits `activity` (see "Panel").
+- `activity.rs` — `Activity` (Tauri state): thread idle until watched (by the webview, or by
+  Memory Guard), then every 2 s runs `/bin/ps` over every process, reads this user's processes'
+  footprints, attributes each to a Session by ppid descent from its shell, emits `activity` if the
+  webview watches and hands the sample to Memory Guard if it is on (see "Panel").
+- `guard.rs` — `Guard` (Tauri state): Memory Guard's policy and the SIGSTOP / SIGCONT of a
+  Session's process tree; `frozen.json` for thawing after a crash (see "Tray").
 - `usage.rs` — `Usage` (Tauri state): thread idle until watched, then every 5 s reads the chosen
   agents' usage limits and emits `usage` on change (see "Panel").
 - `caffeinate.rs` — `Caffeinate` (Tauri state): the background `caffeinate` run behind the Tray's
@@ -67,7 +74,8 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
   `resume.json` each second it changes, and a last time on exit (see "Resume").
 - `lib.rs` also builds the app menu: Tauri's default plus "Settings…" (no key equivalent: the
   Settings Hotkey stays the webview's, rebindable).
-- `layout.rs` — atomic JSON read/write of `layout.json`, `settings.json` and `resume.json` in the app data dir.
+- `layout.rs` — atomic JSON read/write of `layout.json`, `settings.json`, `resume.json` and
+  `frozen.json` in the app data dir.
 
 ## Webview modules
 
@@ -79,15 +87,18 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
 - `src/lib/hotkeys.ts` — Hotkey actions, defaults and the pure rules for combos;
   `src/lib/hotkeys.svelte.ts` — the live bindings (persisted overrides); `src/lib/shortcuts.ts` —
   the window listener that dispatches them.
-- `src/lib/settings/*` — the Settings page (Usage agents, Hotkeys), shown over the Terminal; the
+- `src/lib/settings/*` — the Settings page (Usage agents, Memory, Hotkeys), shown over the Terminal; the
   settings blob's per-section store (`store.ts`).
 - `src/lib/sidebar/*` — sidebar components. `src/routes/+page.svelte` — app shell.
-- `src/lib/tray/*` — the Tray (`Tray.svelte`), its `TrayButton`, and Caffeinate (state mirror and
-  button).
+- `src/lib/tray/*` — the Tray (`Tray.svelte`), its `TrayButton`, Caffeinate (state mirror and
+  button) and the Memory Guard button.
+- `src/lib/guard/*` — Memory Guard's state mirror, settings and visible-Session reporting
+  (`memoryGuard.svelte.ts`) and pure rules (`model.ts`).
 - `src/lib/resume/*` — the Resume banner (`ResumeBanner.svelte`), its state and actions
   (`resume.svelte.ts`) and the pure rule for what to type (`model.ts`).
 - `src/lib/panel/*` — the Panel (`Panel.svelte`), its view list (`views.ts`), the Activity view
-  (`activity/`: snapshot store, pure sorting / formatting / meter maths, components) and the Usage
+  (`activity/`: snapshot store, the Tab stats setting, pure sorting / formatting / meter maths,
+  components) and the Usage
   view (`usage/`: snapshot store, chosen agents, pure formatting, components).
 
 ## v1 product defaults (provisional)
@@ -160,11 +171,21 @@ Views are listed in `src/lib/panel/views.ts` and rendered by `Panel.svelte`: Act
 into one segment per Session in its Tab colour, in sidebar order, then one muted segment for
 everything else; and a list of processes sortable by CPU or memory. A Session's processes show in
 its Tab colour, and clicking one goes to its Tab. Every other process is muted grey. Collapsed, the
-header shows CPU and Memory Used instead.
+header shows CPU and Memory Used instead. Hovering the muted memory segment breaks it down into
+macOS's wired memory, the compressor and other apps.
 
-- Source: `/bin/ps -axo pid,ppid,rss,time,%cpu,comm`, every 2 s, only while the Panel is shown. libproc's task info is EPERM for other users' processes, about a
+With "CPU and memory on Tabs" on in Settings (the default), each Tab row shows its Session's CPU and
+memory (`35% · 1.21 GB`), from the same samples.
+
+- Source: `/bin/ps -axo pid,ppid,rss,time,%cpu,comm`, every 2 s, only while the Panel or the Tab
+  stats show it or Memory Guard is on. libproc's task info is EPERM for other users' processes, about a
   third of all processes and usually the busiest (WindowServer, kernel_task); `ps` is setuid root.
   One run costs ~20 ms.
+- Memory is each process's physical footprint (`proc_pid_rusage`), Activity Monitor's "Memory"
+  column: compressed and swapped pages included, shared pages not. `ps`'s resident size gets both
+  wrong (a shared executable counts in full; what the compressor holds does not count, so under
+  pressure a 200 MB process reads 5 MB). Footprints are readable for this user's processes, which
+  includes every Session's; other users' processes fall back to resident size.
 - CPU% is the change in CPU time between samples over wall time, 100% = one core, as in Activity
   Monitor. A process seen for the first time uses `ps`'s own decaying %cpu.
 - A process belongs to a Session if it is the Session's shell or descends from it by ppid, so
@@ -199,13 +220,34 @@ The Tray is a row of small icon buttons and indicators at the top of the sidebar
 row, right of the traffic lights (which it never runs under: `--traffic-lights-width`). It shows
 whenever the sidebar does, whatever its width and the Panel's state. Items are listed in order in
 `src/lib/tray/Tray.svelte`; a button is a `TrayButton` (muted, lit in `--tray-on` while a toggle is
-on). Items so far: Caffeinate.
+on). Items so far: Caffeinate, Memory Guard.
 
 **Caffeinate** keeps this Mac awake while on: Rust runs `/usr/bin/caffeinate -d -i -w <app pid>`
 as a hidden child of the app, in no Session, so no Terminal shows it (`-d` display, `-i` idle sleep;
 `-w` ends it with the app, a crash included). Off at launch, not persisted, and a webview reload
 leaves it as it was (the webview reads `caffeinate_state` at startup). If the run ends on its own
 (`killall caffeinate`), the next 1 s check turns Caffeinate off and sends `caffeinate`.
+
+**Memory Guard** freezes the Tab using the most memory when memory gets tight, and thaws it once
+memory frees up, so heavy Tabs take turns instead of making the Mac swap. The button is lit while on
+and shows how many Tabs are frozen; a frozen Tab shows a snowflake. On/off and the limit persist in
+settings (`memoryGuard`); the limit is set on the Settings page. The policy is `guard.rs`, run on
+every Activity sample while on:
+
+- Memory Used over the limit (default 85% of physical memory) for 4 s: freeze the Session using the
+  most memory (sum of footprints), if at least 128 MB. Never the Session in view, reported by the
+  webview (`guard_visible`).
+- Memory Used 10 points under the limit: thaw the Session frozen first.
+- After a freeze or thaw, wait 10 s before the next, so memory shows the effect.
+- Going to a frozen Tab thaws it and spares it until memory falls under the thaw line.
+- Freezing is SIGSTOP to the shell first, then its descendants, parents first (a stopped foreground
+  job would make the shell take the tty back, "zsh: suspended"); thawing is SIGCONT in reverse, the
+  shell last. A frozen process keeps its memory: freezing stops growth and CPU, not what is held.
+  An agent's in-flight request or a command it waits on may time out after a long freeze; the agent
+  retries.
+- A frozen Session is thawed before a kill (closing its Tab, a reload, quitting), since SIGHUP does
+  not reach a stopped process. After a crash, `frozen.json` (pids with start times) lets the next
+  launch thaw what was left stopped; a pid whose start time changed is not touched.
 
 ## Resume
 

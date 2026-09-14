@@ -56,6 +56,14 @@ _Avoid_: Toolbar, titlebar buttons, status bar
 The Tray toggle that keeps the Mac awake (display and system) while on, by running macOS's `caffeinate` in the background, never in a Session.
 _Avoid_: Keep awake, no-sleep, Amphetamine
 
+**Memory Guard**:
+The Tray toggle that, while on, freezes the Tab using the most memory when memory use passes a limit (set in Settings), and thaws frozen Tabs one at a time once memory frees up. It never freezes the Tab in view.
+_Avoid_: Load balancer, throttle, governor, auto-pause
+
+**Frozen Tab**:
+A Tab whose Session Memory Guard has stopped: every process in it is suspended (SIGSTOP) until it is thawed (SIGCONT). It keeps its memory but uses no CPU and does not grow. Going to it thaws it.
+_Avoid_: Paused (that is flow control), suspended, sleeping
+
 **Resume**:
 Starting again, in the same Tab, what its Session was running when the app last closed (a crash, a quit, a restart to install): a Claude Code conversation (`claude --resume <id>`) or any other command, rerun from its command line. Codex and Gemini conversations are not resumed.
 _Avoid_: Restore, recover, reopen (and not the flow-control resume of a paused Session)
@@ -65,7 +73,7 @@ The dismissable bar at the bottom of the Terminal area, shown after a launch whe
 _Avoid_: Toast, notification, crash dialog
 
 **Activity**:
-The panel view showing the Mac's CPU and memory, split between sessions (each in its tab colour) and every other process (muted grey), with a list of the busiest processes.
+The panel view showing the Mac's CPU and memory, split between sessions (each in its tab colour) and every other process (muted grey), with a list of the busiest processes. Memory is each process's footprint, as Activity Monitor's Memory column. The same samples give each tab its CPU and memory, shown on the tab when turned on in Settings.
 _Avoid_: Activity monitor (that is Apple's app), stats, usage
 
 **Usage**:

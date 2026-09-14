@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { ActivityProcess, ActivitySnapshot } from "../../types";
-import { formatBytes, formatCpu, machineCpu, meterSegments, sortProcesses } from "./model";
+import {
+  formatBytes,
+  formatCpu,
+  formatTabStats,
+  machineCpu,
+  meterSegments,
+  otherMemoryParts,
+  parseActivitySection,
+  sortProcesses,
+} from "./model";
 
 const MB = 1024 * 1024;
 const GB = 1024 * MB;
@@ -10,7 +19,17 @@ function proc(pid: number, name: string, cpu: number, mem: number, sessionId: nu
 }
 
 function snapshot(partial: Partial<ActivitySnapshot>): ActivitySnapshot {
-  return { cpuCount: 10, cpuTotal: 0, memUsed: 0, memTotal: 32 * GB, sessions: [], processes: [], ...partial };
+  return {
+    cpuCount: 10,
+    cpuTotal: 0,
+    memUsed: 0,
+    memWired: 0,
+    memCompressed: 0,
+    memTotal: 32 * GB,
+    sessions: [],
+    processes: [],
+    ...partial,
+  };
 }
 
 describe("sortProcesses", () => {
@@ -108,5 +127,47 @@ describe("meterSegments", () => {
 
   it("is empty when the whole is unknown", () => {
     expect(meterSegments(snapshot({ memTotal: 0 }), "mem", [])).toEqual([]);
+  });
+});
+
+describe("parseActivitySection", () => {
+  it("shows Tab stats unless turned off", () => {
+    expect(parseActivitySection(undefined)).toEqual({ tabStats: true });
+    expect(parseActivitySection({ tabStats: false })).toEqual({ tabStats: false });
+    expect(parseActivitySection({ tabStats: "no" })).toEqual({ tabStats: true });
+  });
+});
+
+describe("formatTabStats", () => {
+  it("rounds CPU and prints memory as Activity Monitor does", () => {
+    expect(formatTabStats(35.4, 1.21 * 1024 ** 3)).toBe("35% · 1.21 GB");
+    expect(formatTabStats(0, 4.6 * 1024 ** 2)).toBe("0% · 4.6 MB");
+  });
+});
+
+describe("otherMemoryParts", () => {
+
+  const snap = (memUsed: number, memWired: number, memCompressed: number, inTabs: number): ActivitySnapshot => ({
+    cpuCount: 8,
+    cpuTotal: 0,
+    memUsed,
+    memWired,
+    memCompressed,
+    memTotal: 8 * GB,
+    sessions: [{ sessionId: 1, cpu: 0, mem: inTabs, processes: 1 }],
+    processes: [],
+  });
+
+  it("splits everything else into wired, compressed and other apps", () => {
+    expect(otherMemoryParts(snap(5 * GB, 1.5 * GB, 1.5 * GB, 0.5 * GB))).toEqual({
+      wired: 1.5 * GB,
+      compressed: 1.5 * GB,
+      apps: 1.5 * GB,
+    });
+  });
+
+  it("never goes negative when the Tabs' footprints overlap the compressor", () => {
+    const parts = otherMemoryParts(snap(5 * GB, 1.5 * GB, 2 * GB, 3 * GB));
+    expect(parts).toEqual({ wired: 1.5 * GB, compressed: 0.5 * GB, apps: 0 });
   });
 });

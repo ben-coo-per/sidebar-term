@@ -3,10 +3,12 @@
      See docs/architecture.md "Tray". -->
 <script lang="ts">
   import CaffeinateButton from "./CaffeinateButton.svelte";
+  import MemoryGuardButton from "./MemoryGuardButton.svelte";
 </script>
 
 <div class="tray" role="toolbar" aria-label="Tray">
   <CaffeinateButton />
+  <MemoryGuardButton />
 </div>
 
 <style>
