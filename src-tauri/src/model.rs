@@ -191,6 +191,65 @@ pub struct ResumeEntry {
     pub cwd: Option<String>,
 }
 
+/// What Tailscale says about this Mac, read from its CLI (`remote/tailscale.rs`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TailscaleState {
+    /// The Tailscale CLI was found (the app or a Homebrew install).
+    pub installed: bool,
+    /// Tailscale is up and logged in.
+    pub running: bool,
+    /// This Mac's MagicDNS name, `bens-mac.tail1234.ts.net`, once running.
+    pub dns_name: Option<String>,
+    /// Why Serve could not be set up, or the last CLI error, if any.
+    pub error: Option<String>,
+}
+
+/// A phone that paired with Remote: it holds a token this Mac accepts (hashed at rest).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteDevice {
+    pub id: String,
+    /// The name the phone gave itself when pairing.
+    pub name: String,
+    /// Epoch ms.
+    pub created_at: u64,
+    /// Epoch ms of its last connection, if it connected since pairing.
+    pub last_seen_at: Option<u64>,
+    /// The Tailscale login the pairing request came through, when it came through Serve.
+    pub login: Option<String>,
+}
+
+/// A pairing in progress: the code a phone must present, shown as a QR code in Settings.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pairing {
+    pub code: String,
+    /// The page to open on the phone, code included, or null while there is no URL to reach.
+    pub url: Option<String>,
+    /// Epoch ms.
+    pub expires_at: u64,
+}
+
+/// The state of Remote. Payload of `remote_state` and of the `remote` event.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteSnapshot {
+    /// Remote is on: the server listens and Tailscale Serve is asked to publish it.
+    pub on: bool,
+    /// The port the server listens on, on 127.0.0.1 only.
+    pub port: u16,
+    /// The phone's page, `https://<dns name>/m`, once Tailscale Serve publishes the server.
+    pub url: Option<String>,
+    /// Why the server is not listening although Remote is on.
+    pub error: Option<String>,
+    pub tailscale: TailscaleState,
+    /// Phones connected right now.
+    pub clients: u32,
+    pub devices: Vec<RemoteDevice>,
+    pub pairing: Option<Pairing>,
+}
+
 /// Event names. Frontend listens with `listen(EVENT_SESSION_INFO, ...)`.
 pub const EVENT_SESSION_INFO: &str = "session-info";
 pub const EVENT_SESSION_EXIT: &str = "session-exit";
@@ -202,3 +261,5 @@ pub const EVENT_USAGE: &str = "usage";
 pub const EVENT_MENU_SETTINGS: &str = "menu-settings";
 /// Caffeinate turned off on its own (its `caffeinate` run ended); payload `false`.
 pub const EVENT_CAFFEINATE: &str = "caffeinate";
+/// Remote's state changed (turned on or off, a phone connected or paired, a pairing expired).
+pub const EVENT_REMOTE: &str = "remote";

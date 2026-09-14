@@ -8,11 +8,14 @@ import {
   EVENT_ACTIVITY,
   EVENT_CAFFEINATE,
   EVENT_MENU_SETTINGS,
+  EVENT_REMOTE,
   EVENT_SESSION_EXIT,
   EVENT_SESSION_INFO,
   EVENT_USAGE,
   type ActivitySnapshot,
   type AgentKind,
+  type Pairing,
+  type RemoteSnapshot,
   type ResumeEntry,
   type SessionExit,
   type SessionId,
@@ -136,6 +139,47 @@ export function setCaffeinate(on: boolean): Promise<boolean> {
 export function onCaffeinate(cb: (on: boolean) => void): Promise<UnlistenFn> {
   if (!inTauri) return Promise.resolve(() => {});
   return listen<boolean>(EVENT_CAFFEINATE, (e) => cb(e.payload));
+}
+
+/** Where Remote stands, after re-reading Tailscale's state (runs its CLI: not for a hot path). */
+export function remoteState(): Promise<RemoteSnapshot> {
+  if (!inTauri) return mock.remoteState();
+  return invoke("remote_state");
+}
+
+/** Turn Remote on or off; resolves to the state now, or rejects with why it could not start. */
+export function setRemote(on: boolean): Promise<RemoteSnapshot> {
+  if (!inTauri) return mock.setRemote(on);
+  return invoke("remote_set", { on });
+}
+
+/** Start a pairing: the code (and QR link) a phone presents once to be let in. */
+export function remotePairBegin(): Promise<Pairing> {
+  if (!inTauri) return mock.remotePairBegin();
+  return invoke("remote_pair_begin");
+}
+
+export function remotePairCancel(): Promise<void> {
+  if (!inTauri) return mock.remotePairCancel();
+  return invoke("remote_pair_cancel");
+}
+
+/** Forget a paired phone; its token stops working at its next connection. */
+export function remoteRevoke(id: string): Promise<void> {
+  if (!inTauri) return mock.remoteRevoke(id);
+  return invoke("remote_revoke", { id });
+}
+
+/** The sidebar as phones should show it (shape: src/lib/mobile/protocol.ts); relayed to every phone. */
+export function publishSidebar(sidebar: unknown): Promise<void> {
+  if (!inTauri) return Promise.resolve();
+  return invoke("remote_sidebar", { sidebar });
+}
+
+/** Remote's state changed: turned on or off, a phone connected or paired, a pairing expired. */
+export function onRemote(cb: (snapshot: RemoteSnapshot) => void): Promise<UnlistenFn> {
+  if (!inTauri) return mock.onRemote(cb);
+  return listen<RemoteSnapshot>(EVENT_REMOTE, (e) => cb(e.payload));
 }
 
 /** The app menu's "Settings…" item. Never fires outside Tauri (the browser has no app menu). */

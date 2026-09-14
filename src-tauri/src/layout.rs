@@ -9,6 +9,8 @@ pub const LAYOUT: &str = "layout.json";
 pub const SETTINGS: &str = "settings.json";
 /// What each Session was running, for Resume (`resume.rs`).
 pub const RESUME: &str = "resume.json";
+/// Whether Remote is on and the phones paired with it (`remote/`).
+pub const REMOTE: &str = "remote.json";
 
 pub fn path(app: &AppHandle, file: &str) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;

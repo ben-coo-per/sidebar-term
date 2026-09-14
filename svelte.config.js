@@ -12,6 +12,9 @@ const config = {
     adapter: adapter({
       fallback: "index.html",
     }),
+    // The phone's page registers src/service-worker.ts itself, over HTTPS only; the Mac's
+    // webview must never install it.
+    serviceWorker: { register: false },
   },
 };
 

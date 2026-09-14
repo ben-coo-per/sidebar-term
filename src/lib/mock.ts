@@ -23,6 +23,8 @@ import type {
   AgentKind,
   AgentUsage,
   GitInfo,
+  Pairing,
+  RemoteSnapshot,
   ResumeEntry,
   SessionExit,
   SessionId,
@@ -421,6 +423,58 @@ export async function caffeinateState(): Promise<boolean> {
 export async function setCaffeinate(on: boolean): Promise<boolean> {
   caffeinated = on;
   return caffeinated;
+}
+
+// --- Remote: nothing listens; the Settings section can be exercised, pairing shows a code ---
+
+const remote: RemoteSnapshot = {
+  on: false,
+  port: 47611,
+  url: null,
+  error: null,
+  tailscale: { installed: true, running: true, dnsName: "your-mac.tail1234.ts.net", error: null },
+  clients: 0,
+  devices: [{ id: "d1", name: "iPhone", createdAt: Date.now() - 86_400_000, lastSeenAt: Date.now() - 3_600_000, login: null }],
+  pairing: null,
+};
+const remoteCbs = new Set<(s: RemoteSnapshot) => void>();
+
+function remoteChanged() {
+  const copy = structuredClone(remote);
+  for (const cb of remoteCbs) cb(copy);
+}
+
+export async function remoteState(): Promise<RemoteSnapshot> {
+  return structuredClone(remote);
+}
+
+export async function setRemote(on: boolean): Promise<RemoteSnapshot> {
+  remote.on = on;
+  remote.url = on ? `https://${remote.tailscale.dnsName}/m` : null;
+  if (!on) remote.pairing = null;
+  remoteChanged();
+  return structuredClone(remote);
+}
+
+export async function remotePairBegin(): Promise<Pairing> {
+  remote.pairing = { code: "ABCD EFGH", url: `${remote.url ?? "http://127.0.0.1:47611/m"}#pair=ABCDEFGH`, expiresAt: Date.now() + 600_000 };
+  remoteChanged();
+  return structuredClone(remote.pairing);
+}
+
+export async function remotePairCancel(): Promise<void> {
+  remote.pairing = null;
+  remoteChanged();
+}
+
+export async function remoteRevoke(id: string): Promise<void> {
+  remote.devices = remote.devices.filter((d) => d.id !== id);
+  remoteChanged();
+}
+
+export async function onRemote(cb: (s: RemoteSnapshot) => void) {
+  remoteCbs.add(cb);
+  return () => void remoteCbs.delete(cb);
 }
 
 const SETTINGS_KEY = "sidebar-term:mock-settings";

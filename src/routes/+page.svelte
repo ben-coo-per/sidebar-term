@@ -15,6 +15,7 @@
   import SettingsPage from "$lib/settings/SettingsPage.svelte";
   import ResumeBanner from "$lib/resume/ResumeBanner.svelte";
   import { initResume } from "$lib/resume/resume.svelte";
+  import { initRemote, initSidebarPublisher } from "$lib/remote/remote.svelte";
   import { closeSettings, openSettings, settingsPage } from "$lib/settings/visibility.svelte";
   import { untrack } from "svelte";
 
@@ -26,11 +27,15 @@
     const stopShortcuts = initShortcuts();
     const stopDropGuard = initDropGuard();
     const stopCaffeinate = initCaffeinate();
+    const stopRemote = initRemote();
+    const stopPublisher = initSidebarPublisher();
     const menuSettings = onMenuSettings(openSettings);
     return () => {
       stopShortcuts();
       stopDropGuard();
       stopCaffeinate();
+      stopRemote();
+      stopPublisher();
       void menuSettings.then((stop) => stop());
     };
   });

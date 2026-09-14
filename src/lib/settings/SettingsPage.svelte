@@ -21,6 +21,7 @@
   import { AGENT_NAMES } from "../agentStatus";
   import type { AgentKind } from "../types";
   import CloseIcon from "../sidebar/icons/CloseIcon.svelte";
+  import RemoteSection from "./RemoteSection.svelte";
 
   const CATEGORIES: ActionCategory[] = ["Tabs", "Groups", "App"];
   const byCategory = CATEGORIES.map((category) => ({
@@ -167,6 +168,8 @@
       </ul>
     </section>
 
+    <RemoteSection />
+
     <section>
       <div class="section-header">
         <div>
@@ -282,7 +285,7 @@
     font-size: 20px;
     font-weight: 600;
   }
-  section + section {
+  .content > :global(section + section) {
     margin-top: 32px;
   }
   .section-header {

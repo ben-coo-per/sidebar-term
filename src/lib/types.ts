@@ -120,6 +120,58 @@ export interface ResumeEntry {
   cwd: string | null;
 }
 
+/** What Tailscale says about this Mac, read from its CLI. */
+export interface TailscaleState {
+  /** The Tailscale CLI was found (the app or a Homebrew install). */
+  installed: boolean;
+  /** Tailscale is up and logged in. */
+  running: boolean;
+  /** This Mac's MagicDNS name, `bens-mac.tail1234.ts.net`, once running. */
+  dnsName: string | null;
+  /** Why Serve could not be set up, or the last CLI error, if any. */
+  error: string | null;
+}
+
+/** A phone that paired with Remote: it holds a token this Mac accepts. */
+export interface RemoteDevice {
+  id: string;
+  /** The name the phone gave itself when pairing. */
+  name: string;
+  /** Epoch ms. */
+  createdAt: number;
+  /** Epoch ms of its last connection, if it connected since pairing. */
+  lastSeenAt: number | null;
+  /** The Tailscale login the pairing came through, when it came through Serve. */
+  login: string | null;
+}
+
+/** A pairing in progress: the code a phone must present, shown as a QR code in Settings. */
+export interface Pairing {
+  /** As shown for typing: `ABCD EFGH`. */
+  code: string;
+  /** The page to open on the phone, code included, or null while there is no URL to reach. */
+  url: string | null;
+  /** Epoch ms. */
+  expiresAt: number;
+}
+
+/** The state of Remote. From `remote_state` / `remote_set` and the `remote` event. */
+export interface RemoteSnapshot {
+  /** Remote is on: the server listens and Tailscale Serve is asked to publish it. */
+  on: boolean;
+  /** The port the server listens on, on 127.0.0.1 only. */
+  port: number;
+  /** The phone's page, `https://<dns name>/m`, once Tailscale Serve publishes the server. */
+  url: string | null;
+  /** Why the server is not listening although Remote is on. */
+  error: string | null;
+  tailscale: TailscaleState;
+  /** Phones connected right now. */
+  clients: number;
+  devices: RemoteDevice[];
+  pairing: Pairing | null;
+}
+
 export const EVENT_SESSION_INFO = "session-info";
 export const EVENT_SESSION_EXIT = "session-exit";
 export const EVENT_ACTIVITY = "activity";
@@ -128,3 +180,5 @@ export const EVENT_USAGE = "usage";
 export const EVENT_MENU_SETTINGS = "menu-settings";
 /** Caffeinate turned off on its own (its `caffeinate` run ended); payload `false`. */
 export const EVENT_CAFFEINATE = "caffeinate";
+/** Remote's state changed (turned on or off, a phone connected or paired, a pairing expired). */
+export const EVENT_REMOTE = "remote";

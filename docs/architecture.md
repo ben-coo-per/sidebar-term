@@ -33,6 +33,16 @@ stores each Tab's last cwd instead and respawns a shell there on relaunch.
 | `resume_forget` | `keys: string[]` | - (drop leftover entries: resumed, dismissed, or their Tab is gone) |
 | `layout_load` / `layout_save` | `layout: json` | opaque JSON blob in the app data dir |
 | `settings_load` / `settings_save` | `settings: json` | opaque JSON blob in the app data dir; one section per owner (`hotkeys`, `usage`), merged by `src/lib/settings/store.ts` |
+| `remote_state` | - | `RemoteSnapshot`: where Remote stands, after re-reading Tailscale's state (async: runs its CLI) |
+| `remote_set` | `on: boolean` | `RemoteSnapshot`; rejects with why the server could not start (async: binds the port, runs Tailscale Serve) |
+| `remote_pair_begin` / `remote_pair_cancel` | - | `Pairing` (code, QR link, expiry) / - |
+| `remote_revoke` | `id: string` | - (forget a paired phone) |
+| `remote_sidebar` | `sidebar: json` | - (the sidebar as phones show it, opaque to Rust; relayed to every phone) |
+| `remote_state` | - | `RemoteSnapshot` after re-reading Tailscale's state (async: runs its CLI) |
+| `remote_set` | `on: boolean` | `RemoteSnapshot` (turn Remote on or off; rejects with why the server could not start) |
+| `remote_pair_begin` / `remote_pair_cancel` | - | `Pairing` (a code, its QR link and expiry) / - |
+| `remote_revoke` | `id: string` | - (forget a paired phone) |
+| `remote_sidebar` | `sidebar: json` | - (the sidebar as phones show it, `src/lib/mobile/protocol.ts`; relayed opaque) |
 
 | Event | Payload | When |
 |---|---|---|
@@ -42,6 +52,8 @@ stores each Tab's last cwd instead and respawns a shell there on relaunch.
 | `usage` | `UsageSnapshot` | right away on `usage_watch(true, ..)`, then whenever a number changes (checked every 5 s) |
 | `menu-settings` | - | the app menu's "Settings…" was chosen |
 | `caffeinate` | `false` | Caffeinate's `caffeinate` run ended without being turned off |
+| `remote` | `RemoteSnapshot` | Remote turned on or off, a phone connected or paired, a pairing expired |
+| `remote` | `RemoteSnapshot` | Remote turned on or off, a phone connected, paired or was removed, a pairing began or ended |
 
 Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `ipc.ts` routes to
 `src/lib/mock.ts`, a fake backend for developing the UI in a browser (`pnpm dev`, then open
@@ -63,11 +75,18 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
   agents' usage limits and emits `usage` on change (see "Panel").
 - `caffeinate.rs` — `Caffeinate` (Tauri state): the background `caffeinate` run behind the Tray's
   Caffeinate button (see "Tray").
+- `remote/` — `Remote` (Tauri state): the server for phones (`server.rs`, axum on Tauri's tokio),
+  paired phones and pairing codes (`auth.rs`, `remote.json`), the Tailscale CLI (`tailscale.rs`)
+  and each Session's output tap (`tap.rs`, fed by `session.rs`) (see "Remote").
 - `resume.rs` — `Resume` (Tauri state): a thread records every keyed Session's Resume entry to
   `resume.json` each second it changes, and a last time on exit (see "Resume").
 - `lib.rs` also builds the app menu: Tauri's default plus "Settings…" (no key equivalent: the
   Settings Hotkey stays the webview's, rebindable).
-- `layout.rs` — atomic JSON read/write of `layout.json`, `settings.json` and `resume.json` in the app data dir.
+- `remote/` — Remote (see "Remote"): `mod.rs` the `Remote` state (on/off, pairing, the relay of
+  the sidebar to phones), `server.rs` the axum routes and the WebSocket protocol, `tap.rs` each
+  Session's recent output and attached phones (fed by `session.rs`), `auth.rs` paired phones and
+  pairing codes (`remote.json`), `tailscale.rs` the Tailscale CLI.
+- `layout.rs` — atomic JSON read/write of `layout.json`, `settings.json`, `resume.json` and `remote.json` in the app data dir.
 
 ## Webview modules
 
@@ -84,8 +103,18 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
 - `src/lib/sidebar/*` — sidebar components. `src/routes/+page.svelte` — app shell.
 - `src/lib/tray/*` — the Tray (`Tray.svelte`), its `TrayButton`, and Caffeinate (state mirror and
   button).
+- `src/lib/remote/*` — Remote on the Mac: the state mirror for Settings (`remote.svelte.ts`), the
+  sidebar publisher, and the pure snapshot builder (`sidebar.ts`); `src/lib/settings/RemoteSection.svelte`.
+- `src/lib/mobile/*` — the phone's page (`src/routes/m`): the protocol (`protocol.ts`), the
+  connection (`client.ts`), its state (`store.svelte.ts`), the screens, and the font-fit maths (`fit.ts`).
 - `src/lib/resume/*` — the Resume banner (`ResumeBanner.svelte`), its state and actions
   (`resume.svelte.ts`) and the pure rule for what to type (`model.ts`).
+- `src/lib/remote/*` — Remote on the Mac: the state mirror and the sidebar publisher
+  (`remote.svelte.ts`), the pure snapshot builder (`sidebar.ts`); the Settings section is
+  `src/lib/settings/RemoteSection.svelte`.
+- `src/lib/mobile/*` + `src/routes/m` — the phone's page: the protocol (`protocol.ts`), the
+  connection (`client.ts`), its state (`store.svelte.ts`), font fitting (`fit.ts`) and the
+  screens (pairing, Tab list, `TerminalScreen` with `KeyBar`). `src/service-worker.ts` caches it.
 - `src/lib/panel/*` — the Panel (`Panel.svelte`), its view list (`views.ts`), the Activity view
   (`activity/`: snapshot store, pure sorting / formatting / meter maths, components) and the Usage
   view (`usage/`: snapshot store, chosen agents, pure formatting, components).
@@ -251,6 +280,72 @@ Code" (every `claude` entry), "Rerun commands" (every `command` entry), per row 
 and never types into one that is not at its prompt: that row stays, marked Busy. An entry is
 dropped once its Tab closes or becomes an Agent session (resumed by hand). Other jobs do not
 count, since shell startup files run commands too.
+
+## Remote
+
+The Mac app serving its Sessions to a phone (ADR 0002; vocabulary in `CONTEXT.md`). v1 is
+attach-and-drive: the phone sees the sidebar and drives any Session; it cannot create, close,
+rename or move Tabs (#20 moves the layout into Rust first). Off by default.
+
+**Server** (`src-tauri/src/remote/`). `remote_set(true)` binds `127.0.0.1:<port>` (47611 unless
+`remote.json` says otherwise; never a LAN address) and runs axum on Tauri's tokio runtime. It
+then asks Tailscale to publish it: `tailscale serve --bg --https=443 http://127.0.0.1:<port>`,
+which gives `https://<mac>.<tailnet>.ts.net` with a real certificate, reachable only from the
+tailnet (Funnel is never used). The CLI is looked for in the Tailscale app and Homebrew. Without
+Tailscale the server still listens on localhost and Settings says what is missing. `enabled`
+persists in `remote.json`, so Remote comes back on at launch. Turning off closes every phone
+(close code 1001), removes the Serve rule and ends the pairing.
+
+Routes: `/` → `/m`; `/m…` → `index.html` (the SPA routes to `src/routes/m`); other paths are
+built assets through Tauri's asset resolver (embedded in a release build; `../build` on disk in
+dev, so run `pnpm build` first). `POST /api/pair {code, name}` pairs a phone. `GET /ws` is the
+phone's connection: first text frame `{"t":"auth","token"}` within five seconds or close 4401 /
+4408; then from the phone `attach`, `detach` `{sessionId}`, `input` `{sessionId, data}`, `ping`;
+from the Mac `hello {device, sidebar}`, `sidebar`, `attached {sessionId, cols, rows}` followed by
+a binary replay, `resized`, `exit`, `error`, `pong`, and binary output frames (a big-endian u32
+Session id, then the bytes). Types: `src/lib/mobile/protocol.ts`.
+
+**Taps** (`remote/tap.rs`). `session.rs` gives every Session's output to `Taps` as well as to
+the webview's channel: a 256 KiB ring of recent output (trimmed to a line so a replay does not
+start inside an escape sequence), the pty's size (from spawn and every `session_resize`), and
+the phones attached. An attach reads the ring and registers the subscriber under one lock, so
+nothing falls between the replay and the live frames. A phone that falls 512 frames behind is
+dropped and reconnects (close 4429); the connection's 5 s ping notices.
+
+**Access**. Two gates: the tailnet (Tailscale's own device identity and WireGuard), then a
+token. Pairing: `remote_pair_begin` makes an 8-character code (32-symbol alphabet, 40 bits, ten
+minutes, five wrong tries) shown in Settings as a QR code of `<url>#pair=<code>` and as text.
+The phone posts it with its name and gets a 256-bit token; `remote.json` stores its SHA-256.
+Every WebSocket sends the token first; Settings lists paired phones with when each was last seen
+and removes them. Tailscale Serve's `Tailscale-User-Login` header is recorded on the pairing for
+display only: a local process could set it, so it is never what admits a phone. The pairing
+endpoint and the page are reachable without a token by design (the page has no secrets).
+
+**Sidebar for phones** (`src/lib/remote/`). Rust knows no Tabs (ADR 0001), so the Mac webview
+publishes what a phone should list: `initSidebarPublisher` builds a `SidebarSnapshot` (Groups,
+Tabs with Title, Agent status, `finished`, Badge facts, the active Tab: `sidebar.ts`) from the
+layout and Session facts, and sends it through `remote_sidebar` when it changed, debounced
+150 ms, while Remote is on. Rust keeps the latest for `hello` and relays each to every phone.
+`remote.svelte.ts` also mirrors `RemoteSnapshot` for the Settings section
+(`src/lib/settings/RemoteSection.svelte`: switch, Tailscale status, pairing card, paired phones).
+
+**The phone** (`src/routes/m`, `src/lib/mobile/`). `store.svelte.ts`: paired or not (token in
+`localStorage`), the connection (`client.ts`: one WebSocket, backoff 1–15 s, re-attaches what was
+attached, tries at once when the page returns to the foreground), the sidebar, the open Tab.
+Screens: pairing (code prefilled from the QR link), the Tab list (same icons and Badge as the
+Mac's rows), and `TerminalScreen`: an xterm.js Terminal at the Mac's grid, `t.reset()` before
+each replay, font size chosen so the Mac's columns fit the width (`fit.ts`, from a measured cell;
+below 6 px the grid scrolls sideways), the screen sized to the visual viewport so the key bar
+(Esc, Tab, Shift-Tab, a one-shot Ctrl, arrows, ^C, Return; DECCKM-aware arrows) sits above the
+keyboard. The phone never resizes the pty. `service-worker.ts` caches the page and assets
+(registered only on `/m` over HTTPS; the Mac's webview never has it) and `manifest.webmanifest`
+makes "Add to Home Screen" a full-screen app with its own icon; an installed page keeps its
+storage, so the pairing lasts.
+
+**Dev loop**. `pnpm build` (the server serves `../build`), then `pnpm tauri dev`; open
+`http://127.0.0.1:<port>/m` in a browser. `SIDEBAR_TERM_REMOTE_PAIR=1 pnpm tauri dev` (debug
+builds) starts a pairing at launch and prints its code and link, so a browser can pair without
+clicking through Settings.
 
 ## Window
 
