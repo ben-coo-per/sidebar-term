@@ -12,7 +12,9 @@
 // Layout persistence uses localStorage. Activity is invented: each fake Session has a shell (and
 // its foreground program, busy when it is an agent) next to a fixed cast of jittering system
 // processes. Usage is invented too: fixed limits, Claude Code's 5-hour window creeping up.
-// Caffeinate is only a flag: nothing is kept awake. Resume is kept in localStorage like Rust's
+// Caffeinate is only a flag: nothing is kept awake. Memory Guard runs its policy on the invented
+// memory (each running agent adds 3.5 GB of 16 GB): open two agent Tabs to see one frozen, and
+// `exit` one to see it thawed. Frozen Sessions are only marked, nothing stops. Resume is kept in localStorage like Rust's
 // resume.json: start `claude` or `npm run dev` in a Tab, reload the page, and the banner offers it.
 
 import type { SpawnOptions } from "./ipc";
@@ -23,6 +25,7 @@ import type {
   AgentKind,
   AgentUsage,
   GitInfo,
+  GuardSnapshot,
   ResumeEntry,
   SessionExit,
   SessionId,
@@ -320,7 +323,8 @@ function activitySnapshot(): ActivitySnapshot {
   for (const s of sessions.values()) {
     processes.push({ pid: 5000 + s.id * 10, name: "zsh", cpu: 0, mem: 3 * MB, sessionId: s.id });
     if (s.fg !== "zsh") {
-      processes.push({ pid: 5001 + s.id * 10, name: s.fg, cpu: jitter(s.agent ? 35 : 5), mem: 240 * MB, sessionId: s.id });
+      const mem = s.agent ? 3.5 * 1024 * MB : 240 * MB;
+      processes.push({ pid: 5001 + s.id * 10, name: s.fg, cpu: jitter(s.agent ? 35 : 5), mem, sessionId: s.id });
     }
   }
   const bySession = new Map<SessionId, ActivitySession>();
@@ -335,8 +339,10 @@ function activitySnapshot(): ActivitySnapshot {
   return {
     cpuCount: 10,
     cpuTotal: processes.reduce((sum, p) => sum + p.cpu, 0),
-    memUsed: 14.2 * 1024 * MB,
-    memTotal: 32 * 1024 * MB,
+    memUsed: 8 * 1024 * MB + [...bySession.values()].reduce((sum, s) => sum + s.mem, 0),
+    memWired: 2.5 * 1024 * MB,
+    memCompressed: 1.5 * 1024 * MB,
+    memTotal: 16 * 1024 * MB,
     sessions: [...bySession.values()],
     processes,
   };
@@ -421,6 +427,64 @@ export async function caffeinateState(): Promise<boolean> {
 export async function setCaffeinate(on: boolean): Promise<boolean> {
   caffeinated = on;
   return caffeinated;
+}
+
+let guard: GuardSnapshot = { on: false, limitPercent: 85, frozen: [] };
+let guardVisibleId: SessionId | null = null;
+let guardTimer: ReturnType<typeof setInterval> | null = null;
+let guardLastStep = 0;
+const guardCbs = new Set<(g: GuardSnapshot) => void>();
+
+function guardChanged(): GuardSnapshot {
+  const copy = { ...guard, frozen: [...guard.frozen] };
+  guardCbs.forEach((cb) => cb(copy));
+  return copy;
+}
+
+/** guard.rs's policy, minus the clocks' finer points: freeze the heaviest, thaw the oldest. */
+function guardTick() {
+  const snap = activitySnapshot();
+  guard.frozen = guard.frozen.filter((f) => sessions.has(f.sessionId));
+  if (Date.now() - guardLastStep < 10_000) return;
+  const used = (snap.memUsed / snap.memTotal) * 100;
+  if (used > guard.limitPercent) {
+    const frozen = new Set(guard.frozen.map((f) => f.sessionId));
+    const pick = snap.sessions
+      .filter((s) => s.mem >= 128 * MB && s.sessionId !== guardVisibleId && !frozen.has(s.sessionId))
+      .sort((a, b) => b.mem - a.mem)[0];
+    if (!pick) return;
+    guard.frozen.push({ sessionId: pick.sessionId, mem: pick.mem, frozenAt: Date.now() });
+  } else if (used < guard.limitPercent - 10 && guard.frozen.length) {
+    guard.frozen.shift();
+  } else return;
+  guardLastStep = Date.now();
+  guardChanged();
+}
+
+export async function guardState(): Promise<GuardSnapshot> {
+  return { ...guard, frozen: [...guard.frozen] };
+}
+
+export async function setGuard(on: boolean, limitPercent: number): Promise<GuardSnapshot> {
+  guard = { on, limitPercent: Math.min(95, Math.max(50, limitPercent)), frozen: on ? guard.frozen : [] };
+  if (guardTimer !== null) clearInterval(guardTimer);
+  guardTimer = on ? setInterval(guardTick, 2000) : null;
+  return guardChanged();
+}
+
+export async function guardVisible(sessionId: SessionId | null): Promise<void> {
+  guardVisibleId = sessionId;
+  const before = guard.frozen.length;
+  guard.frozen = guard.frozen.filter((f) => f.sessionId !== sessionId);
+  if (guard.frozen.length !== before) {
+    guardLastStep = Date.now();
+    guardChanged();
+  }
+}
+
+export async function onGuard(cb: (g: GuardSnapshot) => void) {
+  guardCbs.add(cb);
+  return () => void guardCbs.delete(cb);
 }
 
 const SETTINGS_KEY = "sidebar-term:mock-settings";

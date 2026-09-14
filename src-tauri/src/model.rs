@@ -100,7 +100,8 @@ pub struct ActivityProcess {
     /// Percent of one core over the last sample interval, as Activity Monitor shows it
     /// (a process using two cores reads 200).
     pub cpu: f32,
-    /// Resident memory in bytes.
+    /// Physical footprint in bytes, as Activity Monitor's "Memory" column (compressed and swapped
+    /// pages included); resident size for another user's process, whose footprint is unreadable.
     pub mem: u64,
     /// The Session whose shell this process is or descends from; `None` for everything else.
     pub session_id: Option<SessionId>,
@@ -126,11 +127,38 @@ pub struct ActivitySnapshot {
     pub cpu_total: f32,
     /// Bytes in use as Activity Monitor counts "Memory Used": app + wired + compressed.
     pub mem_used: u64,
+    /// Part of `mem_used` macOS keeps for itself (the kernel, the GPU): no process's.
+    pub mem_wired: u64,
+    /// Part of `mem_used` the compressor occupies. Process footprints count their compressed
+    /// pages at full size, so this overlaps them.
+    pub mem_compressed: u64,
     pub mem_total: u64,
     /// Every Session with at least one live process.
     pub sessions: Vec<ActivitySession>,
     /// Every Session's processes, plus the busiest others by CPU and by memory. Unordered.
     pub processes: Vec<ActivityProcess>,
+}
+
+/// One Session Memory Guard has frozen (every process in it stopped with SIGSTOP).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrozenSession {
+    pub session_id: SessionId,
+    /// The Session's memory (sum of footprints) when it was frozen, bytes.
+    pub mem: u64,
+    /// When it was frozen, epoch ms.
+    pub frozen_at: u64,
+}
+
+/// Memory Guard's state. Payload of `memory-guard`, sent on every change.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuardSnapshot {
+    pub on: bool,
+    /// Freeze a Tab when Memory Used passes this percent of physical memory.
+    pub limit_percent: u8,
+    /// Frozen Sessions, oldest first: the order they are thawed in.
+    pub frozen: Vec<FrozenSession>,
 }
 
 /// One usage limit of one coding agent, e.g. Claude Code's 5-hour window.
@@ -202,3 +230,5 @@ pub const EVENT_USAGE: &str = "usage";
 pub const EVENT_MENU_SETTINGS: &str = "menu-settings";
 /// Caffeinate turned off on its own (its `caffeinate` run ended); payload `false`.
 pub const EVENT_CAFFEINATE: &str = "caffeinate";
+/// Memory Guard froze or thawed a Session, or was turned on or off; payload `GuardSnapshot`.
+pub const EVENT_MEMORY_GUARD: &str = "memory-guard";

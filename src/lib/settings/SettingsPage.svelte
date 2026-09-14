@@ -1,6 +1,6 @@
 <!-- The Settings page: shown over the Terminal (⌘, or the app menu's "Settings…"). Holds which
-     agents the Panel's Usage view shows, and the Hotkeys: click a binding, press the new combo;
-     Escape cancels. See src/lib/hotkeys.ts for the rules. -->
+     agents the Panel's Usage view shows, the Tabs' CPU and memory and Memory Guard, and the Hotkeys:
+     click a binding, press the new combo; Escape cancels. See src/lib/hotkeys.ts for the rules. -->
 <script lang="ts">
   import {
     ACTIONS,
@@ -20,6 +20,9 @@
   import { setUsageAgent, usageSettings } from "../panel/usage/settings.svelte";
   import { AGENT_NAMES } from "../agentStatus";
   import type { AgentKind } from "../types";
+  import { activitySettings, setTabStats } from "../panel/activity/settings.svelte";
+  import { memoryGuard, setGuardLimit, toggleMemoryGuard } from "../guard/memoryGuard.svelte";
+  import { GUARD_LIMITS, THAW_GAP } from "../guard/model";
   import CloseIcon from "../sidebar/icons/CloseIcon.svelte";
 
   const CATEGORIES: ActionCategory[] = ["Tabs", "Groups", "App"];
@@ -164,6 +167,56 @@
             </label>
           </li>
         {/each}
+      </ul>
+    </section>
+
+    <section>
+      <div class="section-header">
+        <div>
+          <h2>Memory</h2>
+          <p class="hint">What each Tab costs, and keeping heavy Tabs from slowing the Mac down.</p>
+        </div>
+      </div>
+      <ul class="rows">
+        <li class="row">
+          <label class="check">
+            <span class="label">
+              CPU and memory on Tabs
+              <span class="detail">Each Tab shows what its processes use. Reads every process every 2 seconds.</span>
+            </span>
+            <input type="checkbox" checked={activitySettings.tabStats} onchange={(e) => setTabStats(e.currentTarget.checked)} />
+          </label>
+        </li>
+        <li class="row">
+          <label class="check">
+            <span class="label">
+              Memory Guard
+              <span class="detail">
+                When memory use passes the limit, freezes the Tab using the most memory (never the one in view), and
+                thaws it once memory is {THAW_GAP} points under the limit. A frozen Tab stops using CPU and stops
+                growing but keeps the memory it holds. Going to it thaws it. Also in the Tray.
+              </span>
+            </span>
+            <input type="checkbox" checked={memoryGuard.on} onchange={() => void toggleMemoryGuard()} />
+          </label>
+        </li>
+        <li class="row">
+          <label class="check">
+            <span class="label">
+              Memory Guard limit
+              <span class="detail">Memory Used, as in the Activity view, as a share of this Mac's memory.</span>
+            </span>
+            <select
+              class="select"
+              value={memoryGuard.limitPercent}
+              onchange={(e) => void setGuardLimit(Number(e.currentTarget.value))}
+            >
+              {#each GUARD_LIMITS as limit (limit)}
+                <option value={limit}>{limit}%</option>
+              {/each}
+            </select>
+          </label>
+        </li>
       </ul>
     </section>
 
@@ -348,6 +401,17 @@
     height: 14px;
     margin: 0;
     accent-color: var(--accent);
+    cursor: pointer;
+  }
+  .select {
+    flex: none;
+    font: inherit;
+    font-size: 12px;
+    padding: 2px 6px;
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-sm);
+    background: var(--sidebar-bg-raised);
+    color: var(--text-primary);
     cursor: pointer;
   }
   .controls {

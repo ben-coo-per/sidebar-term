@@ -6,6 +6,7 @@ mod activity;
 mod caffeinate;
 mod detect;
 mod drop;
+mod guard;
 mod layout;
 mod model;
 mod monitor;
@@ -14,7 +15,10 @@ mod resume;
 mod session;
 mod usage;
 
-use model::{AgentKind, ResumeEntry, SessionId, SessionInfo, EVENT_CAFFEINATE, EVENT_MENU_SETTINGS};
+use model::{
+    AgentKind, GuardSnapshot, ResumeEntry, SessionId, SessionInfo, EVENT_CAFFEINATE,
+    EVENT_MEMORY_GUARD, EVENT_MENU_SETTINGS,
+};
 use session::SessionManager;
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
@@ -57,7 +61,12 @@ fn session_resume(sessions: State<'_, SessionManager>, session_id: SessionId) ->
 }
 
 #[tauri::command]
-fn session_kill(sessions: State<'_, SessionManager>, session_id: SessionId) -> Result<(), String> {
+fn session_kill(
+    sessions: State<'_, SessionManager>,
+    guard: State<'_, guard::Guard>,
+    session_id: SessionId,
+) -> Result<(), String> {
+    guard.release(session_id); // a frozen Session would not get the hangup
     sessions.kill(session_id)
 }
 
@@ -70,8 +79,10 @@ fn session_reset(
     activity: State<'_, activity::Activity>,
     usage: State<'_, usage::Usage>,
     resume: State<'_, resume::Resume>,
+    guard: State<'_, guard::Guard>,
 ) {
     resume.end_run(resume::entries(&sessions.keyed_targets()));
+    guard.release_all();
     sessions.kill_all();
     activity.watch(false);
     usage.watch(false, Vec::new());
@@ -87,6 +98,33 @@ fn session_info(sessions: State<'_, SessionManager>, session_id: SessionId) -> O
 #[tauri::command]
 fn activity_watch(activity: State<'_, activity::Activity>, on: bool) {
     activity.watch(on);
+}
+
+/// Memory Guard's state.
+#[tauri::command]
+fn guard_state(guard: State<'_, guard::Guard>) -> GuardSnapshot {
+    guard.snapshot()
+}
+
+/// Turn Memory Guard on or off and set its limit (percent of physical memory); off thaws every
+/// frozen Tab. Returns the new state, which also goes out as `memory-guard`.
+#[tauri::command]
+fn guard_set(
+    guard: State<'_, guard::Guard>,
+    activity: State<'_, activity::Activity>,
+    on: bool,
+    limit_percent: u8,
+) -> GuardSnapshot {
+    let snapshot = guard.set(on, limit_percent);
+    activity.sample_for_guard(on);
+    snapshot
+}
+
+/// The Session whose Tab is in view (null: none). Memory Guard never freezes it, and thaws it if
+/// it was frozen.
+#[tauri::command]
+fn guard_visible(guard: State<'_, guard::Guard>, session_id: Option<SessionId>) {
+    guard.set_visible(session_id);
 }
 
 /// Start (or change the agents of) or stop reading Usage; while on, `usage` fires on each change.
@@ -207,10 +245,24 @@ pub fn run() {
             monitor::spawn(handle.clone(), move || {
                 for_targets.state::<SessionManager>().probe_targets()
             });
-            let for_activity = handle.clone();
-            app.manage(activity::spawn(handle.clone(), move || {
-                for_activity.state::<SessionManager>().probe_targets()
+            let frozen_file = layout::path(&handle, layout::FROZEN)
+                .inspect_err(|e| eprintln!("memory guard: no app data dir ({e}); not persisted"))
+                .ok();
+            let for_guard_events = handle.clone();
+            app.manage(guard::Guard::open(frozen_file, move |snapshot| {
+                if let Err(e) = for_guard_events.emit(EVENT_MEMORY_GUARD, snapshot) {
+                    eprintln!("memory guard: emit failed: {e}");
+                }
             }));
+            let for_activity = handle.clone();
+            let for_guard = handle.clone();
+            app.manage(activity::spawn(
+                handle.clone(),
+                move || for_activity.state::<SessionManager>().probe_targets(),
+                move |snapshot, targets| {
+                    for_guard.state::<guard::Guard>().observe(snapshot, targets)
+                },
+            ));
             let for_caffeinate = handle.clone();
             app.manage(caffeinate::Caffeinate::new(move || {
                 if let Err(e) = for_caffeinate.emit(EVENT_CAFFEINATE, false) {
@@ -241,6 +293,9 @@ pub fn run() {
             session_reset,
             session_info,
             activity_watch,
+            guard_state,
+            guard_set,
+            guard_visible,
             usage_watch,
             caffeinate_state,
             caffeinate_set,
@@ -264,6 +319,9 @@ pub fn run() {
             // Record what is running before killing it, so the next launch can resume it.
             if let Some(resume) = handle.try_state::<resume::Resume>() {
                 resume.finish(resume::entries(&sessions.keyed_targets()));
+            }
+            if let Some(guard) = handle.try_state::<guard::Guard>() {
+                guard.release_all(); // stopped processes would never get the hangup
             }
             sessions.kill_all();
         }

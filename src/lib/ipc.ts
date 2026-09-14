@@ -7,12 +7,14 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   EVENT_ACTIVITY,
   EVENT_CAFFEINATE,
+  EVENT_MEMORY_GUARD,
   EVENT_MENU_SETTINGS,
   EVENT_SESSION_EXIT,
   EVENT_SESSION_INFO,
   EVENT_USAGE,
   type ActivitySnapshot,
   type AgentKind,
+  type GuardSnapshot,
   type ResumeEntry,
   type SessionExit,
   type SessionId,
@@ -104,6 +106,33 @@ export function watchActivity(on: boolean): Promise<void> {
 export function onActivity(cb: (snapshot: ActivitySnapshot) => void): Promise<UnlistenFn> {
   if (!inTauri) return mock.onActivity(cb);
   return listen<ActivitySnapshot>(EVENT_ACTIVITY, (e) => cb(e.payload));
+}
+
+/** Memory Guard's state. */
+export function guardState(): Promise<GuardSnapshot> {
+  if (!inTauri) return mock.guardState();
+  return invoke("guard_state");
+}
+
+/**
+ * Turn Memory Guard on or off and set its limit (percent of physical memory, 50..95). Off thaws
+ * every frozen Tab. Resolves to the new state.
+ */
+export function setGuard(on: boolean, limitPercent: number): Promise<GuardSnapshot> {
+  if (!inTauri) return mock.setGuard(on, limitPercent);
+  return invoke("guard_set", { on, limitPercent });
+}
+
+/** The Session whose Tab is in view: Memory Guard never freezes it, and thaws it if frozen. */
+export function guardVisible(sessionId: SessionId | null): Promise<void> {
+  if (!inTauri) return mock.guardVisible(sessionId);
+  return invoke("guard_visible", { sessionId });
+}
+
+/** Memory Guard froze or thawed a Tab, or was turned on or off. */
+export function onGuard(cb: (snapshot: GuardSnapshot) => void): Promise<UnlistenFn> {
+  if (!inTauri) return mock.onGuard(cb);
+  return listen<GuardSnapshot>(EVENT_MEMORY_GUARD, (e) => cb(e.payload));
 }
 
 /**

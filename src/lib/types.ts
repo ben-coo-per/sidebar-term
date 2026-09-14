@@ -48,7 +48,8 @@ export interface ActivityProcess {
   name: string;
   /** Percent of one core over the last interval (two busy cores read 200). */
   cpu: number;
-  /** Resident memory, bytes. */
+  /** Physical footprint, bytes, as Activity Monitor's "Memory" column (compressed pages included);
+   *  resident size for another user's process. */
   mem: number;
   /** The Session whose shell this process is or descends from; null for everything else. */
   sessionId: SessionId | null;
@@ -68,13 +69,35 @@ export interface ActivitySnapshot {
   cpuCount: number;
   /** Sum of every process's cpu, in percent of one core. */
   cpuTotal: number;
-  /** Bytes in use as Activity Monitor counts "Memory Used". */
+  /** Bytes in use as Activity Monitor counts "Memory Used": app + wired + compressed. */
   memUsed: number;
+  /** Part of memUsed macOS keeps for itself (the kernel, the GPU): no process's. */
+  memWired: number;
+  /** Part of memUsed the compressor occupies (overlaps process footprints). */
+  memCompressed: number;
   memTotal: number;
   /** Every Session with at least one live process. */
   sessions: ActivitySession[];
   /** Every Session's processes plus the busiest others by CPU and by memory. Unordered. */
   processes: ActivityProcess[];
+}
+
+/** One Session Memory Guard has frozen (every process in it stopped). */
+export interface FrozenSession {
+  sessionId: SessionId;
+  /** Its memory when frozen, bytes. */
+  mem: number;
+  /** When it was frozen, epoch ms. */
+  frozenAt: number;
+}
+
+/** Memory Guard's state. From `guard_state` / `guard_set`, and pushed on `memory-guard`. */
+export interface GuardSnapshot {
+  on: boolean;
+  /** Freeze a Tab when Memory Used passes this percent of physical memory. */
+  limitPercent: number;
+  /** Oldest first: the order they are thawed in. */
+  frozen: FrozenSession[];
 }
 
 /** One usage limit of one coding agent, e.g. Claude Code's 5-hour window. */
@@ -128,3 +151,5 @@ export const EVENT_USAGE = "usage";
 export const EVENT_MENU_SETTINGS = "menu-settings";
 /** Caffeinate turned off on its own (its `caffeinate` run ended); payload `false`. */
 export const EVENT_CAFFEINATE = "caffeinate";
+/** Memory Guard froze or thawed a Session, or was turned on or off; payload GuardSnapshot. */
+export const EVENT_MEMORY_GUARD = "memory-guard";

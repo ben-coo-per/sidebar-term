@@ -9,6 +9,8 @@ pub const LAYOUT: &str = "layout.json";
 pub const SETTINGS: &str = "settings.json";
 /// What each Session was running, for Resume (`resume.rs`).
 pub const RESUME: &str = "resume.json";
+/// Processes Memory Guard has frozen, for the next launch to thaw after a crash (`guard.rs`).
+pub const FROZEN: &str = "frozen.json";
 
 pub fn path(app: &AppHandle, file: &str) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;

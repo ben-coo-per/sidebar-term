@@ -28,6 +28,7 @@
   --status-running: #5b93f5;
   --status-needs-input: #e3a63e;
   --status-finished: #9a9ea7;
+  --status-frozen: #7cc4e8; /* a Tab Memory Guard froze */
 
   /* Activity (Panel): Tabs in their colour, everything else muted */
   --tab-color-plain: #d4d6db; /* a Tab outside any repo, which has no repo colour */
