@@ -1,9 +1,9 @@
 <!-- A Tab row: Agent/plain icon, Agent status (or a snowflake while Memory Guard has it frozen),
-     Title (inline rename), Badge, the Session's CPU and memory (Settings), close button. -->
+     Title (inline rename; bold while unread), Badge, the Session's CPU and memory (Settings), close button. -->
 <script lang="ts">
   import type { Tab } from "../layout.svelte";
   import { activateTab, layout, moveTab, newGroupFromTab, renameTab } from "../layout.svelte";
-  import { sessionState, tabTitle } from "../sessions.svelte";
+  import { sessionState, setTabRead, tabIsUnread, tabTitle } from "../sessions.svelte";
   import { AGENT_NAMES } from "../agentStatus";
   import RobotIcon from "./icons/RobotIcon.svelte";
   import TerminalIcon from "./icons/TerminalIcon.svelte";
@@ -14,7 +14,7 @@
   import { activity } from "../panel/activity/activity.svelte";
   import { activitySettings } from "../panel/activity/settings.svelte";
   import { formatBytes, formatTabStats } from "../panel/activity/model";
-  import { frozenSession } from "../guard/memoryGuard.svelte";
+  import { freezeSession, frozenSession, thawSession } from "../guard/memoryGuard.svelte";
   import { frozenTitle } from "../guard/model";
   import Badge from "./Badge.svelte";
   import { dnd, startTabDrag, endDrag, overTabRow, dropOnTabRow } from "./dnd.svelte";
@@ -111,10 +111,21 @@
     }
   }
 
+  /** Freeze (not the Tab in view: going to a Tab thaws it) or Thaw. */
+  function freezeItem(): MenuItem {
+    const sessionId = tab.sessionId;
+    if (sessionId === null) return { label: "Freeze", disabled: true };
+    if (frozen) return { label: "Thaw", action: () => void thawSession(sessionId) };
+    return { label: "Freeze", action: () => void freezeSession(sessionId), disabled: isActive };
+  }
+
   function menuItems(): MenuItem[] {
     const otherGroups = layout.groups.filter((g) => g.id !== tab.groupId);
     return [
       { label: "Rename", action: beginRename },
+      tabIsUnread(tab)
+        ? { label: "Mark as Read", action: () => setTabRead(tab, true) }
+        : { label: "Mark as Unread", action: () => setTabRead(tab, false) },
       {
         label: "Move to Group",
         submenu: otherGroups.length
@@ -122,6 +133,7 @@
           : [{ label: "No other Groups", disabled: true }],
       },
       { label: "New Group from Tab", action: () => void newGroupFromTab(tab.id) },
+      freezeItem(),
       { label: "Close", action: () => void requestCloseTab(tab.id), danger: true, separatorBefore: true },
     ];
   }
@@ -136,6 +148,7 @@
   class:active={isActive}
   class:dragging={dnd.draggingTabId === tab.id}
   class:highlight={highlight || finished}
+  class:unread={tab.unread}
   role="button"
   tabindex="0"
   draggable="true"
@@ -226,7 +239,9 @@
   .row.dragging {
     opacity: 0.4;
   }
-  .row.highlight:not(.active) .title {
+  /* A user's unread mark shows on the Tab in view too, so marking it is visible straight away. */
+  .row.highlight:not(.active) .title,
+  .row.unread .title {
     color: var(--text-primary);
     font-weight: 600;
   }

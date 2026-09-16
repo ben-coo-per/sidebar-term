@@ -32,10 +32,11 @@ function clock(ms: number): string {
 
 /** A frozen Tab's tooltip. `mem` is already formatted ("1.21 GB"). */
 export function frozenTitle(f: FrozenSession, mem: string): string {
-  return `Frozen by Memory Guard at ${clock(f.frozenAt)}, holding ${mem}. Go to this Tab to thaw it.`;
+  const by = f.manual ? "you" : "Memory Guard";
+  return `Frozen by ${by} at ${clock(f.frozenAt)}, holding ${mem}. Go to this Tab to thaw it.`;
 }
 
-/** The Tray button's tooltip. */
+/** The Tray button's tooltip. `frozen` counts the Tabs Memory Guard froze, not those frozen by hand. */
 export function guardButtonTitle(on: boolean, limitPercent: number, frozen: number): string {
   if (!on) return "Memory Guard: freeze the heaviest Tab when memory gets tight";
   const tabs = frozen === 0 ? "no Tab frozen" : frozen === 1 ? "1 Tab frozen" : `${frozen} Tabs frozen`;

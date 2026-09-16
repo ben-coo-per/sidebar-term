@@ -13,7 +13,11 @@
 //! - Memory Used under the limit less [`THAW_GAP`] points: thaw the Session frozen first.
 //! - After either, wait [`SETTLE`] before the next, so memory shows the effect first.
 //! - Going to a frozen Tab thaws it at once and spares it: it is not frozen again until memory
-//!   falls under the thaw line. Turning Memory Guard off thaws everything.
+//!   falls under the thaw line. Turning Memory Guard off thaws what it froze.
+//!
+//! The user can also freeze a Tab by hand ([`Guard::freeze`]), whether Memory Guard is on or not.
+//! Memory Guard never thaws such a Tab on its own, nor when turned off: only going to the Tab, or
+//! thawing it by hand ([`Guard::thaw`]), does.
 //!
 //! Order matters with job control. Stopping a shell's foreground job makes the shell take the tty
 //! back ("suspended"), so the shell is stopped first, then its descendants, parents before
@@ -62,6 +66,8 @@ struct Frozen {
     session_id: SessionId,
     mem: u64,
     frozen_at: u64,
+    /// Frozen by the user, not by `decide`.
+    manual: bool,
     /// Parents first: the order they were stopped in.
     procs: Vec<Proc>,
 }
@@ -146,7 +152,7 @@ impl Inner {
                 .max_by_key(|s| (s.mem, std::cmp::Reverse(s.session_id)))
                 .map_or(Step::Wait, |s| Step::Freeze(s.session_id));
         }
-        match self.frozen.first() {
+        match self.frozen.iter().find(|f| !f.manual) {
             Some(f) if snap.mem_used < thaw_line => Step::Thaw(f.session_id),
             _ => Step::Wait,
         }
@@ -163,6 +169,7 @@ impl Inner {
                     session_id: f.session_id,
                     mem: f.mem,
                     frozen_at: f.frozen_at,
+                    manual: f.manual,
                 })
                 .collect(),
         }
@@ -177,12 +184,16 @@ impl Inner {
         true
     }
 
-    fn thaw_all(&mut self) -> bool {
-        let any = !self.frozen.is_empty();
-        for f in self.frozen.drain(..) {
+    /// Thaw every Session, or (`manual_too` false) every one `decide` froze.
+    fn thaw_all(&mut self, manual_too: bool) -> bool {
+        let (thaw, keep) = std::mem::take(&mut self.frozen)
+            .into_iter()
+            .partition::<Vec<_>, _>(|f| manual_too || !f.manual);
+        self.frozen = keep;
+        for f in &thaw {
             thaw_procs(&f.procs);
         }
-        any
+        !thaw.is_empty()
     }
 }
 
@@ -231,13 +242,13 @@ impl Guard {
         self.lock().snapshot()
     }
 
-    /// Turn on or off and set the limit (clamped to 50..=95%). Off thaws everything.
+    /// Turn on or off and set the limit (clamped to 50..=95%). Off thaws what Memory Guard froze.
     pub fn set(&self, on: bool, limit_percent: u8) -> GuardSnapshot {
         let mut inner = self.lock();
         inner.on = on;
         inner.limit_percent = limit_percent.clamp(*LIMITS.start(), *LIMITS.end());
         if !on {
-            inner.thaw_all();
+            inner.thaw_all(false);
             inner.spared.clear();
             inner.over_since = None;
             inner.last_step = None;
@@ -258,6 +269,47 @@ impl Guard {
         }
     }
 
+    /// Freeze a Session by hand. Refused for the Session in view, and a no-op for a frozen one.
+    pub fn freeze(&self, target: &ProbeTarget) -> Result<GuardSnapshot, String> {
+        let id = target.session_id;
+        let mut inner = self.lock();
+        if inner.visible == Some(id) {
+            return Err("the Tab in view cannot be frozen".into());
+        }
+        if inner.frozen.iter().any(|f| f.session_id == id) {
+            return Ok(inner.snapshot());
+        }
+        let procs = freeze_tree(target.shell_pid);
+        if procs.is_empty() {
+            return Err("its shell could not be stopped".into());
+        }
+        let mem = procs
+            .iter()
+            .filter_map(|p| rusage(p.pid))
+            .map(|(footprint, _)| footprint)
+            .sum();
+        inner.frozen.push(Frozen {
+            session_id: id,
+            mem,
+            frozen_at: now_ms(),
+            manual: true,
+            procs,
+        });
+        inner.spared.remove(&id);
+        Ok(self.changed(inner))
+    }
+
+    /// Thaw a Session by hand, sparing it like going to its Tab does.
+    pub fn thaw(&self, id: SessionId) -> GuardSnapshot {
+        let mut inner = self.lock();
+        if !inner.thaw(id) {
+            return inner.snapshot();
+        }
+        inner.spared.insert(id);
+        inner.last_step = Some(Instant::now());
+        self.changed(inner)
+    }
+
     /// Thaw a Session about to be killed, so the hangup reaches every process.
     pub fn release(&self, id: SessionId) {
         let mut inner = self.lock();
@@ -269,7 +321,7 @@ impl Guard {
     /// Thaw every Session: before killing them all (quit, webview reload).
     pub fn release_all(&self) {
         let mut inner = self.lock();
-        if inner.thaw_all() {
+        if inner.thaw_all(true) {
             self.changed(inner);
         }
     }
@@ -305,6 +357,7 @@ impl Guard {
                         session_id: id,
                         mem,
                         frozen_at: now_ms(),
+                        manual: false,
                         procs,
                     });
                     changed = true;
@@ -462,7 +515,15 @@ mod tests {
             session_id,
             mem: GB,
             frozen_at: 0,
+            manual: false,
             procs: Vec::new(),
+        }
+    }
+
+    fn frozen_by_hand(session_id: SessionId) -> Frozen {
+        Frozen {
+            manual: true,
+            ..frozen(session_id)
         }
     }
 
@@ -510,6 +571,15 @@ mod tests {
             "between the lines: hold"
         );
         assert_eq!(g.decide(&snap(6.9, &[]), t0), Step::Thaw(5));
+    }
+
+    #[test]
+    fn never_thaws_a_tab_frozen_by_hand() {
+        let mut g = on(80);
+        g.frozen = vec![frozen_by_hand(5), frozen(6)];
+        assert_eq!(g.decide(&snap(1.0, &[]), Instant::now()), Step::Thaw(6));
+        g.frozen.pop();
+        assert_eq!(g.decide(&snap(1.0, &[]), Instant::now()), Step::Wait);
     }
 
     #[test]
@@ -669,11 +739,45 @@ mod tests {
             session_id: 7,
             mem: GB,
             frozen_at: 0,
+            manual: false,
             procs: freeze_tree(pid),
         });
         assert_eq!(state(pid as u32), "T");
         let snap = guard.set(false, 80);
         assert!(snap.frozen.is_empty() && !snap.on);
+        assert_ne!(state(pid as u32), "T");
+    }
+
+    #[test]
+    fn freezing_by_hand_outlasts_turning_off_until_thawed() {
+        let guard = Guard::open(None, |_| {});
+        let child = Reap(Command::new("/bin/sleep").arg("30").spawn().unwrap());
+        let pid = child.0.id() as i32;
+        let target = ProbeTarget {
+            session_id: 3,
+            shell_pid: pid,
+            fg_pgid: None,
+        };
+
+        guard.set_visible(Some(3));
+        assert!(guard.freeze(&target).is_err(), "the Tab in view");
+        assert_ne!(state(pid as u32), "T");
+
+        guard.set_visible(Some(4));
+        let snap = guard.freeze(&target).unwrap();
+        assert!(snap.frozen[0].manual && snap.frozen[0].mem > 0);
+        assert_eq!(state(pid as u32), "T");
+        assert_eq!(
+            guard.freeze(&target).unwrap().frozen.len(),
+            1,
+            "already frozen"
+        );
+
+        guard.set(true, 80);
+        assert_eq!(guard.set(false, 80).frozen.len(), 1);
+        assert_eq!(state(pid as u32), "T");
+
+        assert!(guard.thaw(3).frozen.is_empty());
         assert_ne!(state(pid as u32), "T");
     }
 }

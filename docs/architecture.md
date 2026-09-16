@@ -27,8 +27,10 @@ stores each Tab's last cwd instead and respawns a shell there on relaunch.
 | `session_info` | `sessionId` | `SessionInfo \| null` (fresh probe) |
 | `activity_watch` | `on: boolean` | - (start / stop sampling Activity) |
 | `guard_state` | - | `GuardSnapshot`: Memory Guard's state |
-| `guard_set` | `on: boolean, limitPercent: number` | `GuardSnapshot` (turn Memory Guard on or off, set its limit, clamped to 50..95; off thaws every frozen Tab) |
+| `guard_set` | `on: boolean, limitPercent: number` | `GuardSnapshot` (turn Memory Guard on or off, set its limit, clamped to 50..95; off thaws every Tab it froze, not those frozen by hand) |
 | `guard_visible` | `sessionId: SessionId \| null` | - (the Session in view: never frozen, thawed if frozen) |
+| `guard_freeze` | `sessionId` | `GuardSnapshot` (freeze a Session by hand, Memory Guard on or not; an error for the Session in view) |
+| `guard_thaw` | `sessionId` | `GuardSnapshot` (thaw a Session without going to its Tab; spares it like going to it) |
 | `usage_watch` | `on: boolean, agents: AgentKind[]` | - (start, change the agents of, or stop reading Usage) |
 | `caffeinate_state` | - | `boolean`: whether Caffeinate is on |
 | `caffeinate_set` | `on: boolean` | `boolean`: whether Caffeinate is on now |
@@ -105,7 +107,7 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
 
 - **Scope** (#7): one window, no split panes, no profiles, no settings UI beyond Usage agents and Hotkeys, no quick
   switcher. Tabs move between Groups by drag-and-drop and by a context menu.
-- **Persistence** (#8): Groups (name, order, collapsed), Tabs (order, custom Title, last cwd), the
+- **Persistence** (#8): Groups (name, order, collapsed), Tabs (order, custom Title, last cwd, unread mark), the
   active Tab, sidebar width and the Panel (view, collapsed, height) persist. On relaunch every Tab respawns a shell at its last cwd.
 - **Naming** (#10): automatic Title priority: agent name ("Claude Code", "Codex", "Gemini") when an
   Agent session; else the OSC title if the Foreground process set one; else the Foreground process
@@ -124,7 +126,8 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
 - **Interaction** (#13): Cmd-T new Tab, Cmd-Shift-N new Group, Cmd-W close Tab, Cmd-1..9 go to
   the Nth Group (the Tab last active in it, else its first; expands a collapsed Group), Cmd-` /
   Cmd-Shift-` next / previous Tab within the active Tab's Group (wrapping), Cmd-Shift-[ / ] previous
-  / next Tab across all Groups, Cmd-Opt-Up/Down move Tab, Cmd-B toggle sidebar, Cmd-, Settings
+  / next Tab across all Groups, Cmd-Opt-Up/Down move Tab, Cmd-Shift-U mark the active Tab unread,
+  Cmd-B toggle sidebar, Cmd-, Settings
   (also the app menu's "Settings…"; the sidebar has no Settings button).
   These are defaults: every one is a Hotkey the user can rebind on the Settings page
   (`src/lib/hotkeys.ts` holds the actions and rules; overrides persist in `settings.json` next to
@@ -154,6 +157,11 @@ The Tab's icon slot shows the status: a spinner while Running, the robot once st
 Needs input). When the agent exits, the Tab stops being an Agent session; if that happens while the
 Tab is not active, the icon is a check until the Tab is next activated. A Done or Needs-input status
 on a background Tab is highlighted until the Tab is activated.
+
+A Tab reads as unread (bold Title) while it has one of those markers or the user has marked it
+unread (the Tab's context menu, or Cmd-Shift-U for the active Tab). The user's mark shows on the
+active Tab too, persists in the layout, and clears the next time the user goes to the Tab (not on
+relaunch). "Mark as Read" in the context menu clears every marker.
 
 ## Panel
 
@@ -230,7 +238,7 @@ leaves it as it was (the webview reads `caffeinate_state` at startup). If the ru
 
 **Memory Guard** freezes the Tab using the most memory when memory gets tight, and thaws it once
 memory frees up, so heavy Tabs take turns instead of making the Mac swap. The button is lit while on
-and shows how many Tabs are frozen; a frozen Tab shows a snowflake. On/off and the limit persist in
+and shows how many Tabs it has frozen; a frozen Tab shows a snowflake. On/off and the limit persist in
 settings (`memoryGuard`); the limit is set on the Settings page. The policy is `guard.rs`, run on
 every Activity sample while on:
 
@@ -240,6 +248,9 @@ every Activity sample while on:
 - Memory Used 10 points under the limit: thaw the Session frozen first.
 - After a freeze or thaw, wait 10 s before the next, so memory shows the effect.
 - Going to a frozen Tab thaws it and spares it until memory falls under the thaw line.
+- The Tab context menu's Freeze freezes a background Tab by hand (`guard_freeze`), whether Memory
+  Guard is on or not; Thaw (`guard_thaw`) or going to the Tab thaws it. Memory Guard never thaws a
+  Tab frozen by hand, nor does turning it off, and the Tray count leaves such Tabs out.
 - Freezing is SIGSTOP to the shell first, then its descendants, parents first (a stopped foreground
   job would make the shell take the tty back, "zsh: suspended"); thawing is SIGCONT in reverse, the
   shell last. A frozen process keeps its memory: freezing stops growth and CPU, not what is held.

@@ -453,9 +453,12 @@ function guardTick() {
       .filter((s) => s.mem >= 128 * MB && s.sessionId !== guardVisibleId && !frozen.has(s.sessionId))
       .sort((a, b) => b.mem - a.mem)[0];
     if (!pick) return;
-    guard.frozen.push({ sessionId: pick.sessionId, mem: pick.mem, frozenAt: Date.now() });
-  } else if (used < guard.limitPercent - 10 && guard.frozen.length) {
-    guard.frozen.shift();
+    guard.frozen.push({ sessionId: pick.sessionId, mem: pick.mem, frozenAt: Date.now(), manual: false });
+  } else if (used < guard.limitPercent - 10 && guard.frozen.some((f) => !f.manual)) {
+    guard.frozen.splice(
+      guard.frozen.findIndex((f) => !f.manual),
+      1,
+    );
   } else return;
   guardLastStep = Date.now();
   guardChanged();
@@ -466,7 +469,11 @@ export async function guardState(): Promise<GuardSnapshot> {
 }
 
 export async function setGuard(on: boolean, limitPercent: number): Promise<GuardSnapshot> {
-  guard = { on, limitPercent: Math.min(95, Math.max(50, limitPercent)), frozen: on ? guard.frozen : [] };
+  guard = {
+    on,
+    limitPercent: Math.min(95, Math.max(50, limitPercent)),
+    frozen: on ? guard.frozen : guard.frozen.filter((f) => f.manual),
+  };
   if (guardTimer !== null) clearInterval(guardTimer);
   guardTimer = on ? setInterval(guardTick, 2000) : null;
   return guardChanged();
@@ -480,6 +487,20 @@ export async function guardVisible(sessionId: SessionId | null): Promise<void> {
     guardLastStep = Date.now();
     guardChanged();
   }
+}
+
+export async function guardFreeze(sessionId: SessionId): Promise<GuardSnapshot> {
+  if (sessionId === guardVisibleId) throw new Error("the Tab in view cannot be frozen");
+  if (!guard.frozen.some((f) => f.sessionId === sessionId)) {
+    const mem = activitySnapshot().sessions.find((s) => s.sessionId === sessionId)?.mem ?? 0;
+    guard.frozen.push({ sessionId, mem, frozenAt: Date.now(), manual: true });
+  }
+  return guardChanged();
+}
+
+export async function guardThaw(sessionId: SessionId): Promise<GuardSnapshot> {
+  guard.frozen = guard.frozen.filter((f) => f.sessionId !== sessionId);
+  return guardChanged();
 }
 
 export async function onGuard(cb: (g: GuardSnapshot) => void) {

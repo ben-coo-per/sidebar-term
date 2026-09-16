@@ -1,9 +1,9 @@
 // Memory Guard: Rust freezes the heaviest Tab when memory gets tight and thaws it once memory
-// frees up (src-tauri/src/guard.rs). This mirrors its state for the Tray button and the Tabs, keeps
+// frees up (src-tauri/src/guard.rs); the user can also freeze and thaw a Tab by hand. This mirrors its state for the Tray button and the Tabs, keeps
 // whether it is on and its limit in the `memoryGuard` settings section, and tells Rust which
 // Session is in view.
 
-import { guardState, guardVisible, onGuard, setGuard } from "../ipc";
+import { guardFreeze, guardState, guardThaw, guardVisible, onGuard, setGuard } from "../ipc";
 import { loadSection, saveSection } from "../settings/store";
 import type { FrozenSession, GuardSnapshot, SessionId } from "../types";
 import { DEFAULT_GUARD_LIMIT, parseGuardSection } from "./model";
@@ -53,6 +53,24 @@ export function toggleMemoryGuard(): Promise<void> {
 
 export function setGuardLimit(limitPercent: number): Promise<void> {
   return set(memoryGuard.on, limitPercent);
+}
+
+/** Freeze a Tab's Session by hand; it stays frozen until the user goes to it or thaws it. */
+export async function freezeSession(sessionId: SessionId): Promise<void> {
+  try {
+    apply(await guardFreeze(sessionId));
+  } catch (e) {
+    console.error("memory guard: freeze:", e);
+  }
+}
+
+/** Thaw a frozen Tab's Session without going to it. */
+export async function thawSession(sessionId: SessionId): Promise<void> {
+  try {
+    apply(await guardThaw(sessionId));
+  } catch (e) {
+    console.error("memory guard: thaw:", e);
+  }
 }
 
 /** Tell Rust which Session is in view: never frozen, and thawed if it was. */

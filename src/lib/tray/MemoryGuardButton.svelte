@@ -1,12 +1,12 @@
 <!-- The Tray's Memory Guard toggle: while on, the heaviest Tab is frozen when memory gets tight.
-     A count shows how many Tabs are frozen. -->
+     A count shows how many Tabs it has frozen (not those frozen by hand, which turning it off keeps). -->
 <script lang="ts">
   import TrayButton from "./TrayButton.svelte";
   import GaugeIcon from "../sidebar/icons/GaugeIcon.svelte";
   import { memoryGuard, toggleMemoryGuard } from "../guard/memoryGuard.svelte";
   import { guardButtonTitle } from "../guard/model";
 
-  const frozen = $derived(memoryGuard.frozen.length);
+  const frozen = $derived(memoryGuard.frozen.filter((f) => !f.manual).length);
 </script>
 
 <TrayButton

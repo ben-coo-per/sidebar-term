@@ -9,7 +9,7 @@ import { inTauri, onSessionInfo } from "./ipc";
 import { terminals } from "./terminal/manager";
 import type { SessionId, SessionInfo } from "./types";
 import { computeAgentStatus, computeAutomaticTitle, type AgentStatus } from "./agentStatus";
-import { layout, setTabLastCwd, tabIdForSession, type Tab } from "./layout.svelte";
+import { layout, setTabLastCwd, setTabUnread, tabIdForSession, type Tab } from "./layout.svelte";
 
 export interface SessionState {
   info: SessionInfo | null;
@@ -127,6 +127,27 @@ $effect.root(() => {
     }
   });
 });
+
+// --- Unread --------------------------------------------------------------------------------
+
+/**
+ * Whether a Tab reads as unread: the user marked it, or its agent finished, stopped or asked for
+ * input while the Tab was in the background.
+ */
+export function tabIsUnread(tab: Tab): boolean {
+  const s = tab.sessionId !== null ? sessions[tab.sessionId] : null;
+  return tab.unread || (s?.finished ?? false) || (s?.highlight ?? false);
+}
+
+/** Mark a Tab unread, or read: read also clears its agent's "finished" and highlight markers. */
+export function setTabRead(tab: Tab, read: boolean): void {
+  setTabUnread(tab.id, !read);
+  const s = read && tab.sessionId !== null ? sessions[tab.sessionId] : null;
+  if (s) {
+    s.finished = false;
+    s.highlight = false;
+  }
+}
 
 // --- Home directory, for the `~` special case in the automatic Title -----------------------
 

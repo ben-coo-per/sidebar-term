@@ -82,13 +82,15 @@ export interface ActivitySnapshot {
   processes: ActivityProcess[];
 }
 
-/** One Session Memory Guard has frozen (every process in it stopped). */
+/** One Session Memory Guard, or the user, has frozen (every process in it stopped). */
 export interface FrozenSession {
   sessionId: SessionId;
   /** Its memory when frozen, bytes. */
   mem: number;
   /** When it was frozen, epoch ms. */
   frozenAt: number;
+  /** Frozen by the user from the Tab: Memory Guard does not thaw it. */
+  manual: boolean;
 }
 
 /** Memory Guard's state. From `guard_state` / `guard_set`, and pushed on `memory-guard`. */

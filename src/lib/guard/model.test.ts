@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_GUARD_LIMIT, guardButtonTitle, parseGuardSection } from "./model";
+import { DEFAULT_GUARD_LIMIT, frozenTitle, guardButtonTitle, parseGuardSection } from "./model";
 
 describe("parseGuardSection", () => {
   it("defaults to off at 85% for anything missing or malformed", () => {
@@ -11,6 +11,14 @@ describe("parseGuardSection", () => {
   it("keeps a saved state and an offered limit only", () => {
     expect(parseGuardSection({ on: true, limitPercent: 75 })).toEqual({ on: true, limitPercent: 75 });
     expect(parseGuardSection({ on: "yes", limitPercent: 77 })).toEqual({ on: false, limitPercent: DEFAULT_GUARD_LIMIT });
+  });
+});
+
+describe("frozenTitle", () => {
+  it("says who froze the Tab", () => {
+    const f = { sessionId: 1, mem: 0, frozenAt: 0, manual: false };
+    expect(frozenTitle(f, "1 GB")).toMatch(/^Frozen by Memory Guard at .*, holding 1 GB\./);
+    expect(frozenTitle({ ...f, manual: true }, "1 GB")).toMatch(/^Frozen by you at /);
   });
 });
 

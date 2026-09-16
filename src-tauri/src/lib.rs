@@ -127,6 +127,25 @@ fn guard_visible(guard: State<'_, guard::Guard>, session_id: Option<SessionId>) 
     guard.set_visible(session_id);
 }
 
+/// Freeze a Session by hand, whether Memory Guard is on or not. Fails for the Session in view.
+#[tauri::command]
+fn guard_freeze(
+    sessions: State<'_, SessionManager>,
+    guard: State<'_, guard::Guard>,
+    session_id: SessionId,
+) -> Result<GuardSnapshot, String> {
+    let target = sessions
+        .probe_target(session_id)
+        .ok_or_else(|| format!("no Session {session_id}"))?;
+    guard.freeze(&target)
+}
+
+/// Thaw a frozen Session without going to its Tab.
+#[tauri::command]
+fn guard_thaw(guard: State<'_, guard::Guard>, session_id: SessionId) -> GuardSnapshot {
+    guard.thaw(session_id)
+}
+
 /// Start (or change the agents of) or stop reading Usage; while on, `usage` fires on each change.
 #[tauri::command]
 fn usage_watch(usage: State<'_, usage::Usage>, on: bool, agents: Vec<AgentKind>) {
@@ -296,6 +315,8 @@ pub fn run() {
             guard_state,
             guard_set,
             guard_visible,
+            guard_freeze,
+            guard_thaw,
             usage_watch,
             caffeinate_state,
             caffeinate_set,

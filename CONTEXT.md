@@ -61,7 +61,7 @@ The Tray toggle that, while on, freezes the Tab using the most memory when memor
 _Avoid_: Load balancer, throttle, governor, auto-pause
 
 **Frozen Tab**:
-A Tab whose Session Memory Guard has stopped: every process in it is suspended (SIGSTOP) until it is thawed (SIGCONT). It keeps its memory but uses no CPU and does not grow. Going to it thaws it.
+A Tab whose Session Memory Guard, or the user from the Tab's context menu, has stopped: every process in it is suspended (SIGSTOP) until it is thawed (SIGCONT). It keeps its memory but uses no CPU and does not grow. Going to it thaws it.
 _Avoid_: Paused (that is flow control), suspended, sleeping
 
 **Resume**:
@@ -71,6 +71,10 @@ _Avoid_: Restore, recover, reopen (and not the flow-control resume of a paused S
 **Resume banner**:
 The dismissable bar at the bottom of the Terminal area, shown after a launch when the last run closed with Tabs still running something. It lists them, resumes every Claude Code conversation or reruns every command with one button each, or one Tab at a time.
 _Avoid_: Toast, notification, crash dialog
+
+**Unread**:
+A Tab whose Title is bold because something happened in it the user hasn't looked at yet: its agent finished, stopped or asked for input while the Tab was in the background, or the user marked it unread to come back to it. Going to the Tab clears it.
+_Avoid_: Highlighted, new, flagged, bookmarked
 
 **Activity**:
 The panel view showing the Mac's CPU and memory, split between sessions (each in its tab colour) and every other process (muted grey), with a list of the busiest processes. Memory is each process's footprint, as Activity Monitor's Memory column. The same samples give each tab its CPU and memory, shown on the tab when turned on in Settings.

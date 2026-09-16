@@ -139,7 +139,7 @@ pub struct ActivitySnapshot {
     pub processes: Vec<ActivityProcess>,
 }
 
-/// One Session Memory Guard has frozen (every process in it stopped with SIGSTOP).
+/// One Session Memory Guard, or the user, has frozen (every process in it stopped with SIGSTOP).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrozenSession {
@@ -148,6 +148,8 @@ pub struct FrozenSession {
     pub mem: u64,
     /// When it was frozen, epoch ms.
     pub frozen_at: u64,
+    /// Frozen by the user from the Tab, not by Memory Guard's policy: Memory Guard does not thaw it.
+    pub manual: bool,
 }
 
 /// Memory Guard's state. Payload of `memory-guard`, sent on every change.

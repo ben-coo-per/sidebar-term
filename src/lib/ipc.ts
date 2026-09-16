@@ -129,6 +129,18 @@ export function guardVisible(sessionId: SessionId | null): Promise<void> {
   return invoke("guard_visible", { sessionId });
 }
 
+/** Freeze a Session by hand (Memory Guard need not be on). Rejects for the Session in view. */
+export function guardFreeze(sessionId: SessionId): Promise<GuardSnapshot> {
+  if (!inTauri) return mock.guardFreeze(sessionId);
+  return invoke("guard_freeze", { sessionId });
+}
+
+/** Thaw a frozen Session without going to its Tab. */
+export function guardThaw(sessionId: SessionId): Promise<GuardSnapshot> {
+  if (!inTauri) return mock.guardThaw(sessionId);
+  return invoke("guard_thaw", { sessionId });
+}
+
 /** Memory Guard froze or thawed a Tab, or was turned on or off. */
 export function onGuard(cb: (snapshot: GuardSnapshot) => void): Promise<UnlistenFn> {
   if (!inTauri) return mock.onGuard(cb);
