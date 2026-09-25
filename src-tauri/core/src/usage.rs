@@ -1,5 +1,6 @@
 //! Usage: how much of each coding agent's usage limits is spent, for the sidebar Panel's Usage
 //! section. Read only while the webview watches, and only for the agents chosen in Settings.
+//! App-only (ADR 0002): a Host has no Panel, so `sidebar-termd` never starts it.
 //!
 //! Claude Code: `GET https://api.anthropic.com/api/oauth/usage`, the undocumented endpoint behind
 //! Claude Code's `/usage`, authorised with the OAuth token Claude Code keeps in the login Keychain
@@ -24,10 +25,10 @@ use std::io::Write;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use crate::host::Events;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter};
 
 /// Time between reads while watched. Codex is re-read each tick if its log changed.
 const TICK: Duration = Duration::from_secs(5);
@@ -57,7 +58,7 @@ struct Watch {
     changed: bool,
 }
 
-/// Handle to the reading thread (Tauri state). Starts idle.
+/// Handle to the reading thread (app state). Starts idle.
 pub struct Usage {
     watch: Arc<(Mutex<Watch>, Condvar)>,
 }
@@ -79,7 +80,7 @@ impl Usage {
 /// `UsageSnapshot` whenever it changes, checking every `TICK`.
 ///
 /// The thread never exits: a panic skips the tick.
-pub fn spawn(app: AppHandle) -> Usage {
+pub fn spawn(events: Arc<dyn Events>) -> Usage {
     let watch = Arc::new((Mutex::new(Watch::default()), Condvar::new()));
     let shared = Arc::clone(&watch);
     let started = thread::Builder::new().name("usage".into()).spawn(move || {
@@ -97,9 +98,7 @@ pub fn spawn(app: AppHandle) -> Usage {
             };
             match catch_unwind(AssertUnwindSafe(|| reader.read(&agents, Instant::now()))) {
                 Ok(snapshot) if force || sent.as_ref() != Some(&snapshot) => {
-                    if let Err(e) = app.emit(EVENT_USAGE, &snapshot) {
-                        eprintln!("usage: emit failed: {e}");
-                    }
+                    events.emit(EVENT_USAGE, &snapshot);
                     sent = Some(snapshot);
                 }
                 Ok(_) => {}

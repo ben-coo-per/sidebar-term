@@ -1,26 +1,20 @@
-//! sidebar-term: Tauri shell. Rust owns Sessions (ptys) and the facts about them;
-//! the webview owns the sidebar layout. See docs/architecture.md.
+//! sidebar-term: the Mac app. Tauri's window, menu and IPC around the sidebar-term core
+//! (`sidebar_term_core`, ADR 0002), which owns Sessions (ptys) and the facts about them; the
+//! webview owns the sidebar layout. This crate is the local Host; `daemon/` is the headless one.
+//! See docs/architecture.md.
 //! CONTRACT: command names and signatures here are mirrored by `src/lib/ipc.ts`.
 
-mod activity;
 mod caffeinate;
-mod detect;
 mod drop;
-mod guard;
-mod layout;
-mod model;
-mod monitor;
-mod paths;
-mod remote;
-mod resume;
-mod session;
-mod usage;
+mod host;
 
-use model::{
+use host::AppHost;
+use sidebar_term_core::model::{
     AgentKind, GuardSnapshot, Pairing, RemoteSnapshot, ResumeEntry, SessionId, SessionInfo,
     EVENT_CAFFEINATE, EVENT_MEMORY_GUARD, EVENT_MENU_SETTINGS,
 };
-use session::SessionManager;
+use sidebar_term_core::session::SessionManager;
+use sidebar_term_core::{activity, detect, guard, layout, monitor, paths, remote, resume, usage};
 use std::sync::Arc;
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
@@ -29,42 +23,53 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 /// Id of the app menu's "Settings…" item.
 const MENU_SETTINGS: &str = "settings";
 
+/// The Session registry, shared with Remote and the core's threads.
+type Sessions = Arc<SessionManager>;
+
 #[tauri::command]
 fn session_spawn(
-    app: AppHandle,
-    sessions: State<'_, SessionManager>,
+    sessions: State<'_, Sessions>,
     cwd: Option<String>,
     cols: u16,
     rows: u16,
     resume_key: Option<String>,
     on_data: Channel<InvokeResponseBody>,
 ) -> Result<SessionId, String> {
-    sessions.spawn(app, cwd, cols, rows, resume_key, on_data)
+    sessions.spawn(
+        cwd,
+        cols,
+        rows,
+        resume_key,
+        Box::new(move |bytes| {
+            // Err only when the webview is gone; nothing useful to do about it here.
+            let _ = on_data.send(InvokeResponseBody::Raw(bytes));
+        }),
+    )
 }
 
 #[tauri::command]
-fn session_write(sessions: State<'_, SessionManager>, session_id: SessionId, data: String) -> Result<(), String> {
+fn session_write(sessions: State<'_, Sessions>, session_id: SessionId, data: String) -> Result<(), String> {
     sessions.write(session_id, data.as_bytes())
 }
 
 #[tauri::command]
-fn session_resize(sessions: State<'_, SessionManager>, session_id: SessionId, cols: u16, rows: u16) -> Result<(), String> {
+fn session_resize(sessions: State<'_, Sessions>, session_id: SessionId, cols: u16, rows: u16) -> Result<(), String> {
     sessions.resize(session_id, cols, rows)
 }
 
 #[tauri::command]
-fn session_pause(sessions: State<'_, SessionManager>, session_id: SessionId) -> Result<(), String> {
+fn session_pause(sessions: State<'_, Sessions>, session_id: SessionId) -> Result<(), String> {
     sessions.pause(session_id)
 }
 
 #[tauri::command]
-fn session_resume(sessions: State<'_, SessionManager>, session_id: SessionId) -> Result<(), String> {
+fn session_resume(sessions: State<'_, Sessions>, session_id: SessionId) -> Result<(), String> {
     sessions.resume(session_id)
 }
 
 #[tauri::command]
 fn session_kill(
-    sessions: State<'_, SessionManager>,
+    sessions: State<'_, Sessions>,
     guard: State<'_, guard::Guard>,
     session_id: SessionId,
 ) -> Result<(), String> {
@@ -77,7 +82,7 @@ fn session_kill(
 /// to send output. What those shells were running becomes Resume leftover, for the new page.
 #[tauri::command]
 fn session_reset(
-    sessions: State<'_, SessionManager>,
+    sessions: State<'_, Sessions>,
     activity: State<'_, activity::Activity>,
     usage: State<'_, usage::Usage>,
     resume: State<'_, resume::Resume>,
@@ -92,7 +97,7 @@ fn session_reset(
 
 /// On-demand probe, e.g. to decide whether closing a Tab needs confirmation.
 #[tauri::command]
-fn session_info(sessions: State<'_, SessionManager>, session_id: SessionId) -> Option<SessionInfo> {
+fn session_info(sessions: State<'_, Sessions>, session_id: SessionId) -> Option<SessionInfo> {
     sessions.probe_target(session_id).map(|t| detect::probe(&t))
 }
 
@@ -132,7 +137,7 @@ fn guard_visible(guard: State<'_, guard::Guard>, session_id: Option<SessionId>) 
 /// Freeze a Session by hand, whether Memory Guard is on or not. Fails for the Session in view.
 #[tauri::command]
 fn guard_freeze(
-    sessions: State<'_, SessionManager>,
+    sessions: State<'_, Sessions>,
     guard: State<'_, guard::Guard>,
     session_id: SessionId,
 ) -> Result<GuardSnapshot, String> {
@@ -180,29 +185,29 @@ fn resume_forget(resume: State<'_, resume::Resume>, keys: Vec<String>) {
 
 #[tauri::command]
 fn layout_load(app: AppHandle) -> Result<Option<serde_json::Value>, String> {
-    layout::load(&app, layout::LAYOUT)
+    layout::load(&AppHost(app), layout::LAYOUT)
 }
 
 #[tauri::command]
 fn layout_save(app: AppHandle, layout: serde_json::Value) -> Result<(), String> {
-    layout::save(&app, layout::LAYOUT, &layout)
+    layout::save(&AppHost(app), layout::LAYOUT, &layout)
 }
 
 #[tauri::command]
 fn settings_load(app: AppHandle) -> Result<Option<serde_json::Value>, String> {
-    layout::load(&app, layout::SETTINGS)
+    layout::load(&AppHost(app), layout::SETTINGS)
 }
 
 #[tauri::command]
 fn settings_save(app: AppHandle, settings: serde_json::Value) -> Result<(), String> {
-    layout::save(&app, layout::SETTINGS, &settings)
+    layout::save(&AppHost(app), layout::SETTINGS, &settings)
 }
 
 /// For each path printed in the Session, the absolute path of the file or directory it names, or
 /// null when there is none. Async so a slow disk stalls a worker thread, not the main thread.
 #[tauri::command]
 async fn path_resolve(
-    sessions: State<'_, SessionManager>,
+    sessions: State<'_, Sessions>,
     session_id: SessionId,
     candidates: Vec<String>,
 ) -> Result<Vec<Option<String>>, String> {
@@ -217,10 +222,14 @@ async fn path_resolve(
         .collect())
 }
 
-/// Open a file or directory (an absolute path from `path_resolve`) in its default app.
+/// Open a file or directory (an absolute path from `path_resolve`) in its default app, as a
+/// double-click in Finder does.
 #[tauri::command]
 async fn path_open(path: String) -> Result<(), String> {
-    paths::open(&path)
+    if !std::path::Path::new(&path).is_absolute() {
+        return Err(format!("not an absolute path: {path}"));
+    }
+    tauri_plugin_opener::open_path(path, None::<&str>).map_err(|e| e.to_string())
 }
 
 /// Where Remote stands, after re-reading Tailscale's state. Async: runs the Tailscale CLI.
@@ -291,7 +300,6 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .manage(SessionManager::new(taps.clone()))
         .menu(app_menu)
         .on_menu_event(|app, event| {
             if event.id() == MENU_SETTINGS {
@@ -300,52 +308,52 @@ pub fn run() {
                 }
             }
         })
-        .setup(|app| {
+        .setup(move |app| {
             let handle = app.handle().clone();
-            let for_targets = handle.clone();
-            monitor::spawn(handle.clone(), move || {
-                for_targets.state::<SessionManager>().probe_targets()
-            });
-            let frozen_file = layout::path(&handle, layout::FROZEN)
+            // The core runs with Tauri behind it (host.rs): every piece below is the core's.
+            let host = host::host(&handle);
+            let events = host.events.clone();
+            let sessions: Sessions = Arc::new(SessionManager::new(taps.clone(), events.clone()));
+            app.manage(sessions.clone());
+            let for_targets = sessions.clone();
+            monitor::spawn(events.clone(), move || for_targets.probe_targets());
+            let frozen_file = layout::path(&*host.paths, layout::FROZEN)
                 .inspect_err(|e| eprintln!("memory guard: no app data dir ({e}); not persisted"))
                 .ok();
-            let for_guard_events = handle.clone();
+            let for_guard_events = events.clone();
             app.manage(guard::Guard::open(frozen_file, move |snapshot| {
-                if let Err(e) = for_guard_events.emit(EVENT_MEMORY_GUARD, snapshot) {
-                    eprintln!("memory guard: emit failed: {e}");
-                }
+                for_guard_events.emit(EVENT_MEMORY_GUARD, &snapshot);
             }));
-            let for_activity = handle.clone();
+            let for_activity = sessions.clone();
             let for_guard = handle.clone();
             app.manage(activity::spawn(
-                handle.clone(),
-                move || for_activity.state::<SessionManager>().probe_targets(),
+                events.clone(),
+                move || for_activity.probe_targets(),
                 move |snapshot, targets| {
                     for_guard.state::<guard::Guard>().observe(snapshot, targets)
                 },
             ));
-            let for_caffeinate = handle.clone();
+            let for_caffeinate = events.clone();
             app.manage(caffeinate::Caffeinate::new(move || {
-                if let Err(e) = for_caffeinate.emit(EVENT_CAFFEINATE, false) {
-                    eprintln!("caffeinate: emit failed: {e}");
-                }
+                for_caffeinate.emit(EVENT_CAFFEINATE, &false);
             }));
-            let resume_file = layout::path(&handle, layout::RESUME)
+            let resume_file = layout::path(&*host.paths, layout::RESUME)
                 .inspect_err(|e| eprintln!("resume: no app data dir ({e}); not persisted"))
                 .ok();
             app.manage(resume::Resume::open(resume_file));
             let for_resume = handle.clone();
+            let resume_sessions = sessions.clone();
             resume::spawn(move || {
-                let targets = for_resume.state::<SessionManager>().keyed_targets();
+                let targets = resume_sessions.keyed_targets();
                 for_resume
                     .state::<resume::Resume>()
                     .record(resume::entries(&targets));
             });
-            app.manage(usage::spawn(handle.clone()));
-            let remote_file = layout::path(&handle, layout::REMOTE)
+            app.manage(usage::spawn(events.clone()));
+            let remote_file = layout::path(&*host.paths, layout::REMOTE)
                 .inspect_err(|e| eprintln!("remote: no app data dir ({e}); pairings not persisted"))
                 .ok();
-            app.manage(remote::Remote::open(handle.clone(), taps, remote_file));
+            app.manage(remote::Remote::open(host, sessions, taps, remote_file));
             app.state::<remote::Remote>().start_if_enabled();
             // Dev aid: `SIDEBAR_TERM_REMOTE_PAIR=1 pnpm tauri dev` starts a pairing at launch and
             // prints its code, so a browser can pair without clicking through Settings.
@@ -398,7 +406,7 @@ pub fn run() {
 
     app.run(|handle, event| {
         if let RunEvent::Exit = event {
-            let sessions = handle.state::<SessionManager>();
+            let sessions = handle.state::<Sessions>();
             // Record what is running before killing it, so the next launch can resume it.
             if let Some(resume) = handle.try_state::<resume::Resume>() {
                 resume.finish(resume::entries(&sessions.keyed_targets()));

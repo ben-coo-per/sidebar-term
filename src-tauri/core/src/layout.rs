@@ -1,9 +1,10 @@
 //! Persistence of the JSON blobs the webview owns: the sidebar layout (Groups, Tabs, Titles,
-//! order) and the app settings (Hotkeys). Rust only stores them in the app data dir.
+//! order) and the app settings (Hotkeys). The core only stores them, in the Host's data dir
+//! (`host::Paths`: the app-data dir in the app, `$XDG_DATA_HOME/sidebar-term` for the daemon).
 
+use crate::host::Paths;
 use std::fs;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Manager};
 
 pub const LAYOUT: &str = "layout.json";
 pub const SETTINGS: &str = "settings.json";
@@ -14,14 +15,12 @@ pub const REMOTE: &str = "remote.json";
 /// Processes Memory Guard has frozen, for the next launch to thaw after a crash (`guard.rs`).
 pub const FROZEN: &str = "frozen.json";
 
-pub fn path(app: &AppHandle, file: &str) -> Result<PathBuf, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir.join(file))
+pub fn path(paths: &dyn Paths, file: &str) -> Result<PathBuf, String> {
+    Ok(paths.data_dir()?.join(file))
 }
 
-pub fn load(app: &AppHandle, file: &str) -> Result<Option<serde_json::Value>, String> {
-    let p = path(app, file)?;
+pub fn load(paths: &dyn Paths, file: &str) -> Result<Option<serde_json::Value>, String> {
+    let p = path(paths, file)?;
     match fs::read_to_string(&p) {
         Ok(s) => match serde_json::from_str(&s) {
             Ok(v) => Ok(Some(v)),
@@ -37,8 +36,8 @@ pub fn load(app: &AppHandle, file: &str) -> Result<Option<serde_json::Value>, St
     }
 }
 
-pub fn save(app: &AppHandle, file: &str, value: &serde_json::Value) -> Result<(), String> {
-    write(&path(app, file)?, value)
+pub fn save(paths: &dyn Paths, file: &str, value: &serde_json::Value) -> Result<(), String> {
+    write(&path(paths, file)?, value)
 }
 
 /// Atomic write: temp file + rename.

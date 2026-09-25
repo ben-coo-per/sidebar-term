@@ -3,6 +3,8 @@
 A macOS terminal app with a vertical sidebar of tabs. Tabs can be renamed and arranged into named groups. A tab shows a robot icon when a coding agent (Claude Code, Codex, Gemini CLI) is running in it, and a badge for the repo, worktree and branch its shell is in.
 
 Built on Tauri 2 + Svelte + xterm.js: an existing terminal emulator and pty, nothing custom in the terminal runtime.
+The Rust side is a workspace (`src-tauri/`): the core (`core/`), the Mac app around it, and
+`sidebar-termd` (`daemon/`), a headless Host for a second machine.
 
 Status: planning. The design is being charted as a wayfinder map on this repo's GitHub issues (label `wayfinder:map`).
 
@@ -54,6 +56,30 @@ Still to do, in order:
 4. Full control from the phone (create, close, rename, move Tabs): blocked on #20, which moves
    the layout into Rust; then expose those commands over the Remote protocol.
 5. Notifications when an agent needs input (web push works for installed pages on iOS 16.4+).
+
+## Host daemon
+
+`sidebar-termd` runs the same core as the app on a machine with no display (a Linux box on your
+tailnet), so Sessions can live there and be driven from a phone, and from the Mac once #29
+lands. It is a second binary from the same workspace; `docs/architecture.md` "Host daemon" says
+what it does at this stage.
+
+```sh
+cargo build --release --bin sidebar-termd --manifest-path src-tauri/Cargo.toml   # no Tauri
+install -m 755 src-tauri/target/release/sidebar-termd ~/.local/bin/
+pnpm build && mkdir -p ~/.local/share/sidebar-term && cp -r build ~/.local/share/sidebar-term/web
+mkdir -p ~/.config/systemd/user && cp packaging/systemd/sidebar-termd.service ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now sidebar-termd
+loginctl enable-linger "$USER"        # keep it running with no one logged in
+```
+
+It needs Tailscale running on that machine (with Serve available) for `https://<host>.<tailnet>.ts.net/m`;
+without it the server still listens on `127.0.0.1:47611`. To pair a phone:
+`systemctl --user kill -s USR1 sidebar-termd`, then read the code and link in
+`journalctl --user -u sidebar-termd -n 3`. Flags (`sidebar-termd --help`): `--data-dir`, `--port`,
+`--web-root`, `--pair`. On a Mac, for a smoke test, `cargo run --bin sidebar-termd -- --web-root build --pair`
+keeps its files in `~/Library/Application Support/com.bencooper.sidebarterm/daemon`, apart from
+the app's.
 
 ## App icon
 

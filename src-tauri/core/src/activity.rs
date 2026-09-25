@@ -21,19 +21,25 @@
 //!
 //! Sampling runs while the webview watches (the Panel's Activity view, Tab stats) or while Memory
 //! Guard is on (`guard.rs`), which gets every sample; only the webview's watch emits `activity`.
+//!
+//! The reading of processes and memory is macOS's (`os`, below); on any other Host it reads
+//! nothing until #27 lands a `/proc` backend. Everything above it is plain.
+
+// The `ps` parsers are only the macOS reader's (and the tests') until #27.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 use crate::detect::{agent_command, process::classify_agent};
+use crate::host::Events;
 use crate::model::{
     ActivityProcess, ActivitySession, ActivitySnapshot, ProbeTarget, SessionId, EVENT_ACTIVITY,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::mem::{size_of, MaybeUninit};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::process::{Command, Stdio};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+
+pub(crate) use os::{run_ps, rusage};
 
 /// Time between samples while watched.
 const TICK: Duration = Duration::from_secs(2);
@@ -57,7 +63,7 @@ impl Watchers {
     }
 }
 
-/// Handle to the sampling thread (Tauri state). Starts idle.
+/// Handle to the sampling thread (app state). Starts idle.
 pub struct Activity {
     watchers: Arc<(Mutex<Watchers>, Condvar)>,
 }
@@ -85,7 +91,7 @@ impl Activity {
 /// `targets` lists live Sessions, as for the monitor.
 ///
 /// The thread never exits: a failed `ps` or a panic skips the tick.
-pub fn spawn<F, S>(app: AppHandle, targets: F, on_sample: S) -> Activity
+pub fn spawn<F, S>(events: Arc<dyn Events>, targets: F, on_sample: S) -> Activity
 where
     F: Fn() -> Vec<ProbeTarget> + Send + 'static,
     S: Fn(&ActivitySnapshot, &[ProbeTarget]) + Send + 'static,
@@ -118,9 +124,7 @@ where
                 match sampled {
                     Ok(Some(snapshot)) => {
                         if who.webview {
-                            if let Err(e) = app.emit(EVENT_ACTIVITY, &snapshot) {
-                                eprintln!("activity: emit failed: {e}");
-                            }
+                            events.emit(EVENT_ACTIVITY, &snapshot);
                         }
                     }
                     Ok(None) => eprintln!("activity: ps failed; skipping this tick"),
@@ -172,26 +176,6 @@ impl PsRow {
             comm: comm.into(),
         }
     }
-}
-
-/// Every process on the Mac except the `ps` itself. `None` if `ps` could not run.
-pub(crate) fn run_ps() -> Option<Vec<PsRow>> {
-    let child = Command::new("/bin/ps")
-        .args(["-axww", "-o", "pid=,ppid=,rss=,time=,%cpu=,comm="])
-        .env("LC_ALL", "C") // a `.` decimal point in %cpu
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let own = child.id() as i32;
-    let out = child.wait_with_output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let mut rows = parse_ps(&String::from_utf8_lossy(&out.stdout));
-    rows.retain(|r| r.pid != own);
-    Some(rows)
 }
 
 fn parse_ps(out: &str) -> Vec<PsRow> {
@@ -267,20 +251,6 @@ fn display_name(comm: &str) -> String {
     }
 }
 
-/// A process's physical footprint and start time (`proc_pid_rusage`). `None` when it is gone or
-/// belongs to another user.
-pub(crate) fn rusage(pid: i32) -> Option<(u64, u64)> {
-    let mut info = MaybeUninit::<libc::rusage_info_v0>::zeroed();
-    // SAFETY: `info` is a writable, zeroed `rusage_info_v0`, the struct the V0 flavor fills.
-    let rc = unsafe { libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V0, info.as_mut_ptr().cast()) };
-    if rc != 0 {
-        return None;
-    }
-    // SAFETY: filled by the kernel; plain data (all-zero is valid too).
-    let info = unsafe { info.assume_init() };
-    Some((info.ri_phys_footprint, info.ri_proc_start_abstime))
-}
-
 /// pid -> Session for every live process that is a Session's shell or descends from one.
 fn attribute(rows: &[PsRow], targets: &[ProbeTarget]) -> HashMap<i32, SessionId> {
     let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
@@ -313,12 +283,12 @@ struct Memory {
 
 impl Memory {
     fn read() -> Self {
-        let used = mem_used().unwrap_or_default();
+        let used = os::mem_used().unwrap_or_default();
         Self {
             used: used.used,
             wired: used.wired,
             compressed: used.compressed,
-            total: mem_total().unwrap_or(0),
+            total: os::mem_total().unwrap_or(0),
         }
     }
 }
@@ -330,62 +300,130 @@ struct MemUsed {
     compressed: u64,
 }
 
-#[allow(deprecated)] // libc points at the `mach2` crate; one call is not worth the dependency.
-fn host_port() -> libc::mach_port_t {
-    // A send right that lives as long as the app; fetched once so it is not leaked per call.
-    static HOST: OnceLock<libc::mach_port_t> = OnceLock::new();
-    // SAFETY: no arguments; returns this task's host port.
-    *HOST.get_or_init(|| unsafe { libc::mach_host_self() })
+/// The macOS reading of processes and memory: `ps`, `proc_pid_rusage`, Mach and sysctl.
+#[cfg(target_os = "macos")]
+mod os {
+    use super::{parse_ps, MemUsed, PsRow};
+    use std::mem::{size_of, MaybeUninit};
+    use std::process::{Command, Stdio};
+    use std::sync::OnceLock;
+
+    /// Every process on the Mac except the `ps` itself. `None` if `ps` could not run.
+    pub(crate) fn run_ps() -> Option<Vec<PsRow>> {
+        let child = Command::new("/bin/ps")
+            .args(["-axww", "-o", "pid=,ppid=,rss=,time=,%cpu=,comm="])
+            .env("LC_ALL", "C") // a `.` decimal point in %cpu
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let own = child.id() as i32;
+        let out = child.wait_with_output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let mut rows = parse_ps(&String::from_utf8_lossy(&out.stdout));
+        rows.retain(|r| r.pid != own);
+        Some(rows)
+    }
+
+    /// A process's physical footprint and start time (`proc_pid_rusage`). `None` when it is gone
+    /// or belongs to another user.
+    pub(crate) fn rusage(pid: i32) -> Option<(u64, u64)> {
+        let mut info = MaybeUninit::<libc::rusage_info_v0>::zeroed();
+        // SAFETY: `info` is a writable, zeroed `rusage_info_v0`, the struct the V0 flavor fills.
+        let rc =
+            unsafe { libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V0, info.as_mut_ptr().cast()) };
+        if rc != 0 {
+            return None;
+        }
+        // SAFETY: filled by the kernel; plain data (all-zero is valid too).
+        let info = unsafe { info.assume_init() };
+        Some((info.ri_phys_footprint, info.ri_proc_start_abstime))
+    }
+
+    #[allow(deprecated)] // libc points at the `mach2` crate; one call is not worth the dependency.
+    fn host_port() -> libc::mach_port_t {
+        // A send right that lives as long as the app; fetched once so it is not leaked per call.
+        static HOST: OnceLock<libc::mach_port_t> = OnceLock::new();
+        // SAFETY: no arguments; returns this task's host port.
+        *HOST.get_or_init(|| unsafe { libc::mach_host_self() })
+    }
+
+    /// Activity Monitor's "Memory Used": app memory (internal minus purgeable) + wired + compressed.
+    pub(super) fn mem_used() -> Option<MemUsed> {
+        let mut stats = MaybeUninit::<libc::vm_statistics64>::zeroed();
+        let mut count = libc::HOST_VM_INFO64_COUNT;
+        // SAFETY: `stats` is a zeroed, writable `vm_statistics64` and `count` is its size in words.
+        let rc = unsafe {
+            libc::host_statistics64(
+                host_port(),
+                libc::HOST_VM_INFO64,
+                stats.as_mut_ptr().cast(),
+                &mut count,
+            )
+        };
+        if rc != libc::KERN_SUCCESS {
+            return None;
+        }
+        // SAFETY: filled by the kernel; plain data (all-zero is valid too).
+        let s = unsafe { stats.assume_init() };
+        // SAFETY: plain query.
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        if page <= 0 {
+            return None;
+        }
+        let page = page as u64;
+        let app = u64::from(s.internal_page_count).saturating_sub(u64::from(s.purgeable_count));
+        let wired = u64::from(s.wire_count) * page;
+        let compressed = u64::from(s.compressor_page_count) * page;
+        Some(MemUsed {
+            used: app * page + wired + compressed,
+            wired,
+            compressed,
+        })
+    }
+
+    pub(super) fn mem_total() -> Option<u64> {
+        let mut bytes: u64 = 0;
+        let mut len = size_of::<u64>();
+        // SAFETY: `bytes` is a writable u64 and `len` says so; the name is NUL-terminated.
+        let rc = unsafe {
+            libc::sysctlbyname(
+                c"hw.memsize".as_ptr(),
+                (&mut bytes as *mut u64).cast(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        (rc == 0 && bytes > 0).then_some(bytes)
+    }
 }
 
-/// Activity Monitor's "Memory Used": app memory (internal minus purgeable) + wired + compressed.
-fn mem_used() -> Option<MemUsed> {
-    let mut stats = MaybeUninit::<libc::vm_statistics64>::zeroed();
-    let mut count = libc::HOST_VM_INFO64_COUNT;
-    // SAFETY: `stats` is a zeroed, writable `vm_statistics64` and `count` is its size in words.
-    let rc = unsafe {
-        libc::host_statistics64(
-            host_port(),
-            libc::HOST_VM_INFO64,
-            stats.as_mut_ptr().cast(),
-            &mut count,
-        )
-    };
-    if rc != libc::KERN_SUCCESS {
-        return None;
-    }
-    // SAFETY: filled by the kernel; plain data (all-zero is valid too).
-    let s = unsafe { stats.assume_init() };
-    // SAFETY: plain query.
-    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    if page <= 0 {
-        return None;
-    }
-    let page = page as u64;
-    let app = u64::from(s.internal_page_count).saturating_sub(u64::from(s.purgeable_count));
-    let wired = u64::from(s.wire_count) * page;
-    let compressed = u64::from(s.compressor_page_count) * page;
-    Some(MemUsed {
-        used: app * page + wired + compressed,
-        wired,
-        compressed,
-    })
-}
+/// Until #27 lands a `/proc` backend, a Host that is not a Mac reads no processes and no memory:
+/// Activity is empty, and Memory Guard, which cannot judge a limit against a total of zero,
+/// never freezes anything.
+#[cfg(not(target_os = "macos"))]
+mod os {
+    use super::{MemUsed, PsRow};
 
-fn mem_total() -> Option<u64> {
-    let mut bytes: u64 = 0;
-    let mut len = size_of::<u64>();
-    // SAFETY: `bytes` is a writable u64 and `len` says so; the name is NUL-terminated.
-    let rc = unsafe {
-        libc::sysctlbyname(
-            c"hw.memsize".as_ptr(),
-            (&mut bytes as *mut u64).cast(),
-            &mut len,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    (rc == 0 && bytes > 0).then_some(bytes)
+    pub(crate) fn run_ps() -> Option<Vec<PsRow>> {
+        None
+    }
+
+    pub(crate) fn rusage(_pid: i32) -> Option<(u64, u64)> {
+        None
+    }
+
+    pub(super) fn mem_used() -> Option<MemUsed> {
+        None
+    }
+
+    pub(super) fn mem_total() -> Option<u64> {
+        None
+    }
 }
 
 /// Turns successive `ps` samples into snapshots: keeps each process's CPU time to diff against.

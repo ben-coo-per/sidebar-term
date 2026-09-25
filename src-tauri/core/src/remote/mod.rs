@@ -1,8 +1,9 @@
-//! Remote: the Mac app serving its Sessions to a phone. While on, an HTTP + WebSocket server
-//! listens on 127.0.0.1 (never on the LAN) and Tailscale Serve publishes it to the tailnet as
-//! `https://<this Mac>.ts.net`, with a real certificate, so the phone's browser can install the
-//! page as an app. A phone must pair once (a code shown in Settings) and then sends its token on
-//! every connection. See docs/architecture.md "Remote".
+//! Remote: a Host serving its Sessions to a phone. While on, an HTTP + WebSocket server listens
+//! on 127.0.0.1 (never on the LAN) and Tailscale Serve publishes it to the tailnet as
+//! `https://<this Host>.ts.net`, with a real certificate, so the phone's browser can install the
+//! page as an app. A phone must pair once (a code shown in Settings on the Mac, or printed by
+//! `sidebar-termd`) and then sends its token on every connection. See docs/architecture.md
+//! "Remote".
 //!
 //! - `tap.rs`: each Session's recent output and attached phones, fed by `session.rs`.
 //! - `auth.rs`: the store of paired phones (`remote.json`) and pairing codes.
@@ -11,13 +12,15 @@
 //!
 //! The sidebar the phone shows (Groups, Tabs, Titles, Agent status) is the Mac webview's: it
 //! sends a snapshot through `remote_sidebar` whenever it changes, and Remote relays it, opaque,
-//! to every phone (ADR 0001: Rust does not know what a Tab is).
+//! to every phone (ADR 0001: the core does not know what a Tab is, until #20). A daemon has no
+//! webview, so its phones get no sidebar yet.
 
 mod auth;
 mod server;
 mod tailscale;
 pub mod tap;
 
+use crate::host::{Assets, Host};
 use crate::layout;
 use crate::model::{Pairing, RemoteDevice, RemoteSnapshot, SessionId, TailscaleState, EVENT_REMOTE};
 use crate::session::SessionManager;
@@ -26,12 +29,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::broadcast;
 
 pub use tap::Taps;
 
-/// Remote (Tauri state). Everything lives in `Inner`, shared with the server's tasks.
+/// Remote (app state, and the daemon's). Everything lives in `Inner`, shared with the server's
+/// tasks.
 pub struct Remote {
     inner: Arc<Inner>,
 }
@@ -46,7 +49,8 @@ pub(crate) enum HubMsg {
 }
 
 pub(crate) struct Inner {
-    app: AppHandle,
+    host: Host,
+    sessions: Arc<SessionManager>,
     taps: Arc<Taps>,
     /// `remote.json`; `None` when the app data dir is unavailable (pairings then last one run).
     path: Option<PathBuf>,
@@ -72,13 +76,19 @@ pub(crate) enum PairError {
 }
 
 impl Remote {
-    /// Load `remote.json` at `path`. The server is not started: see `start_if_enabled`.
-    pub fn open(app: AppHandle, taps: Arc<Taps>, path: Option<PathBuf>) -> Self {
+    /// Load `remote.json` at `path`. The server is not started: see `start_if_enabled` and `set`.
+    pub fn open(
+        host: Host,
+        sessions: Arc<SessionManager>,
+        taps: Arc<Taps>,
+        path: Option<PathBuf>,
+    ) -> Self {
         let store = path.as_deref().and_then(read_store).unwrap_or_default();
         let (hub, _) = broadcast::channel(16);
         Self {
             inner: Arc::new(Inner {
-                app,
+                host,
+                sessions,
                 taps,
                 path,
                 store: Mutex::new(store),
@@ -111,6 +121,16 @@ impl Remote {
     /// Turn Remote on or off. Blocking (runs the Tailscale CLI): call off the main thread.
     pub fn set(&self, on: bool) -> Result<RemoteSnapshot, String> {
         self.inner.set(on)
+    }
+
+    /// The port the server binds from now on, kept in `remote.json` (`sidebar-termd --port`).
+    /// Takes effect the next time Remote is turned on.
+    pub fn set_port(&self, port: u16) {
+        let mut store = lock(&self.inner.store);
+        if store.port() != port {
+            store.port = port;
+            self.inner.save(&store);
+        }
     }
 
     /// Re-read Tailscale's state (blocking) and say where things stand.
@@ -266,9 +286,7 @@ impl Inner {
     }
 
     fn changed(&self) {
-        if let Err(e) = self.app.emit(EVENT_REMOTE, self.snapshot()) {
-            eprintln!("remote: emit failed: {e}");
-        }
+        self.host.events.emit(EVENT_REMOTE, &self.snapshot());
     }
 
     fn save(&self, store: &Store) {
@@ -285,8 +303,12 @@ impl Inner {
         &self.taps
     }
 
-    pub(crate) fn app(&self) -> &AppHandle {
-        &self.app
+    pub(crate) fn assets(&self) -> &dyn Assets {
+        &*self.host.assets
+    }
+
+    pub(crate) fn runtime(&self) -> &tokio::runtime::Handle {
+        &self.host.runtime
     }
 
     pub(crate) fn hub_subscribe(&self) -> broadcast::Receiver<HubMsg> {
@@ -352,7 +374,7 @@ impl Inner {
     }
 
     pub(crate) fn write_input(&self, id: SessionId, data: &str) -> Result<(), String> {
-        self.app.state::<SessionManager>().write(id, data.as_bytes())
+        self.sessions.write(id, data.as_bytes())
     }
 }
 
