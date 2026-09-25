@@ -83,3 +83,11 @@ _Avoid_: Activity monitor (that is Apple's app), stats, usage
 **Usage**:
 The panel view showing how much of each chosen coding agent's usage limits is spent: one bar per limit window (Claude Code's 5 hours and week, Codex's), with the time until it resets. Which agents it shows is chosen on the Settings page.
 _Avoid_: Quota, credits, stats, Activity (that is CPU and memory)
+
+**Host**:
+A machine running the sidebar-term core, whose Sessions, Tabs and Groups can be shown and driven from a client. The Mac app is its own local Host; a second machine runs the core as a headless daemon (`sidebar-termd`). A client shows each paired Host as a section of the sidebar.
+_Avoid_: Server, remote machine, node, peer
+
+**Handoff**:
+Moving a Tab to another Host: its Session is killed here after its Resume entry is recorded, a Tab is created on the Host at the matching checkout, and the entry is rerun there. Code moves by push and checkout, never by copying files.
+_Avoid_: Migrate, transfer, sync

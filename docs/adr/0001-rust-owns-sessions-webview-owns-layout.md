@@ -1,6 +1,8 @@
 # 1. Rust owns Sessions; the webview owns the layout
 
-Status: **proposed** (decision ticket #14 is open; revise there)
+Status: **proposed** (decision ticket #14 is open; revise there). To be superseded by
+`0002-host-daemon-owns-sessions-and-layout.md` (epic #24), which moves the layout into a core that a
+headless Host daemon can own too.
 
 ## Context
 
