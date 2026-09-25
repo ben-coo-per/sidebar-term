@@ -27,10 +27,13 @@ use crate::model::{
     ActivityProcess, ActivitySession, ActivitySnapshot, ProbeTarget, SessionId, EVENT_ACTIVITY,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
+#[cfg(target_os = "macos")]
 use std::mem::{size_of, MaybeUninit};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
+#[cfg(target_os = "macos")]
+use std::sync::OnceLock;
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
@@ -269,6 +272,7 @@ fn display_name(comm: &str) -> String {
 
 /// A process's physical footprint and start time (`proc_pid_rusage`). `None` when it is gone or
 /// belongs to another user.
+#[cfg(target_os = "macos")]
 pub(crate) fn rusage(pid: i32) -> Option<(u64, u64)> {
     let mut info = MaybeUninit::<libc::rusage_info_v0>::zeroed();
     // SAFETY: `info` is a writable, zeroed `rusage_info_v0`, the struct the V0 flavor fills.
@@ -330,6 +334,24 @@ struct MemUsed {
     compressed: u64,
 }
 
+/// Not ported yet: Activity on Linux is issue #27. Until then every footprint falls back to `ps`'s
+/// resident size and the memory totals read as zero (Memory Guard then never freezes).
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn rusage(_pid: i32) -> Option<(u64, u64)> {
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+fn mem_used() -> Option<MemUsed> {
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+fn mem_total() -> Option<u64> {
+    None
+}
+
+#[cfg(target_os = "macos")]
 #[allow(deprecated)] // libc points at the `mach2` crate; one call is not worth the dependency.
 fn host_port() -> libc::mach_port_t {
     // A send right that lives as long as the app; fetched once so it is not leaked per call.
@@ -339,6 +361,7 @@ fn host_port() -> libc::mach_port_t {
 }
 
 /// Activity Monitor's "Memory Used": app memory (internal minus purgeable) + wired + compressed.
+#[cfg(target_os = "macos")]
 fn mem_used() -> Option<MemUsed> {
     let mut stats = MaybeUninit::<libc::vm_statistics64>::zeroed();
     let mut count = libc::HOST_VM_INFO64_COUNT;
@@ -372,6 +395,7 @@ fn mem_used() -> Option<MemUsed> {
     })
 }
 
+#[cfg(target_os = "macos")]
 fn mem_total() -> Option<u64> {
     let mut bytes: u64 = 0;
     let mut len = size_of::<u64>();
@@ -678,6 +702,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn real_ps_sees_other_users_processes() {
         let rows = run_ps().expect("ps runs");
         let me = std::process::id() as i32;
@@ -689,6 +714,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn real_memory_totals() {
         let m = Memory::read();
         assert!(m.total > 1 << 30, "{m:?}");
@@ -697,6 +723,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn footprint_of_own_process() {
         let (footprint, start) = rusage(std::process::id() as i32).expect("own rusage");
         assert!(footprint > 0 && start > 0);
