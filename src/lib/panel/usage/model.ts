@@ -66,6 +66,27 @@ export function formatAgo(at: number, now: number): string {
   return now - at < MINUTE ? "just now" : `${formatDuration(now - at)} ago`;
 }
 
+/**
+ * Numbers older than this say how old they are. Claude Code's are read every 10 minutes while
+ * the Panel shows (src-tauri/src/usage.rs `CLAUDE_EVERY`), so older ones mean a wait: a rate
+ * limit, or a persisted answer shown before the first read. Codex's are as old as its last turn.
+ */
+export const FRESH_MS = 10 * MINUTE;
+
+/** The line beside an agent's name: its plan, and "as of 12m ago" once the numbers are stale. */
+export function freshnessNote(a: AgentUsage, now: number): string {
+  const parts = [a.plan ?? ""];
+  if (a.updatedAt !== null && now - a.updatedAt > FRESH_MS) parts.push(`as of ${formatAgo(a.updatedAt, now)}`);
+  return parts.filter(Boolean).join(" · ");
+}
+
+/** The muted line under an agent's name while its endpoint has rate-limited the app; "" otherwise. */
+export function waitingNote(a: AgentUsage, now: number): string {
+  if (a.rateLimitedUntil === null) return "";
+  const until = a.rateLimitedUntil <= now ? "" : ` · reads again in ${formatDuration(a.rateLimitedUntil - now)}`;
+  return `Waiting for the limit to clear${until}`;
+}
+
 /** The fullest of an agent's windows now, for the collapsed header; null when it has none. */
 export function peakPercent(a: AgentUsage, now: number): number | null {
   if (a.windows.length === 0) return null;

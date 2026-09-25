@@ -5,9 +5,11 @@ import {
   formatAgo,
   formatDuration,
   formatResetsIn,
+  freshnessNote,
   parseUsageSection,
   peakPercent,
   usageLevel,
+  waitingNote,
 } from "./model";
 import type { AgentUsage, UsageWindow } from "../../types";
 
@@ -64,9 +66,30 @@ describe("usage model", () => {
       plan: null,
       updatedAt: null,
       error: null,
+      rateLimitedUntil: null,
     };
     expect(peakPercent(a, NOW)).toBe(12); // the 97% window has reset
     expect(peakPercent({ ...a, windows: [] }, NOW)).toBeNull();
+  });
+
+  it("says how old stale numbers are, and when a rate limit is being waited out", () => {
+    const a: AgentUsage = {
+      agent: "claude",
+      windows: [win(48, NOW + HOUR)],
+      plan: "max",
+      updatedAt: NOW - 3 * MIN,
+      error: null,
+      rateLimitedUntil: null,
+    };
+    expect(freshnessNote(a, NOW)).toBe("max"); // within the read interval: fresh enough
+    expect(freshnessNote({ ...a, updatedAt: NOW - 12 * MIN }, NOW)).toBe("max · as of 12m ago");
+    expect(freshnessNote({ ...a, plan: null, updatedAt: NOW - 3 * HOUR }, NOW)).toBe("as of 3h ago");
+    expect(freshnessNote({ ...a, updatedAt: null }, NOW)).toBe("max");
+    expect(waitingNote(a, NOW)).toBe("");
+    expect(waitingNote({ ...a, rateLimitedUntil: NOW + 25 * MIN }, NOW)).toBe(
+      "Waiting for the limit to clear · reads again in 25m",
+    );
+    expect(waitingNote({ ...a, rateLimitedUntil: NOW - 1 }, NOW)).toBe("Waiting for the limit to clear");
   });
 
   it("parses the settings section", () => {

@@ -164,7 +164,7 @@ pub struct GuardSnapshot {
 }
 
 /// One usage limit of one coding agent, e.g. Claude Code's 5-hour window.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageWindow {
     /// Short name for the window: `5h`, `Week`, `Opus wk`.
@@ -175,8 +175,9 @@ pub struct UsageWindow {
     pub resets_at: Option<u64>,
 }
 
-/// One coding agent's usage limits. Payload element of `usage`.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+/// One coding agent's usage limits. Payload element of `usage`; Claude Code's last answer is
+/// also persisted as `usage.json` (without `error` and `rate_limited_until`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentUsage {
     pub agent: AgentKind,
@@ -187,7 +188,13 @@ pub struct AgentUsage {
     /// When `windows` were read (Claude Code) or recorded by the agent (Codex), epoch ms.
     pub updated_at: Option<u64>,
     /// Why the numbers are missing or stale; `windows` then hold the last good ones, if any.
+    /// Never set for a rate limit (see `rate_limited_until`).
+    #[serde(default)]
     pub error: Option<String>,
+    /// The agent's usage endpoint rate-limited the last read: `windows` hold the last good numbers
+    /// (`updated_at` says how old) and no read is made before this time, epoch ms.
+    #[serde(default)]
+    pub rate_limited_until: Option<u64>,
 }
 
 /// Usage limits of the agents chosen in Settings, in the order asked for. Payload of `usage`.

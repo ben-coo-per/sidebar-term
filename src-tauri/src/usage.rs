@@ -5,8 +5,25 @@
 //! Claude Code's `/usage`, authorised with the OAuth token Claude Code keeps in the login Keychain
 //! (`Claude Code-credentials`; `~/.claude/.credentials.json` where it has no Keychain). The token
 //! is only ever read: refreshing it here would rotate Claude Code's refresh token and sign it out.
-//! An expired token keeps the last numbers, marked stale, until Claude Code renews it. Polled
-//! every minute.
+//! An expired token keeps the last numbers, marked stale, until Claude Code renews it.
+//!
+//! The endpoint is tightly rate-limited, and Claude Code's own `/usage` (and every other Claude
+//! Code session on this Mac) shares the allowance. Measured 2026-09-25: a second request 54 s
+//! after a successful one got HTTP 429 with `retry-after: 0`, no `x-ratelimit-*` or
+//! `anthropic-ratelimit-*` header, and the body `{"error":{"type":"rate_limit_error","message":
+//! "Rate limited. Please try again later."}}`; requests 3 minutes and more apart succeeded.
+//! Claude Code keeps no local copy of the answer under `~/.claude/` (its `stats-cache.json` holds
+//! token counts, not the limit windows), so the endpoint is the only source. Hence:
+//!
+//! - read every `CLAUDE_EVERY` (10 min) while watched, never while the Panel is hidden, and
+//!   never more than one read at a time (one thread reads synchronously);
+//! - keep the last answer and when it was read in `usage.json` (app data dir), so a launch or
+//!   a Panel open shows it at once and reads again only once it is `CLAUDE_EVERY` old;
+//! - on 429 keep the numbers, mark them `rate_limited_until` (no `error`), and wait the longer
+//!   of `Retry-After` and an exponential backoff from `CLAUDE_EVERY` with jitter, capped at
+//!   `CLAUDE_BACKOFF_MAX` (1 h); any other failure backs off the same way; a success resets it.
+//!
+//! The scheduling is `ClaudeSchedule`, pure and unit-tested.
 //!
 //! Codex: the `rate_limits` Codex records in its session logs (`~/.codex/sessions/YYYY/MM/DD/
 //! rollout-*.jsonl`) from its API's response headers, on every turn. Free to read, so checked
@@ -16,25 +33,31 @@
 //! uses `/bin/ps`: no HTTP or Keychain crate. The token reaches curl on stdin, never in argv,
 //! which `ps` shows to every user.
 
+use crate::layout;
 use crate::model::{AgentKind, AgentUsage, UsageSnapshot, UsageWindow, EVENT_USAGE};
-use serde_json::Value;
+use serde_json::{json, Value};
+use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
 use std::fs;
+use std::hash::{BuildHasher, Hasher};
 use std::io::Write;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 
-/// Time between reads while watched. Codex is re-read each tick if its log changed.
+/// Time between reads while watched. Codex is re-read each tick if its log changed; Claude Code
+/// only once its schedule is due.
 const TICK: Duration = Duration::from_secs(5);
-/// Time between Claude Code usage requests.
-const CLAUDE_EVERY: Duration = Duration::from_secs(60);
-/// Wait after the usage endpoint rate-limits us.
-const CLAUDE_BACKOFF: Duration = Duration::from_secs(300);
+/// Time between Claude Code usage requests while watched, and how old the persisted answer may
+/// be before a launch or a Panel open requests again. Well under the measured limit (see the
+/// module doc).
+const CLAUDE_EVERY: Duration = Duration::from_secs(10 * 60);
+/// The longest wait between Claude Code requests after they keep failing.
+const CLAUDE_BACKOFF_MAX: Duration = Duration::from_secs(60 * 60);
 const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 /// Claude Code's windows, in display order: response key, label.
@@ -76,15 +99,19 @@ impl Usage {
 }
 
 /// Start the reading thread, idle until `Usage::watch(true, ..)`. While watched, emit a
-/// `UsageSnapshot` whenever it changes, checking every `TICK`.
+/// `UsageSnapshot` whenever it changes, checking every `TICK`. Claude Code's last answer is
+/// kept in `usage.json` in the app data dir across launches.
 ///
 /// The thread never exits: a panic skips the tick.
 pub fn spawn(app: AppHandle) -> Usage {
     let watch = Arc::new((Mutex::new(Watch::default()), Condvar::new()));
     let shared = Arc::clone(&watch);
+    let store = layout::path(&app, layout::USAGE)
+        .inspect_err(|e| eprintln!("usage: no app data dir ({e}); last answer not persisted"))
+        .ok();
     let started = thread::Builder::new().name("usage".into()).spawn(move || {
         let (lock, cvar) = &*shared;
-        let mut reader = Reader::default();
+        let mut reader = Reader::open(store.clone());
         let mut sent: Option<UsageSnapshot> = None;
         loop {
             let (agents, force) = {
@@ -95,7 +122,7 @@ pub fn spawn(app: AppHandle) -> Usage {
                     .unwrap_or_else(PoisonError::into_inner);
                 (w.agents.clone(), std::mem::take(&mut w.changed))
             };
-            match catch_unwind(AssertUnwindSafe(|| reader.read(&agents, Instant::now()))) {
+            match catch_unwind(AssertUnwindSafe(|| reader.read(&agents, now_ms()))) {
                 Ok(snapshot) if force || sent.as_ref() != Some(&snapshot) => {
                     if let Err(e) = app.emit(EVENT_USAGE, &snapshot) {
                         eprintln!("usage: emit failed: {e}");
@@ -105,7 +132,7 @@ pub fn spawn(app: AppHandle) -> Usage {
                 Ok(_) => {}
                 Err(_) => {
                     eprintln!("usage: reading panicked; skipping this tick");
-                    reader = Reader::default();
+                    reader = Reader::open(store.clone());
                 }
             }
             // Sleep a tick, waking early to stop or to change agents.
@@ -126,16 +153,29 @@ pub fn spawn(app: AppHandle) -> Usage {
 }
 
 /// Keeps what is worth not re-reading: Claude Code's last answer, parsed Codex logs.
-#[derive(Default)]
 struct Reader {
+    /// Claude Code's last answer: from `claude_store` at first, then each read's.
     claude: Option<AgentUsage>,
-    claude_next: Option<Instant>,
+    claude_schedule: ClaudeSchedule,
+    /// `usage.json`, where a good Claude Code answer is kept for the next launch.
+    claude_store: Option<PathBuf>,
     /// Codex log -> (mtime, size, its last usage record).
     codex_logs: HashMap<PathBuf, (SystemTime, u64, Option<CodexReading>)>,
 }
 
 impl Reader {
-    fn read(&mut self, agents: &[AgentKind], now: Instant) -> UsageSnapshot {
+    /// Starts from the answer persisted in `store`, if any: a fresh one is not read again.
+    fn open(store: Option<PathBuf>) -> Self {
+        let claude = store.as_deref().and_then(load_claude);
+        Self {
+            claude_schedule: ClaudeSchedule::from_last(claude.as_ref()),
+            claude,
+            claude_store: store,
+            codex_logs: HashMap::new(),
+        }
+    }
+
+    fn read(&mut self, agents: &[AgentKind], now: u64) -> UsageSnapshot {
         let agents = agents
             .iter()
             .filter_map(|agent| match agent {
@@ -147,15 +187,31 @@ impl Reader {
         UsageSnapshot { agents }
     }
 
-    fn claude(&mut self, now: Instant) -> AgentUsage {
-        if let (Some(last), Some(next)) = (&self.claude, self.claude_next) {
-            if now < next {
-                return last.clone();
-            }
+    /// The last answer until the schedule is due, then a read. A good read is persisted.
+    fn claude(&mut self, now: u64) -> AgentUsage {
+        if let Some(last) = self
+            .claude
+            .as_ref()
+            .filter(|_| !self.claude_schedule.due(now))
+        {
+            return last.clone();
         }
-        let (usage, wait) = read_claude(self.claude.as_ref());
+        let (mut usage, end) = read_claude(self.claude.as_ref(), now);
+        self.claude_schedule = self.claude_schedule.after(end, now, jitter());
+        match end {
+            ReadEnd::Ok => {
+                if let Some(store) = &self.claude_store {
+                    if let Err(e) = save_claude(store, &usage) {
+                        eprintln!("usage: could not persist Claude Code's answer: {e}");
+                    }
+                }
+            }
+            ReadEnd::RateLimited(_) => {
+                usage.rate_limited_until = Some(self.claude_schedule.next_at);
+            }
+            ReadEnd::Failed | ReadEnd::Skipped => {}
+        }
         self.claude = Some(usage.clone());
-        self.claude_next = Some(now + wait);
         usage
     }
 
@@ -186,6 +242,7 @@ impl Reader {
                     plan: r.plan,
                     updated_at: r.updated_at,
                     error: None,
+                    rate_limited_until: None,
                 };
             }
         }
@@ -203,6 +260,7 @@ fn unavailable(agent: AgentKind, why: &str) -> AgentUsage {
         plan: None,
         updated_at: None,
         error: Some(why.to_owned()),
+        rate_limited_until: None,
     }
 }
 
@@ -211,9 +269,26 @@ fn stale(agent: AgentKind, last: Option<&AgentUsage>, why: &str) -> AgentUsage {
     match last {
         Some(l) => AgentUsage {
             error: Some(why.to_owned()),
+            rate_limited_until: None,
             ..l.clone()
         },
         None => unavailable(agent, why),
+    }
+}
+
+/// The last good numbers, if any, with no error: for a rate limit, which is not one.
+fn kept(agent: AgentKind, last: Option<&AgentUsage>) -> AgentUsage {
+    AgentUsage {
+        error: None,
+        rate_limited_until: None,
+        ..last.cloned().unwrap_or_else(|| AgentUsage {
+            agent,
+            windows: Vec::new(),
+            plan: None,
+            updated_at: None,
+            error: None,
+            rate_limited_until: None,
+        })
     }
 }
 
@@ -229,19 +304,123 @@ fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
-// ---- Claude Code ----
+// ---- Claude Code: when to read ----
+
+/// How a Claude Code read ended, for `ClaudeSchedule`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ReadEnd {
+    /// Fresh numbers.
+    Ok,
+    /// HTTP 429, with its `Retry-After` in seconds when it gave a usable one.
+    RateLimited(Option<u64>),
+    /// Unreachable, another HTTP error, or an answer that made no sense.
+    Failed,
+    /// Nothing to ask until Claude Code signs in again: not signed in, or the token has expired
+    /// (by its own date, or the endpoint said so).
+    Skipped,
+}
+
+/// When Claude Code is next read. Pure: `now` (epoch ms) and the jitter draw are passed in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ClaudeSchedule {
+    /// No read before this, epoch ms.
+    next_at: u64,
+    /// Reads that ended badly in a row, doubling the wait each time.
+    failures: u32,
+}
+
+impl ClaudeSchedule {
+    /// From the answer kept from the last run, if any: due `CLAUDE_EVERY` after it was read, so
+    /// a relaunch with a fresh answer does not request again, and one with a stale answer does.
+    fn from_last(last: Option<&AgentUsage>) -> Self {
+        let read_at = last.and_then(|l| l.updated_at);
+        Self {
+            next_at: read_at.map_or(0, |at| at + ms(CLAUDE_EVERY)),
+            failures: 0,
+        }
+    }
+
+    fn due(&self, now: u64) -> bool {
+        now >= self.next_at
+    }
+
+    /// The schedule after a read at `now` that ended in `end`; `jitter` is a draw in 0..1.
+    fn after(self, end: ReadEnd, now: u64, jitter: f64) -> Self {
+        let failures = match end {
+            ReadEnd::Ok => 0,
+            ReadEnd::Skipped => self.failures,
+            ReadEnd::RateLimited(_) | ReadEnd::Failed => self.failures.saturating_add(1),
+        };
+        Self {
+            next_at: now + ms(claude_wait(end, failures, jitter)),
+            failures,
+        }
+    }
+}
+
+/// The wait before the next read: `CLAUDE_EVERY` after a good read (or none); after a bad one,
+/// `CLAUDE_EVERY` doubled per failure in a row, stretched by up to half again by `jitter` (so
+/// many Macs do not retry in step), capped at `CLAUDE_BACKOFF_MAX`; and never less than a 429's
+/// `Retry-After`.
+fn claude_wait(end: ReadEnd, failures: u32, jitter: f64) -> Duration {
+    let backoff = || {
+        let doublings = failures.saturating_sub(1).min(8);
+        CLAUDE_EVERY
+            .saturating_mul(1 << doublings)
+            .mul_f64(1.0 + 0.5 * jitter.clamp(0.0, 1.0))
+            .min(CLAUDE_BACKOFF_MAX)
+    };
+    match end {
+        ReadEnd::Ok | ReadEnd::Skipped => CLAUDE_EVERY,
+        ReadEnd::RateLimited(Some(secs)) => backoff().max(Duration::from_secs(secs)),
+        ReadEnd::RateLimited(None) | ReadEnd::Failed => backoff(),
+    }
+}
+
+fn ms(d: Duration) -> u64 {
+    d.as_millis() as u64
+}
+
+/// A draw in 0..1 from std's random hasher seed.
+fn jitter() -> f64 {
+    (RandomState::new().build_hasher().finish() % 1000) as f64 / 1000.0
+}
+
+// ---- Claude Code: the kept answer ----
+
+/// `usage.json`: `{"claude": <AgentUsage>}`, `error` and `rate_limited_until` left out.
+fn load_claude(store: &Path) -> Option<AgentUsage> {
+    let v: Value = serde_json::from_str(&fs::read_to_string(store).ok()?).ok()?;
+    let kept: AgentUsage = serde_json::from_value(v.get("claude")?.clone()).ok()?;
+    (kept.agent == AgentKind::Claude && kept.updated_at.is_some()).then_some(AgentUsage {
+        error: None,
+        rate_limited_until: None,
+        ..kept
+    })
+}
+
+fn save_claude(store: &Path, usage: &AgentUsage) -> Result<(), String> {
+    let kept = AgentUsage {
+        error: None,
+        rate_limited_until: None,
+        ..usage.clone()
+    };
+    layout::write(store, &json!({ "claude": kept }))
+}
+
+// ---- Claude Code: one read ----
 
 const CLAUDE_EXPIRED: &str = "Sign-in expired: it renews when you next use Claude Code";
 
-/// Claude Code's usage, and how long to wait before asking again.
-fn read_claude(last: Option<&AgentUsage>) -> (AgentUsage, Duration) {
+/// Claude Code's usage, read at `now` (epoch ms), and how the read ended.
+fn read_claude(last: Option<&AgentUsage>, now: u64) -> (AgentUsage, ReadEnd) {
     let agent = AgentKind::Claude;
     let creds = match claude_credentials() {
         Ok(c) => c,
-        Err(e) => return (stale(agent, last, &e), CLAUDE_EVERY),
+        Err(e) => return (stale(agent, last, &e), ReadEnd::Skipped),
     };
-    if creds.expires_at.is_some_and(|at| at <= now_ms()) {
-        return (stale(agent, last, CLAUDE_EXPIRED), CLAUDE_EVERY);
+    if creds.expires_at.is_some_and(|at| at <= now) {
+        return (stale(agent, last, CLAUDE_EXPIRED), ReadEnd::Skipped);
     }
     match fetch_claude_usage(&creds.token) {
         Ok(body) => match parse_claude_usage(&body) {
@@ -250,28 +429,28 @@ fn read_claude(last: Option<&AgentUsage>) -> (AgentUsage, Duration) {
                     agent,
                     windows,
                     plan: creds.plan,
-                    updated_at: Some(now_ms()),
+                    updated_at: Some(now),
                     error: None,
+                    rate_limited_until: None,
                 },
-                CLAUDE_EVERY,
+                ReadEnd::Ok,
             ),
             None => (
                 stale(agent, last, "Unexpected answer from api.anthropic.com"),
-                CLAUDE_EVERY,
+                ReadEnd::Failed,
             ),
         },
-        Err(Fetch::Status(429)) => (
-            stale(agent, last, "Rate limited: trying again in 5 minutes"),
-            CLAUDE_BACKOFF,
-        ),
-        Err(Fetch::Status(401 | 403)) => (stale(agent, last, CLAUDE_EXPIRED), CLAUDE_EVERY),
+        Err(Fetch::RateLimited(retry_after)) => {
+            (kept(agent, last), ReadEnd::RateLimited(retry_after))
+        }
+        Err(Fetch::Status(401 | 403)) => (stale(agent, last, CLAUDE_EXPIRED), ReadEnd::Skipped),
         Err(Fetch::Status(code)) => (
             stale(agent, last, &format!("Usage request failed (HTTP {code})")),
-            CLAUDE_EVERY,
+            ReadEnd::Failed,
         ),
         Err(Fetch::Unreachable) => (
             stale(agent, last, "Couldn't reach api.anthropic.com"),
-            CLAUDE_EVERY,
+            ReadEnd::Failed,
         ),
     }
 }
@@ -329,8 +508,14 @@ fn keychain_password(service: &str) -> Option<String> {
 #[derive(Debug, PartialEq)]
 enum Fetch {
     Unreachable,
+    /// HTTP 429, with its `Retry-After` in seconds if it gave one.
+    RateLimited(Option<u64>),
     Status(u32),
 }
+
+/// curl prints the body, then the status and the `Retry-After` header (empty when absent) on
+/// their own lines: `CURL_WRITE_OUT`.
+const CURL_WRITE_OUT: &str = "\n%{http_code}\n%{header{retry-after}}";
 
 fn fetch_claude_usage(token: &str) -> Result<Value, Fetch> {
     let mut child = Command::new("/usr/bin/curl")
@@ -341,7 +526,7 @@ fn fetch_claude_usage(token: &str) -> Result<Value, Fetch> {
             "--config",
             "-",
             "--write-out",
-            "\n%{http_code}",
+            CURL_WRITE_OUT,
             CLAUDE_USAGE_URL,
         ])
         .stdin(Stdio::piped())
@@ -362,11 +547,18 @@ fn fetch_claude_usage(token: &str) -> Result<Value, Fetch> {
     if !wrote {
         return Err(Fetch::Unreachable);
     }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let (body, code) = text.rsplit_once('\n').ok_or(Fetch::Unreachable)?;
+    parse_curl_output(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// curl's output with `CURL_WRITE_OUT`: the body on 200, or why not.
+fn parse_curl_output(text: &str) -> Result<Value, Fetch> {
+    let (rest, retry_after) = text.rsplit_once('\n').ok_or(Fetch::Unreachable)?;
+    let (body, code) = rest.rsplit_once('\n').ok_or(Fetch::Unreachable)?;
     match code.trim().parse::<u32>() {
         Ok(200) => serde_json::from_str(body).map_err(|_| Fetch::Status(200)),
         Ok(0) | Err(_) => Err(Fetch::Unreachable),
+        // `Retry-After` in seconds; its HTTP-date form is not honoured (the backoff applies).
+        Ok(429) => Err(Fetch::RateLimited(retry_after.trim().parse().ok())),
         Ok(code) => Err(Fetch::Status(code)),
     }
 }
@@ -636,6 +828,202 @@ mod tests {
             ]
         );
         assert_eq!(parse_claude_usage(&json!({"error": "nope"})), None);
+    }
+
+    const MIN: u64 = 60_000;
+    const NOW: u64 = 1_777_000_000_000;
+
+    fn answer(read_at: u64) -> AgentUsage {
+        AgentUsage {
+            agent: AgentKind::Claude,
+            windows: vec![UsageWindow {
+                label: "5h".into(),
+                used_percent: 48.0,
+                resets_at: Some(read_at + 2 * 60 * MIN),
+            }],
+            plan: Some("max".into()),
+            updated_at: Some(read_at),
+            error: None,
+            rate_limited_until: None,
+        }
+    }
+
+    #[test]
+    fn relaunch_reads_again_only_once_the_kept_answer_is_stale() {
+        // Fresh: due CLAUDE_EVERY after it was read, not at launch.
+        let fresh = ClaudeSchedule::from_last(Some(&answer(NOW - 3 * MIN)));
+        assert!(!fresh.due(NOW));
+        assert!(fresh.due(NOW + 7 * MIN));
+        // Stale (the Panel opens after a while): read at once.
+        assert!(ClaudeSchedule::from_last(Some(&answer(NOW - 30 * MIN))).due(NOW));
+        // Nothing kept, or nothing dated: read at once.
+        assert!(ClaudeSchedule::from_last(None).due(NOW));
+        let undated = AgentUsage {
+            updated_at: None,
+            ..answer(NOW)
+        };
+        assert!(ClaudeSchedule::from_last(Some(&undated)).due(NOW));
+    }
+
+    #[test]
+    fn a_good_read_is_next_due_after_the_base_interval() {
+        let s = ClaudeSchedule::from_last(None).after(ReadEnd::Ok, NOW, 0.9);
+        assert_eq!(
+            s,
+            ClaudeSchedule {
+                next_at: NOW + 10 * MIN,
+                failures: 0
+            }
+        );
+        // A skipped read (not signed in) asks again at the base interval, and keeps the count.
+        let s = ClaudeSchedule {
+            next_at: 0,
+            failures: 3,
+        }
+        .after(ReadEnd::Skipped, NOW, 0.0);
+        assert_eq!(
+            s,
+            ClaudeSchedule {
+                next_at: NOW + 10 * MIN,
+                failures: 3
+            }
+        );
+    }
+
+    #[test]
+    fn rate_limits_back_off_exponentially_with_jitter_up_to_an_hour() {
+        let mut s = ClaudeSchedule::from_last(None);
+        let mut now = NOW;
+        // 429 without a usable Retry-After: 10, 20, 40, 60, 60 min (no jitter).
+        for want in [10, 20, 40, 60, 60] {
+            s = s.after(ReadEnd::RateLimited(None), now, 0.0);
+            assert_eq!(s.next_at - now, want * MIN, "after {} failures", s.failures);
+            now = s.next_at;
+        }
+        assert_eq!(s.failures, 5);
+        // Jitter stretches by up to half again, within the cap.
+        let s1 = ClaudeSchedule::from_last(None).after(ReadEnd::RateLimited(None), NOW, 0.5);
+        assert_eq!(s1.next_at - NOW, 12 * MIN + 30_000);
+        let s1 = ClaudeSchedule::from_last(None).after(ReadEnd::RateLimited(None), NOW, 0.999);
+        assert!((14 * MIN + 59_000..15 * MIN).contains(&(s1.next_at - NOW)));
+        let s3 = ClaudeSchedule {
+            next_at: 0,
+            failures: 2,
+        }
+        .after(ReadEnd::Failed, NOW, 1.0);
+        assert_eq!(s3.next_at - NOW, 60 * MIN); // 40 min * 1.5 = 60
+        let s3 = ClaudeSchedule {
+            next_at: 0,
+            failures: 3,
+        }
+        .after(ReadEnd::Failed, NOW, 1.0);
+        assert_eq!(s3.next_at - NOW, 60 * MIN); // capped
+                                                // Nothing overflows however long it keeps failing.
+        let s = ClaudeSchedule {
+            next_at: 0,
+            failures: u32::MAX,
+        }
+        .after(ReadEnd::Failed, NOW, 1.0);
+        assert_eq!(s.next_at - NOW, 60 * MIN);
+        // A success resets the count.
+        let s = ClaudeSchedule {
+            next_at: 0,
+            failures: 4,
+        }
+        .after(ReadEnd::Ok, NOW, 0.0);
+        assert_eq!(
+            s,
+            ClaudeSchedule {
+                next_at: NOW + 10 * MIN,
+                failures: 0
+            }
+        );
+    }
+
+    #[test]
+    fn retry_after_is_honoured_when_longer_than_the_backoff() {
+        // Shorter than the backoff (the endpoint says 0 in practice): the backoff applies.
+        let s = ClaudeSchedule::from_last(None).after(ReadEnd::RateLimited(Some(0)), NOW, 0.0);
+        assert_eq!(s.next_at - NOW, 10 * MIN);
+        let s = ClaudeSchedule::from_last(None).after(ReadEnd::RateLimited(Some(30)), NOW, 0.0);
+        assert_eq!(s.next_at - NOW, 10 * MIN);
+        // Longer: waited in full, even past the backoff cap.
+        let s = ClaudeSchedule::from_last(None).after(ReadEnd::RateLimited(Some(1800)), NOW, 0.0);
+        assert_eq!(s.next_at - NOW, 30 * MIN);
+        let s = ClaudeSchedule::from_last(None).after(ReadEnd::RateLimited(Some(7200)), NOW, 0.0);
+        assert_eq!(s.next_at - NOW, 120 * MIN);
+    }
+
+    #[test]
+    fn curl_output() {
+        let ok = "{\"five_hour\": {\"utilization\": 1}}\n200\n";
+        assert_eq!(
+            parse_curl_output(ok),
+            Ok(json!({"five_hour": {"utilization": 1}}))
+        );
+        // A 429 body is pretty-printed over several lines; Retry-After may be absent or 0.
+        let limited = "{\n  \"error\": {\n    \"type\": \"rate_limit_error\"\n  }\n}\n429\n0";
+        assert_eq!(parse_curl_output(limited), Err(Fetch::RateLimited(Some(0))));
+        assert_eq!(
+            parse_curl_output("{}\n429\n1800"),
+            Err(Fetch::RateLimited(Some(1800)))
+        );
+        assert_eq!(
+            parse_curl_output("{}\n429\n"),
+            Err(Fetch::RateLimited(None))
+        );
+        assert_eq!(
+            parse_curl_output("{}\n429\nFri, 25 Sep 2026 20:00:00 GMT"),
+            Err(Fetch::RateLimited(None))
+        );
+        assert_eq!(parse_curl_output("\n401\n"), Err(Fetch::Status(401)));
+        assert_eq!(
+            parse_curl_output("not json\n200\n"),
+            Err(Fetch::Status(200))
+        );
+        assert_eq!(parse_curl_output("\n000\n"), Err(Fetch::Unreachable));
+        assert_eq!(parse_curl_output(""), Err(Fetch::Unreachable));
+    }
+
+    #[test]
+    fn keeps_a_good_answer_across_launches_without_its_error_or_rate_limit() {
+        let dir = TempDir::new("usage");
+        let store = dir.path().join("usage.json");
+        assert_eq!(load_claude(&store), None);
+        let read = AgentUsage {
+            rate_limited_until: Some(NOW + MIN),
+            ..answer(NOW - 2 * MIN)
+        };
+        save_claude(&store, &read).expect("save");
+        assert_eq!(load_claude(&store), Some(answer(NOW - 2 * MIN)));
+        // What Reader::open makes of it: shown at once, not read again yet.
+        let mut reader = Reader::open(Some(store.clone()));
+        assert_eq!(reader.claude(NOW), answer(NOW - 2 * MIN));
+        assert!(!reader.claude_schedule.due(NOW));
+        // Not Claude Code's, or undated: ignored.
+        fs::write(
+            &store,
+            r#"{"claude":{"agent":"codex","windows":[],"plan":null,"updatedAt":1}}"#,
+        )
+        .unwrap();
+        assert_eq!(load_claude(&store), None);
+        fs::write(&store, "{\"claude\": 3").unwrap();
+        assert_eq!(load_claude(&store), None);
+    }
+
+    #[test]
+    fn a_rate_limit_keeps_the_numbers_without_an_error() {
+        let last = answer(NOW - 5 * MIN);
+        assert_eq!(kept(AgentKind::Claude, Some(&last)), last);
+        let first = kept(AgentKind::Claude, None);
+        assert_eq!(first.error, None);
+        assert!(first.windows.is_empty());
+        assert_eq!(
+            stale(AgentKind::Claude, Some(&last), "why")
+                .error
+                .as_deref(),
+            Some("why")
+        );
     }
 
     #[test]

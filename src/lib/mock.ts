@@ -384,6 +384,7 @@ function fakeUsage(agent: AgentKind): AgentUsage | null {
         plan: "max",
         updatedAt: now,
         error: null,
+        rateLimitedUntil: null,
       };
     case "codex":
       return {
@@ -395,6 +396,7 @@ function fakeUsage(agent: AgentKind): AgentUsage | null {
         plan: "plus",
         updatedAt: now - 3 * HOUR,
         error: null,
+        rateLimitedUntil: null,
       };
     case "gemini":
       return null;
