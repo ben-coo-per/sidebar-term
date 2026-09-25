@@ -80,7 +80,7 @@ impl Drop for ChildGuard {
 }
 
 /// Makes the `sleeper` test sleep instead of returning at once.
-const SLEEPER_ENV: &str = "SIDEBAR_TERM_TEST_SLEEPER";
+pub const SLEEPER_ENV: &str = "SIDEBAR_TERM_TEST_SLEEPER";
 
 /// Arguments that make a `fake_binary` sleep for 30 s.
 pub const SLEEPER_ARGS: [&str; 4] = [

@@ -58,9 +58,12 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
 - `session.rs` — `SessionManager` (Tauri state): spawn `$SHELL -l` on a `portable-pty` pty, one
   reader thread per Session coalescing output into `InvokeResponseBody::Raw`, write, resize,
   pause/resume, kill, `probe_targets()`.
-- `detect/` — `probe(&ProbeTarget) -> SessionInfo`: libproc for the Foreground process group,
-  agent classification, remote-hop detection, cwd; `.git` file reading for repo / Worktree / branch.
-  `detect/resume.rs`: the Resume entry of a Session's Foreground job (see "Resume").
+- `detect/` — `probe(&ProbeTarget) -> SessionInfo`: the Foreground process group's members
+  (comm, executable path, argv, cwd) read by `detect/os/`, one backend per OS behind one contract
+  (`os/macos.rs`: libproc and `sysctl`; `os/linux.rs`: `/proc`, for the Host daemon); agent
+  classification and remote-hop detection (`detect/process.rs`, pure); `.git` file reading for
+  repo / Worktree / branch (`detect/git.rs`). `detect/resume.rs`: the Resume entry of a Session's
+  Foreground job (see "Resume").
 - `monitor.rs` — thread ticking every 500 ms: probe every target, emit `session-info` on change.
 - `activity.rs` — `Activity` (Tauri state): thread idle until watched (by the webview, or by
   Memory Guard), then every 2 s runs `/bin/ps` over every process, reads this user's processes'

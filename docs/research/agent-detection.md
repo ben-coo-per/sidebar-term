@@ -157,6 +157,32 @@ and also while a long tool runs.
 - Event-driven presence is not available on macOS (no kqueue/ notification for `tcsetpgrp`).
   `proc_listpids(PROC_TTY_ONLY, dev)` is an alternative enumeration but no cheaper.
 
+## Linux (the Host daemon, issue #26)
+
+Same mechanism, read from `/proc` (`src-tauri/src/detect/os/linux.rs`; `proc(5)`):
+
+| Fact | macOS | Linux |
+| --- | --- | --- |
+| Foreground pgid | `tcgetpgrp(master)` | the same call (`session.rs` is portable) |
+| Members of a pgrp | `proc_listpids(PROC_PGRP_ONLY)` | no equivalent: one scan of every `/proc/<pid>/stat` (field 5, `pgrp`), cached 100 ms so every probe of a monitor tick shares it; the leader is always read afresh, and every candidate's `stat` is re-read so a pid that exited or was reused is never reported |
+| `comm`, ppid, zombie | `PROC_PIDT_SHORTBSDINFO` | `/proc/<pid>/stat`: `pid (comm) state ppid pgrp ...`, parsed from the *last* `)` (comm may hold spaces and parentheses); `Z` / `X` read as gone |
+| Executable path | `proc_pidpath`, any uid, fails once deleted | `readlink /proc/<pid>/exe`, same uid only; a deleted file reads as its path with the kernel's ` (deleted)` stripped |
+| argv | `sysctl KERN_PROCARGS2`, same uid only | `/proc/<pid>/cmdline`, **any uid** (so a `sudo`'d job's argv is known, and Resume reruns `sudo ...`); empty for a kernel thread |
+| Environment | in the same buffer; withheld for platform binaries | `/proc/<pid>/environ`, same uid only (empty otherwise) |
+| cwd | `PROC_PIDVNODEPATHINFO`, same uid only | `readlink /proc/<pid>/cwd`, same uid only; canonical (symlinks resolved), as libproc's |
+
+One difference matters for classification: **`comm` is the name exec'd, not the resolved
+file's.** The native Claude Code install (`~/.local/bin/claude -> ~/.local/share/claude/versions/
+<ver>`) reads as `comm = claude` on Linux and as `<ver>` on macOS; `classify_agent` already
+accepts both, and the `/claude/versions/` path rule covers the executable link. `comm` is 15
+bytes on Linux (`TASK_COMM_LEN - 1`), 16 on macOS, so `codex-aarch64-unknown-linux-gnu` reads as
+`codex-aarch64-un`; the `codex-<arch>-apple-darwin` file-name rule has no Linux twin yet (Codex
+release tarballs for Linux are `codex-<triple>` too; add it when one is seen running).
+
+Cost, measured in a Debian 12 (aarch64) container under Docker Desktop on this M1, the crate's
+`detect` tests as an unprivileged user: see the PR for issue #26 (`/proc` scan of the
+container's processes, and `probe` per call with the scan cached). Nothing here needs root.
+
 ## Could not verify (needs one run outside this session)
 
 - Whether `tcgetpgrp()` on the pty **master** fd returns the pgid on macOS 26.5 or fails with
