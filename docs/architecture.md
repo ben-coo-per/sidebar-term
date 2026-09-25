@@ -63,11 +63,14 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
   `detect/resume.rs`: the Resume entry of a Session's Foreground job (see "Resume").
 - `monitor.rs` — thread ticking every 500 ms: probe every target, emit `session-info` on change.
 - `activity.rs` — `Activity` (Tauri state): thread idle until watched (by the webview, or by
-  Memory Guard), then every 2 s runs `/bin/ps` over every process, reads this user's processes'
-  footprints, attributes each to a Session by ppid descent from its shell, emits `activity` if the
-  webview watches and hands the sample to Memory Guard if it is on (see "Panel").
+  Memory Guard), then every 2 s lists every process, reads this user's processes' footprints,
+  attributes each to a Session by ppid descent from its shell, emits `activity` if the webview
+  watches and hands the sample to Memory Guard if it is on (see "Panel"). The OS reads are
+  `activity/macos.rs` (`/bin/ps`, `proc_pid_rusage`, Mach host statistics) and `activity/linux.rs`
+  (`/proc`), cfg-selected behind the same four functions.
 - `guard.rs` — `Guard` (Tauri state): Memory Guard's policy and the SIGSTOP / SIGCONT of a
-  Session's process tree; `frozen.json` for thawing after a crash (see "Tray").
+  Session's process tree (listed, with start times, by `activity.rs`'s OS module); `frozen.json`
+  for thawing after a crash (see "Tray").
 - `usage.rs` — `Usage` (Tauri state): thread idle until watched, then every 5 s reads the chosen
   agents' usage limits and emits `usage` on change (see "Panel").
 - `caffeinate.rs` — `Caffeinate` (Tauri state): the background `caffeinate` run behind the Tray's
@@ -185,20 +188,36 @@ macOS's wired memory, the compressor and other apps.
 With "CPU and memory on Tabs" on in Settings (the default), each Tab row shows its Session's CPU and
 memory (`35% · 1.21 GB`), from the same samples.
 
-- Source: `/bin/ps -axo pid,ppid,rss,time,%cpu,comm`, every 2 s, only while the Panel or the Tab
-  stats show it or Memory Guard is on. libproc's task info is EPERM for other users' processes, about a
-  third of all processes and usually the busiest (WindowServer, kernel_task); `ps` is setuid root.
-  One run costs ~20 ms.
-- Memory is each process's physical footprint (`proc_pid_rusage`), Activity Monitor's "Memory"
-  column: compressed and swapped pages included, shared pages not. `ps`'s resident size gets both
-  wrong (a shared executable counts in full; what the compressor holds does not count, so under
-  pressure a 200 MB process reads 5 MB). Footprints are readable for this user's processes, which
-  includes every Session's; other users' processes fall back to resident size.
+- Sampled every 2 s, only while the Panel or the Tab stats show it or Memory Guard is on. The
+  reads are per OS (`activity/macos.rs`, `activity/linux.rs`); the maths, attribution and what is
+  sent are shared.
+- macOS source: `/bin/ps -axo pid,ppid,rss,time,%cpu,comm`. libproc's task info is EPERM for
+  other users' processes, about a third of all processes and usually the busiest (WindowServer,
+  kernel_task); `ps` is setuid root. One run costs ~20 ms.
+- Linux source: `/proc/<pid>/stat` of every numbered `/proc` entry (ppid, CPU ticks, resident
+  pages, start time, the kernel-thread flag), world-readable, so no `ps`; `/proc/<pid>/exe` for the
+  name of this user's processes (others keep `stat`'s 15-character `comm`, `[kworker/0:1]` for a
+  kernel thread); `/proc/uptime` for the lifetime CPU average of a process seen for the first time.
+- Memory on macOS is each process's physical footprint (`proc_pid_rusage`), Activity Monitor's
+  "Memory" column: compressed and swapped pages included, shared pages not. `ps`'s resident size
+  gets both wrong (a shared executable counts in full; what the compressor holds does not count,
+  so under pressure a 200 MB process reads 5 MB). Footprints are readable for this user's
+  processes, which includes every Session's; other users' processes fall back to resident size.
+- Memory on Linux is `Pss + SwapPss` from `/proc/<pid>/smaps_rollup`: private pages in full, each
+  shared page divided among its sharers, swapped pages included, the nearest thing to the
+  footprint (a Session's sum does not count a shared `libnode` once per process; a frozen Tab's
+  swapped pages still show). `RssAnon + RssFile` from `/proc/<pid>/status` is the fallback for
+  other users' processes (`smaps_rollup` needs ptrace read access) and for kernels before 4.14;
+  a kernel thread falls back to `stat`'s resident pages.
 - CPU% is the change in CPU time between samples over wall time, 100% = one core, as in Activity
-  Monitor. A process seen for the first time uses `ps`'s own decaying %cpu.
+  Monitor. A process seen for the first time uses the OS's own figure: `ps`'s decaying %cpu on
+  macOS, the lifetime average (`ps`'s %cpu there) on Linux.
 - A process belongs to a Session if it is the Session's shell or descends from it by ppid, so
-  background jobs count and a daemon that detaches (reparents to launchd) does not.
-- Memory Used is Activity Monitor's: app memory + wired + compressed (`host_statistics64`).
+  background jobs count and a daemon that detaches (reparents to launchd or init) does not.
+- Memory Used on macOS is Activity Monitor's: app memory + wired + compressed
+  (`host_statistics64`); physical memory is `hw.memsize`. On Linux it is
+  `MemTotal - MemAvailable` from `/proc/meminfo`; there is no wired or compressed figure in the
+  Mac's sense, so both read zero and the muted segment's breakdown is all "other".
 - Rust sends every Session process plus the top 40 others by CPU and the top 40 by memory.
 - Tab colour: the repo's Badge-dot colour, or `--tab-color-plain` outside a repo.
 
@@ -244,7 +263,8 @@ every Activity sample while on:
 
 - Memory Used over the limit (default 85% of physical memory) for 4 s: freeze the Session using the
   most memory (sum of footprints), if at least 128 MB. Never the Session in view, reported by the
-  webview (`guard_visible`).
+  webview (`guard_visible`). The limit means the same on every Host: a percent of physical memory
+  in use, Memory Used as Activity reads it (on Linux, `MemTotal - MemAvailable`).
 - Memory Used 10 points under the limit: thaw the Session frozen first.
 - After a freeze or thaw, wait 10 s before the next, so memory shows the effect.
 - Going to a frozen Tab thaws it and spares it until memory falls under the thaw line.
@@ -256,9 +276,12 @@ every Activity sample while on:
   shell last. A frozen process keeps its memory: freezing stops growth and CPU, not what is held.
   An agent's in-flight request or a command it waits on may time out after a long freeze; the agent
   retries.
+- The tree to stop comes from the same process list Activity samples (`ps` on macOS, the `/proc`
+  scan on Linux), re-read up to three times for children forked meanwhile.
 - A frozen Session is thawed before a kill (closing its Tab, a reload, quitting), since SIGHUP does
-  not reach a stopped process. After a crash, `frozen.json` (pids with start times) lets the next
-  launch thaw what was left stopped; a pid whose start time changed is not touched.
+  not reach a stopped process. After a crash, `frozen.json` (pids with start times:
+  `ri_proc_start_abstime` on macOS, `stat`'s `starttime` on Linux) lets the next launch thaw what
+  was left stopped; a pid whose start time changed is not touched.
 
 ## Resume
 
