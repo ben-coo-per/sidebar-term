@@ -24,6 +24,7 @@ export type ActionId =
   | "tab.prevInGroup"
   | "tab.moveUp"
   | "tab.moveDown"
+  | "tab.markUnread"
   | "group.new"
   | GroupJumpAction
   | "sidebar.toggle"
@@ -57,6 +58,7 @@ export const ACTIONS: readonly ActionDef[] = [
   { id: "tab.prev", label: "Previous Tab", category: "Tabs", default: cmd("[", { shift: true }) },
   { id: "tab.moveUp", label: "Move Tab Up", category: "Tabs", default: cmd("ArrowUp", { alt: true }) },
   { id: "tab.moveDown", label: "Move Tab Down", category: "Tabs", default: cmd("ArrowDown", { alt: true }) },
+  { id: "tab.markUnread", label: "Mark Tab as Unread", category: "Tabs", default: cmd("u", { shift: true }) },
   { id: "group.new", label: "New Group", category: "Groups", default: cmd("n", { shift: true }) },
   ...Array.from({ length: GROUP_JUMP_COUNT }, (_, i): ActionDef => ({
     id: groupJumpAction(i + 1),

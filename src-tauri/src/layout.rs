@@ -11,6 +11,8 @@ pub const SETTINGS: &str = "settings.json";
 pub const RESUME: &str = "resume.json";
 /// Whether Remote is on and the phones paired with it (`remote/`).
 pub const REMOTE: &str = "remote.json";
+/// Processes Memory Guard has frozen, for the next launch to thaw after a crash (`guard.rs`).
+pub const FROZEN: &str = "frozen.json";
 
 pub fn path(app: &AppHandle, file: &str) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;

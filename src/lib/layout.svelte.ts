@@ -26,6 +26,8 @@ export interface Tab {
   customTitle: string | null;
   /** Last known non-remote cwd, used to respawn this Tab's Session on relaunch. */
   lastCwd: string | null;
+  /** Marked unread by the user; cleared when the user next goes to the Tab. */
+  unread: boolean;
 }
 
 /** The Panel at the bottom of the sidebar: an accordion of views, at most one open. */
@@ -135,6 +137,7 @@ function serialize() {
       groupId: t.groupId,
       customTitle: t.customTitle,
       lastCwd: t.lastCwd,
+      unread: t.unread,
     })),
     activeTabId: layout.activeTabId,
     sidebarWidth: layout.sidebarWidth,
@@ -147,6 +150,7 @@ interface PersistedTab {
   groupId: string;
   customTitle: string | null;
   lastCwd: string | null;
+  unread: boolean;
 }
 
 interface PersistedGroup {
@@ -190,6 +194,7 @@ function validateAndMigrate(raw: unknown): PersistedLayout | null {
       groupId: tt.groupId,
       customTitle: typeof tt.customTitle === "string" ? tt.customTitle : null,
       lastCwd: typeof tt.lastCwd === "string" ? tt.lastCwd : null,
+      unread: tt.unread === true,
     });
   }
 
@@ -261,7 +266,14 @@ export async function initLayout(): Promise<void> {
       } catch {
         sessionId = null; // respawn failed (e.g. bad cwd); keep the Tab, session-less
       }
-      const tab: Tab = { id: t.id, sessionId, groupId: t.groupId, customTitle: t.customTitle, lastCwd: t.lastCwd };
+      const tab: Tab = {
+        id: t.id,
+        sessionId,
+        groupId: t.groupId,
+        customTitle: t.customTitle,
+        lastCwd: t.lastCwd,
+        unread: t.unread,
+      };
       layout.tabs[t.id] = tab;
       const group = layout.groups.find((g) => g.id === t.groupId);
       group?.tabIds.push(t.id);
@@ -279,7 +291,7 @@ export async function initLayout(): Promise<void> {
     layout.groups = [group];
     const id = newId("tab");
     const sessionId = await terminals.create({ resumeKey: id });
-    const tab: Tab = { id, sessionId, groupId: group.id, customTitle: null, lastCwd: null };
+    const tab: Tab = { id, sessionId, groupId: group.id, customTitle: null, lastCwd: null, unread: false };
     layout.tabs[tab.id] = tab;
     group.tabIds.push(tab.id);
     sessionToTab.set(sessionId, tab.id);
@@ -324,7 +336,7 @@ export async function newTab(opts?: { cwd?: string | null; groupId?: string }): 
 
   const id = newId("tab");
   const sessionId = await terminals.create({ cwd, resumeKey: id });
-  const tab: Tab = { id, sessionId, groupId, customTitle: null, lastCwd: cwd };
+  const tab: Tab = { id, sessionId, groupId, customTitle: null, lastCwd: cwd, unread: false };
   layout.tabs[id] = tab;
   sessionToTab.set(sessionId, id);
 
@@ -352,7 +364,7 @@ function removeTab(tabId: string): void {
   if (tab.sessionId !== null) sessionToTab.delete(tab.sessionId);
   const group = layout.groups.find((g) => g.id === tab.groupId);
   if (group) group.tabIds = group.tabIds.filter((id) => id !== tabId);
-  if (layout.activeTabId === tabId) layout.activeTabId = nextActive;
+  if (layout.activeTabId === tabId) setActive(nextActive);
   scheduleSave();
 }
 
@@ -383,9 +395,26 @@ export function setTabLastCwd(tabId: string, cwd: string): void {
   scheduleSave();
 }
 
+/** Mark or unmark a Tab as unread. The mark stays until the user next goes to the Tab. */
+export function setTabUnread(tabId: string, unread: boolean): void {
+  const tab = layout.tabs[tabId];
+  if (!tab || tab.unread === unread) return;
+  tab.unread = unread;
+  scheduleSave();
+}
+
+/**
+ * Show `tabId`, clearing its unread mark. Not used on relaunch, so a mark put on the Tab in view
+ * survives a restart.
+ */
+function setActive(tabId: string | null): void {
+  layout.activeTabId = tabId;
+  if (tabId) setTabUnread(tabId, false);
+}
+
 export function activateTab(tabId: string): void {
   if (!layout.tabs[tabId] || layout.activeTabId === tabId) return;
-  layout.activeTabId = tabId;
+  setActive(tabId);
   scheduleSave();
 }
 
@@ -438,7 +467,7 @@ export function deleteGroup(groupId: string): void {
   const tabIds = [...group.tabIds];
   layout.groups = layout.groups.filter((g) => g.id !== groupId);
   if (layout.activeTabId && tabIds.includes(layout.activeTabId)) {
-    layout.activeTabId = allTabIdsInOrder()[0] ?? null;
+    setActive(allTabIdsInOrder()[0] ?? null);
   }
   for (const tabId of tabIds) {
     const tab = layout.tabs[tabId];

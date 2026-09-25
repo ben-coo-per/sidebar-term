@@ -80,3 +80,27 @@ export function meterSegments(snapshot: ActivitySnapshot, measure: SortKey, orde
   if (rest > 0) segments.push({ sessionId: null, fraction: rest });
   return segments;
 }
+
+/** The `activity` settings section: whether Tabs show their CPU and memory (on by default). */
+export function parseActivitySection(raw: unknown): { tabStats: boolean } {
+  const r = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+  return { tabStats: r.tabStats !== false };
+}
+
+/** A Tab's stats line: "35% · 1.21 GB". */
+export function formatTabStats(cpu: number, mem: number): string {
+  return `${Math.round(cpu)}% · ${formatBytes(mem)}`;
+}
+
+/**
+ * "Everything else" in the memory meter, broken down: the part macOS keeps (wired), the part the
+ * compressor occupies, and the rest (other apps). Compressed pages of Session processes are in
+ * their footprints too, so the compressor's share is capped at what is left.
+ */
+export function otherMemoryParts(snapshot: ActivitySnapshot): { wired: number; compressed: number; apps: number } {
+  const inTabs = snapshot.sessions.reduce((sum, s) => sum + s.mem, 0);
+  const other = Math.max(0, snapshot.memUsed - inTabs);
+  const wired = Math.min(other, snapshot.memWired);
+  const compressed = Math.min(other - wired, snapshot.memCompressed);
+  return { wired, compressed, apps: other - wired - compressed };
+}

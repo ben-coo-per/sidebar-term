@@ -13,6 +13,7 @@ import {
   newGroup,
   newTab,
   orderedTabIds,
+  setTabUnread,
   toggleSidebarVisible,
 } from "./layout.svelte";
 import { requestCloseTab } from "./sidebar/closeTabFlow";
@@ -69,6 +70,9 @@ function run(action: ActionId): void {
       return;
     case "tab.moveDown":
       moveActiveTab(1);
+      return;
+    case "tab.markUnread":
+      if (layout.activeTabId) setTabUnread(layout.activeTabId, true);
       return;
     case "group.new":
       newGroup();

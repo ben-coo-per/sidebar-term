@@ -30,9 +30,9 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 22px;
+    min-width: 22px;
     height: 20px;
-    padding: 0;
+    padding: 0 4px;
     appearance: none;
     background: transparent;
     border: none;

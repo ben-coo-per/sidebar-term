@@ -14,3 +14,4 @@ vite.config.ts.timestamp-*
 /.claude/worktrees/*
 # Points every worktree's Rust build at the main checkout's src-tauri/target (see the file).
 !/.claude/worktrees/.cargo/
+__pycache__/

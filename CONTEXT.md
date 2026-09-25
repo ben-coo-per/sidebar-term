@@ -56,6 +56,14 @@ _Avoid_: Toolbar, titlebar buttons, status bar
 The Tray toggle that keeps the Mac awake (display and system) while on, by running macOS's `caffeinate` in the background, never in a Session.
 _Avoid_: Keep awake, no-sleep, Amphetamine
 
+**Memory Guard**:
+The Tray toggle that, while on, freezes the Tab using the most memory when memory use passes a limit (set in Settings), and thaws frozen Tabs one at a time once memory frees up. It never freezes the Tab in view.
+_Avoid_: Load balancer, throttle, governor, auto-pause
+
+**Frozen Tab**:
+A Tab whose Session Memory Guard, or the user from the Tab's context menu, has stopped: every process in it is suspended (SIGSTOP) until it is thawed (SIGCONT). It keeps its memory but uses no CPU and does not grow. Going to it thaws it.
+_Avoid_: Paused (that is flow control), suspended, sleeping
+
 **Resume**:
 Starting again, in the same Tab, what its Session was running when the app last closed (a crash, a quit, a restart to install): a Claude Code conversation (`claude --resume <id>`) or any other command, rerun from its command line. Codex and Gemini conversations are not resumed.
 _Avoid_: Restore, recover, reopen (and not the flow-control resume of a paused Session)
@@ -64,8 +72,12 @@ _Avoid_: Restore, recover, reopen (and not the flow-control resume of a paused S
 The dismissable bar at the bottom of the Terminal area, shown after a launch when the last run closed with Tabs still running something. It lists them, resumes every Claude Code conversation or reruns every command with one button each, or one Tab at a time.
 _Avoid_: Toast, notification, crash dialog
 
+**Unread**:
+A Tab whose Title is bold because something happened in it the user hasn't looked at yet: its agent finished, stopped or asked for input while the Tab was in the background, or the user marked it unread to come back to it. Going to the Tab clears it.
+_Avoid_: Highlighted, new, flagged, bookmarked
+
 **Activity**:
-The panel view showing the Mac's CPU and memory, split between sessions (each in its tab colour) and every other process (muted grey), with a list of the busiest processes.
+The panel view showing the Mac's CPU and memory, split between sessions (each in its tab colour) and every other process (muted grey), with a list of the busiest processes. Memory is each process's footprint, as Activity Monitor's Memory column. The same samples give each tab its CPU and memory, shown on the tab when turned on in Settings.
 _Avoid_: Activity monitor (that is Apple's app), stats, usage
 
 **Usage**:
@@ -87,3 +99,10 @@ _Avoid_: Device, client (except in code, where it is any connection)
 **Attach**:
 A phone opening a Session: it gets the Session's recent output replayed, then the live output, at the Mac's grid size, and its typing goes to the Session's pty. Attaching never resizes the pty; the Mac sees nothing.
 _Avoid_: Connect (that is the phone reaching the Mac at all), open (that is a Tab), mirror
+**Host**:
+A machine running the sidebar-term core, whose Sessions, Tabs and Groups can be shown and driven from a client. The Mac app is its own local Host; a second machine runs the core as a headless daemon (`sidebar-termd`). A client shows each paired Host as a section of the sidebar.
+_Avoid_: Server, remote machine, node, peer
+
+**Handoff**:
+Moving a Tab to another Host: its Session is killed here after its Resume entry is recorded, a Tab is created on the Host at the matching checkout, and the entry is rerun there. Code moves by push and checkout, never by copying files.
+_Avoid_: Migrate, transfer, sync

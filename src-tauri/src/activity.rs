@@ -1,5 +1,6 @@
 //! Activity: CPU and memory of every process on the Mac, each Session's processes attributed to
-//! it, for the sidebar Panel's Activity view. Sampled only while the webview watches.
+//! it, for the sidebar Panel's Activity view, the Tabs' stats and Memory Guard. Sampled only while
+//! one of them needs it.
 //!
 //! Source: `/bin/ps`, not libproc. `PROC_PIDTASKINFO` (CPU time, resident size) is EPERM for other
 //! users' processes, about a third of them, including the usual top consumers (WindowServer,
@@ -9,8 +10,17 @@
 //! as Activity Monitor shows it (100 = one core). A process without a previous sample uses `ps`'s own
 //! decaying %cpu instead.
 //!
+//! Memory is the physical footprint, Activity Monitor's "Memory" column (`proc_pid_rusage`): what
+//! the process costs the Mac, compressed and swapped pages included, shared pages not. Resident
+//! size gets both wrong: it counts a shared executable in full and drops what the compressor holds,
+//! so under memory pressure it shows a 200 MB process at 5 MB. `proc_pid_rusage` works for this
+//! user's processes (every Session's), so other users' processes fall back to `ps`'s resident size.
+//!
 //! A process belongs to a Session when it is the Session's shell or descends from it by ppid. A
 //! daemon that detaches (reparents to launchd) leaves its Session.
+//!
+//! Sampling runs while the webview watches (the Panel's Activity view, Tab stats) or while Memory
+//! Guard is on (`guard.rs`), which gets every sample; only the webview's watch emits `activity`.
 
 use crate::detect::{agent_command, process::classify_agent};
 use crate::model::{
@@ -32,30 +42,56 @@ const STALE: Duration = Duration::from_secs(6);
 /// How many of the busiest non-Session processes to send, by CPU and again by memory.
 const TOP: usize = 40;
 
+/// Who wants samples. Sampling runs while either does.
+#[derive(Clone, Copy, Default)]
+struct Watchers {
+    /// The webview: samples are emitted as `activity`.
+    webview: bool,
+    /// Memory Guard: samples go to the `on_sample` callback only.
+    guard: bool,
+}
+
+impl Watchers {
+    fn any(self) -> bool {
+        self.webview || self.guard
+    }
+}
+
 /// Handle to the sampling thread (Tauri state). Starts idle.
 pub struct Activity {
-    watching: Arc<(Mutex<bool>, Condvar)>,
+    watchers: Arc<(Mutex<Watchers>, Condvar)>,
 }
 
 impl Activity {
-    /// Start or stop sampling. Starting samples at once, then every `TICK`.
+    /// Start or stop emitting `activity` to the webview. Starting samples at once, then every `TICK`.
     pub fn watch(&self, on: bool) {
-        let (lock, cvar) = &*self.watching;
-        *lock.lock().unwrap_or_else(PoisonError::into_inner) = on;
+        self.update(|w| w.webview = on);
+    }
+
+    /// Keep sampling for Memory Guard (the `on_sample` callback), whether or not the webview watches.
+    pub fn sample_for_guard(&self, on: bool) {
+        self.update(|w| w.guard = on);
+    }
+
+    fn update(&self, change: impl FnOnce(&mut Watchers)) {
+        let (lock, cvar) = &*self.watchers;
+        change(&mut lock.lock().unwrap_or_else(PoisonError::into_inner));
         cvar.notify_all();
     }
 }
 
-/// Start the sampling thread, idle until `Activity::watch(true)`. While watched, emit an
-/// `ActivitySnapshot` every `TICK`. `targets` lists live Sessions, as for the monitor.
+/// Start the sampling thread, idle until watched. While watched, sample every `TICK`: emit the
+/// `ActivitySnapshot` if the webview watches, and hand it to `on_sample` if Memory Guard does.
+/// `targets` lists live Sessions, as for the monitor.
 ///
 /// The thread never exits: a failed `ps` or a panic skips the tick.
-pub fn spawn<F>(app: AppHandle, targets: F) -> Activity
+pub fn spawn<F, S>(app: AppHandle, targets: F, on_sample: S) -> Activity
 where
     F: Fn() -> Vec<ProbeTarget> + Send + 'static,
+    S: Fn(&ActivitySnapshot, &[ProbeTarget]) + Send + 'static,
 {
-    let watching = Arc::new((Mutex::new(false), Condvar::new()));
-    let shared = Arc::clone(&watching);
+    let watchers = Arc::new((Mutex::new(Watchers::default()), Condvar::new()));
+    let shared = Arc::clone(&watchers);
     let started = thread::Builder::new()
         .name("activity".into())
         .spawn(move || {
@@ -63,21 +99,28 @@ where
             let cpu_count = thread::available_parallelism().map_or(1, |n| n.get() as u32);
             let mut sampler = Sampler::default();
             loop {
-                drop(
-                    cvar.wait_while(lock.lock().unwrap_or_else(PoisonError::into_inner), |on| {
-                        !*on
+                let who = *cvar
+                    .wait_while(lock.lock().unwrap_or_else(PoisonError::into_inner), |w| {
+                        !w.any()
                     })
-                    .unwrap_or_else(PoisonError::into_inner),
-                );
+                    .unwrap_or_else(PoisonError::into_inner);
                 let sampled = catch_unwind(AssertUnwindSafe(|| {
                     let rows = run_ps()?;
                     let memory = Memory::read();
-                    Some(sampler.snapshot(&rows, Instant::now(), &targets(), cpu_count, memory))
+                    let targets = targets();
+                    let snapshot =
+                        sampler.snapshot(&rows, Instant::now(), &targets, cpu_count, memory);
+                    if who.guard {
+                        on_sample(&snapshot, &targets);
+                    }
+                    Some(snapshot)
                 }));
                 match sampled {
                     Ok(Some(snapshot)) => {
-                        if let Err(e) = app.emit(EVENT_ACTIVITY, &snapshot) {
-                            eprintln!("activity: emit failed: {e}");
+                        if who.webview {
+                            if let Err(e) = app.emit(EVENT_ACTIVITY, &snapshot) {
+                                eprintln!("activity: emit failed: {e}");
+                            }
                         }
                     }
                     Ok(None) => eprintln!("activity: ps failed; skipping this tick"),
@@ -91,7 +134,7 @@ where
                     cvar.wait_timeout_while(
                         lock.lock().unwrap_or_else(PoisonError::into_inner),
                         TICK,
-                        |on| *on,
+                        |w| w.any(),
                     )
                     .unwrap_or_else(PoisonError::into_inner),
                 );
@@ -100,14 +143,14 @@ where
     if let Err(e) = started {
         eprintln!("activity: could not start thread: {e}");
     }
-    Activity { watching }
+    Activity { watchers }
 }
 
 /// One row of `ps` output.
 #[derive(Clone, Debug, PartialEq)]
-struct PsRow {
-    pid: i32,
-    ppid: i32,
+pub(crate) struct PsRow {
+    pub pid: i32,
+    pub ppid: i32,
     rss_kib: u64,
     /// Accumulated user + system CPU time in milliseconds (`ps` prints centiseconds).
     cpu_ms: u64,
@@ -117,8 +160,22 @@ struct PsRow {
     comm: String,
 }
 
+#[cfg(test)]
+impl PsRow {
+    pub(crate) fn test(pid: i32, ppid: i32, comm: &str) -> Self {
+        Self {
+            pid,
+            ppid,
+            rss_kib: 1024,
+            cpu_ms: 0,
+            pcpu: 1.5,
+            comm: comm.into(),
+        }
+    }
+}
+
 /// Every process on the Mac except the `ps` itself. `None` if `ps` could not run.
-fn run_ps() -> Option<Vec<PsRow>> {
+pub(crate) fn run_ps() -> Option<Vec<PsRow>> {
     let child = Command::new("/bin/ps")
         .args(["-axww", "-o", "pid=,ppid=,rss=,time=,%cpu=,comm="])
         .env("LC_ALL", "C") // a `.` decimal point in %cpu
@@ -210,6 +267,20 @@ fn display_name(comm: &str) -> String {
     }
 }
 
+/// A process's physical footprint and start time (`proc_pid_rusage`). `None` when it is gone or
+/// belongs to another user.
+pub(crate) fn rusage(pid: i32) -> Option<(u64, u64)> {
+    let mut info = MaybeUninit::<libc::rusage_info_v0>::zeroed();
+    // SAFETY: `info` is a writable, zeroed `rusage_info_v0`, the struct the V0 flavor fills.
+    let rc = unsafe { libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V0, info.as_mut_ptr().cast()) };
+    if rc != 0 {
+        return None;
+    }
+    // SAFETY: filled by the kernel; plain data (all-zero is valid too).
+    let info = unsafe { info.assume_init() };
+    Some((info.ri_phys_footprint, info.ri_proc_start_abstime))
+}
+
 /// pid -> Session for every live process that is a Session's shell or descends from one.
 fn attribute(rows: &[PsRow], targets: &[ProbeTarget]) -> HashMap<i32, SessionId> {
     let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
@@ -231,20 +302,32 @@ fn attribute(rows: &[PsRow], targets: &[ProbeTarget]) -> HashMap<i32, SessionId>
     owner
 }
 
-/// "Memory Used" and physical memory, in bytes. Zero when unreadable.
+/// "Memory Used", two of its parts, and physical memory, in bytes. Zero when unreadable.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Memory {
     used: u64,
+    wired: u64,
+    compressed: u64,
     total: u64,
 }
 
 impl Memory {
     fn read() -> Self {
+        let used = mem_used().unwrap_or_default();
         Self {
-            used: mem_used().unwrap_or(0),
+            used: used.used,
+            wired: used.wired,
+            compressed: used.compressed,
             total: mem_total().unwrap_or(0),
         }
     }
+}
+
+#[derive(Default)]
+struct MemUsed {
+    used: u64,
+    wired: u64,
+    compressed: u64,
 }
 
 #[allow(deprecated)] // libc points at the `mach2` crate; one call is not worth the dependency.
@@ -256,7 +339,7 @@ fn host_port() -> libc::mach_port_t {
 }
 
 /// Activity Monitor's "Memory Used": app memory (internal minus purgeable) + wired + compressed.
-fn mem_used() -> Option<u64> {
+fn mem_used() -> Option<MemUsed> {
     let mut stats = MaybeUninit::<libc::vm_statistics64>::zeroed();
     let mut count = libc::HOST_VM_INFO64_COUNT;
     // SAFETY: `stats` is a zeroed, writable `vm_statistics64` and `count` is its size in words.
@@ -278,10 +361,15 @@ fn mem_used() -> Option<u64> {
     if page <= 0 {
         return None;
     }
-    let pages = u64::from(s.internal_page_count).saturating_sub(u64::from(s.purgeable_count))
-        + u64::from(s.wire_count)
-        + u64::from(s.compressor_page_count);
-    Some(pages * page as u64)
+    let page = page as u64;
+    let app = u64::from(s.internal_page_count).saturating_sub(u64::from(s.purgeable_count));
+    let wired = u64::from(s.wire_count) * page;
+    let compressed = u64::from(s.compressor_page_count) * page;
+    Some(MemUsed {
+        used: app * page + wired + compressed,
+        wired,
+        compressed,
+    })
 }
 
 fn mem_total() -> Option<u64> {
@@ -335,7 +423,7 @@ impl Sampler {
                     pid: r.pid,
                     name: display_name(&r.comm),
                     cpu,
-                    mem: r.rss_kib * 1024,
+                    mem: rusage(r.pid).map_or(r.rss_kib * 1024, |(footprint, _)| footprint),
                     session_id: owner.get(&r.pid).copied(),
                 }
             })
@@ -383,6 +471,8 @@ fn summarize(processes: Vec<ActivityProcess>, cpu_count: u32, memory: Memory) ->
         cpu_count,
         cpu_total,
         mem_used: memory.used,
+        mem_wired: memory.wired,
+        mem_compressed: memory.compressed,
         mem_total: memory.total,
         sessions: sessions.into_values().collect(),
         processes: sent,
@@ -395,12 +485,8 @@ mod tests {
 
     fn row(pid: i32, ppid: i32, cpu_ms: u64, comm: &str) -> PsRow {
         PsRow {
-            pid,
-            ppid,
-            rss_kib: 1024,
             cpu_ms,
-            pcpu: 1.5,
-            comm: comm.into(),
+            ..PsRow::test(pid, ppid, comm)
         }
     }
 
@@ -527,7 +613,11 @@ mod tests {
         let mut s = Sampler::default();
         let t0 = Instant::now();
         let targets = [target(1, 100)];
-        let mem = Memory { used: 8, total: 16 };
+        let mem = Memory {
+            used: 8,
+            total: 16,
+            ..Memory::default()
+        };
 
         // First sample: no history, so ps's own %cpu.
         let first = s.snapshot(&[row(100, 1, 1_000, "zsh")], t0, &targets, 8, mem);
@@ -603,5 +693,14 @@ mod tests {
         let m = Memory::read();
         assert!(m.total > 1 << 30, "{m:?}");
         assert!(m.used > 0 && m.used <= m.total, "{m:?}");
+        assert!(m.wired > 0 && m.wired + m.compressed <= m.used, "{m:?}");
+    }
+
+    #[test]
+    fn footprint_of_own_process() {
+        let (footprint, start) = rusage(std::process::id() as i32).expect("own rusage");
+        assert!(footprint > 0 && start > 0);
+        // launchd is root's: refused, so the sampler falls back to resident size.
+        assert_eq!(rusage(1), None);
     }
 }

@@ -1,14 +1,21 @@
-<!-- A Tab row: Agent/plain icon, Agent status, Title (inline rename), Badge, close button. -->
+<!-- A Tab row: Agent/plain icon, Agent status (or a snowflake while Memory Guard has it frozen),
+     Title (inline rename; bold while unread), Badge, the Session's CPU and memory (Settings), close button. -->
 <script lang="ts">
   import type { Tab } from "../layout.svelte";
   import { activateTab, layout, moveTab, newGroupFromTab, renameTab } from "../layout.svelte";
-  import { sessionState, tabTitle } from "../sessions.svelte";
+  import { sessionState, setTabRead, tabIsUnread, tabTitle } from "../sessions.svelte";
   import { AGENT_NAMES } from "../agentStatus";
   import RobotIcon from "./icons/RobotIcon.svelte";
   import TerminalIcon from "./icons/TerminalIcon.svelte";
   import CheckIcon from "./icons/CheckIcon.svelte";
   import SpinnerIcon from "./icons/SpinnerIcon.svelte";
   import CloseIcon from "./icons/CloseIcon.svelte";
+  import SnowflakeIcon from "./icons/SnowflakeIcon.svelte";
+  import { activity } from "../panel/activity/activity.svelte";
+  import { activitySettings } from "../panel/activity/settings.svelte";
+  import { formatBytes, formatTabStats } from "../panel/activity/model";
+  import { freezeSession, frozenSession, thawSession } from "../guard/memoryGuard.svelte";
+  import { frozenTitle } from "../guard/model";
   import Badge from "./Badge.svelte";
   import { dnd, startTabDrag, endDrag, overTabRow, dropOnTabRow } from "./dnd.svelte";
   import { openContextMenu } from "./menu.svelte";
@@ -26,8 +33,32 @@
   const git = $derived(session?.info?.git ?? null);
   const title = $derived(tabTitle(tab));
   const isActive = $derived(layout.activeTabId === tab.id);
+  const frozen = $derived(frozenSession(tab.sessionId));
   const stateLabel = $derived(
-    status === "running" ? "working" : status === "needs-input" ? "needs input" : agent ? "idle" : undefined,
+    frozen
+      ? "frozen"
+      : status === "running"
+        ? "working"
+        : status === "needs-input"
+          ? "needs input"
+          : agent
+            ? "idle"
+            : undefined,
+  );
+  const usage = $derived(
+    activitySettings.tabStats ? activity.snapshot?.sessions.find((s) => s.sessionId === tab.sessionId) : undefined,
+  );
+  const stats = $derived(
+    frozen ? `frozen · ${formatBytes(usage?.mem ?? frozen.mem)}` : usage ? formatTabStats(usage.cpu, usage.mem) : null,
+  );
+  const rowTitle = $derived(
+    frozen
+      ? frozenTitle(frozen, formatBytes(usage?.mem ?? frozen.mem))
+      : agent
+        ? `${AGENT_NAMES[agent]}: ${stateLabel}`
+        : finished
+          ? "Agent finished"
+          : "Terminal session",
   );
 
   let editing = $state(false);
@@ -80,10 +111,21 @@
     }
   }
 
+  /** Freeze (not the Tab in view: going to a Tab thaws it) or Thaw. */
+  function freezeItem(): MenuItem {
+    const sessionId = tab.sessionId;
+    if (sessionId === null) return { label: "Freeze", disabled: true };
+    if (frozen) return { label: "Thaw", action: () => void thawSession(sessionId) };
+    return { label: "Freeze", action: () => void freezeSession(sessionId), disabled: isActive };
+  }
+
   function menuItems(): MenuItem[] {
     const otherGroups = layout.groups.filter((g) => g.id !== tab.groupId);
     return [
       { label: "Rename", action: beginRename },
+      tabIsUnread(tab)
+        ? { label: "Mark as Read", action: () => setTabRead(tab, true) }
+        : { label: "Mark as Unread", action: () => setTabRead(tab, false) },
       {
         label: "Move to Group",
         submenu: otherGroups.length
@@ -91,6 +133,7 @@
           : [{ label: "No other Groups", disabled: true }],
       },
       { label: "New Group from Tab", action: () => void newGroupFromTab(tab.id) },
+      freezeItem(),
       { label: "Close", action: () => void requestCloseTab(tab.id), danger: true, separatorBefore: true },
     ];
   }
@@ -105,10 +148,11 @@
   class:active={isActive}
   class:dragging={dnd.draggingTabId === tab.id}
   class:highlight={highlight || finished}
+  class:unread={tab.unread}
   role="button"
   tabindex="0"
   draggable="true"
-  title={agent ? `${AGENT_NAMES[agent]}: ${stateLabel}` : finished ? "Agent finished" : "Terminal session"}
+  title={rowTitle}
   ondragstart={(e) => startTabDrag(e, tab.id)}
   ondragend={endDrag}
   ondragover={(e) => overTabRow(e, tab.id)}
@@ -118,8 +162,10 @@
   oncontextmenu={(e) => openContextMenu(e, menuItems())}
 >
   <!-- The icon slot carries Agent status: spinning while working, a still robot once stopped. -->
-  <span class="icon {agent ? (status ?? 'done') : finished ? 'finished' : ''}" aria-label={stateLabel}>
-    {#if agent && status === "running"}
+  <span class="icon {frozen ? 'frozen' : agent ? (status ?? 'done') : finished ? 'finished' : ''}" aria-label={stateLabel}>
+    {#if frozen}
+      <SnowflakeIcon size={14} />
+    {:else if agent && status === "running"}
       <SpinnerIcon size={14} />
     {:else if agent}
       <RobotIcon size={14} />
@@ -149,6 +195,10 @@
       </span>
     {/if}
   </span>
+
+  {#if stats}
+    <span class="stats" class:frozen>{stats}</span>
+  {/if}
 
   <button
     type="button"
@@ -189,7 +239,9 @@
   .row.dragging {
     opacity: 0.4;
   }
-  .row.highlight:not(.active) .title {
+  /* A user's unread mark shows on the Tab in view too, so marking it is visible straight away. */
+  .row.highlight:not(.active) .title,
+  .row.unread .title {
     color: var(--text-primary);
     font-weight: 600;
   }
@@ -227,6 +279,9 @@
   }
   .row .icon.finished {
     color: var(--status-finished);
+  }
+  .row .icon.frozen {
+    color: var(--status-frozen);
   }
   .title {
     flex: 1 1 auto;
@@ -276,6 +331,20 @@
   }
   .row:hover .close {
     display: flex;
+  }
+  .stats {
+    flex: none;
+    font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+  }
+  .stats.frozen {
+    color: var(--status-frozen);
+  }
+  /* The close button takes the stats' place on hover. */
+  .row:hover .stats {
+    display: none;
   }
   .close:hover {
     background: var(--sidebar-bg-active);

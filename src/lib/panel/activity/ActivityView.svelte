@@ -3,7 +3,16 @@
      Tab); every other process is muted grey. See docs/architecture.md "Panel". -->
 <script lang="ts">
   import { activity } from "./activity.svelte";
-  import { formatBytes, formatCpu, machineCpu, meterSegments, sortProcesses, type Segment, type SortKey } from "./model";
+  import {
+    formatBytes,
+    formatCpu,
+    machineCpu,
+    meterSegments,
+    otherMemoryParts,
+    sortProcesses,
+    type Segment,
+    type SortKey,
+  } from "./model";
   import { activateTab, layout, tabIdForSession, type Tab } from "../../layout.svelte";
   import { sessionState, tabTitle } from "../../sessions.svelte";
   import { tabColorVar } from "../../sidebar/repoColor";
@@ -40,6 +49,13 @@
     if (seg.sessionId === null) {
       const inTabs = snap.sessions.reduce((sum, s) => sum + s[measure], 0);
       const all = measure === "cpu" ? snap.cpuTotal : snap.memUsed;
+      if (measure === "mem") {
+        const { wired, compressed, apps } = otherMemoryParts(snap);
+        return (
+          `Everything else: ${format(wired + compressed + apps)}\n` +
+          `macOS (wired): ${format(wired)}\ncompressed: ${format(compressed)}\nother apps: ${format(apps)}`
+        );
+      }
       return `Everything else: ${format(Math.max(0, all - inTabs))}`;
     }
     const s = snap.sessions.find((x) => x.sessionId === seg.sessionId);

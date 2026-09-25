@@ -10,6 +10,9 @@
   import { initHotkeys } from "$lib/hotkeys.svelte";
   import { initUsageSettings } from "$lib/panel/usage/settings.svelte";
   import { initCaffeinate } from "$lib/tray/caffeinate.svelte";
+  import { initMemoryGuard, setVisibleSession } from "$lib/guard/memoryGuard.svelte";
+  import { activitySettings, initActivitySettings } from "$lib/panel/activity/settings.svelte";
+  import { watch as watchActivity } from "$lib/panel/activity/activity.svelte";
   import { onMenuSettings } from "$lib/ipc";
   import { initDropGuard } from "$lib/terminal/drop";
   import SettingsPage from "$lib/settings/SettingsPage.svelte";
@@ -24,11 +27,13 @@
     void initLayout().then(initResume);
     void initHotkeys();
     void initUsageSettings();
+    void initActivitySettings();
     const stopShortcuts = initShortcuts();
     const stopDropGuard = initDropGuard();
     const stopCaffeinate = initCaffeinate();
     const stopRemote = initRemote();
     const stopPublisher = initSidebarPublisher();
+    const stopMemoryGuard = initMemoryGuard();
     const menuSettings = onMenuSettings(openSettings);
     return () => {
       stopShortcuts();
@@ -36,6 +41,7 @@
       stopCaffeinate();
       stopRemote();
       stopPublisher();
+      stopMemoryGuard();
       void menuSettings.then((stop) => stop());
     };
   });
@@ -47,6 +53,14 @@
   });
 
   const active = $derived(activeTab());
+
+  // Memory Guard never freezes the Tab in view, and going to a frozen Tab thaws it.
+  $effect(() => setVisibleSession(active?.sessionId ?? null));
+
+  // Tabs show their CPU and memory from Activity samples, taken only while something shows them.
+  $effect(() => {
+    if (activitySettings.tabStats) return watchActivity();
+  });
 </script>
 
 <main class="app">
