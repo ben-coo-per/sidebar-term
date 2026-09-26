@@ -246,6 +246,78 @@ pub struct ResumeEntry {
     pub cwd: Option<String>,
 }
 
+/// A running Claude Code conversation's files on this Host, for Handoff (`handoff.rs`): where its
+/// transcript is, and the project's auto memory beside it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeConversation {
+    /// The conversation's session id (`claude --resume <id>`).
+    pub id: String,
+    /// The directory the conversation runs in (Claude Code's `cwd`).
+    pub cwd: String,
+    /// The transcript, `<config dir>/projects/<key>/<id>.jsonl`.
+    pub transcript: String,
+    /// The project's `memory/` directory beside the transcript, when there is one.
+    pub memory: Option<String>,
+}
+
+/// One memory file shipped with a conversation: its path relative to `memory/`, and its text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationFile {
+    pub name: String,
+    pub content: String,
+}
+
+/// A conversation's files as they travel to another Host: the transcript's text and the
+/// memory files.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationFiles {
+    pub transcript: String,
+    #[serde(default)]
+    pub memory: Vec<ConversationFile>,
+}
+
+/// What would not move with a Tab: the state of its checkout (`handoff::git_status`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStatus {
+    /// The branch checked out; `None` when detached.
+    pub branch: Option<String>,
+    /// Its upstream (`origin/main`), when it has one.
+    pub upstream: Option<String>,
+    /// Commits on the branch that its upstream lacks; 0 without an upstream.
+    pub ahead: u32,
+    /// Changed or untracked paths (`git status --porcelain` lines).
+    pub changes: u32,
+    /// `origin`'s URL, for a `git clone` typed on the Host; `None` without an `origin`.
+    pub remote_url: Option<String>,
+}
+
+/// What Handoff needs to know about a local Session before moving its Tab (`handoff_probe`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandoffProbe {
+    /// The Session's facts, freshly probed.
+    pub info: SessionInfo,
+    /// What the Session is running, as Resume would record it; `None` at a prompt.
+    pub entry: Option<ResumeEntry>,
+    /// The Claude Code conversation running in it, with its files located; `None` otherwise.
+    pub conversation: Option<ClaudeConversation>,
+    /// The checkout's git status when the Session's cwd is in a repo; `None` otherwise.
+    pub git: Option<GitStatus>,
+}
+
+/// Whether a path exists on a Host (the Host protocol's `path_exists`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PathExists {
+    pub exists: bool,
+    /// True when it exists and is a directory.
+    pub dir: bool,
+}
+
 /// A Group of the sidebar: user-named, user-ordered, holding Tabs in display order (`layout/`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

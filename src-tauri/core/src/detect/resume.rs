@@ -4,7 +4,7 @@
 //! docs/architecture.md "Resume". OWNER: detection agent.
 
 use super::process;
-use crate::model::{AgentKind, ProbeTarget, ResumeEntry, ResumeKind};
+use crate::model::{AgentKind, ClaudeConversation, ProbeTarget, ResumeEntry, ResumeKind};
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::fs;
@@ -54,6 +54,26 @@ pub fn entry(key: &str, target: &ProbeTarget) -> Option<ResumeEntry> {
         line,
         cwd: cwd.or_else(|| process::cwd(shell)),
     })
+}
+
+/// The Claude Code conversation running in the Session behind `target`, with its files located
+/// in that process's own config dir (`handoff::locate`): what Handoff ships to another Host.
+/// `None` when the Foreground job is not an interactive Claude Code with a session file.
+pub fn claude_conversation(target: &ProbeTarget) -> Option<ClaudeConversation> {
+    let shell = target.shell_pid;
+    let pgid = target.fg_pgid.filter(|&p| p > 0 && p != shell)?;
+    let job = process::group_members(pgid)
+        .into_iter()
+        .filter_map(Job::read)
+        .find(|j| j.agent() == Some(AgentKind::Claude))?;
+    let dir = claude_config_dir(job.var("CLAUDE_CONFIG_DIR"), job.var("HOME"))?;
+    let session = claude_session(&dir, job.pid)?;
+    let cwd = session
+        .cwd
+        .and_then(|c| fs::canonicalize(c).ok())
+        .map(|p| p.to_string_lossy().into_owned())
+        .or_else(|| process::cwd(job.pid))?;
+    crate::handoff::locate(&dir, &cwd, &session.session_id)
 }
 
 /// A command line and the directory to run it in.
@@ -161,11 +181,7 @@ fn claude_session(config_dir: &Path, pid: i32) -> Option<ClaudeSession> {
 
 /// A uuid in practice; anything that needs no quoting and cannot be read as a flag.
 fn is_session_id(id: &str) -> bool {
-    (1..=128).contains(&id.len())
-        && !id.starts_with('-')
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    crate::handoff::is_session_id(id)
 }
 
 /// The flags of a Claude Code argv worth keeping on resume (`CLAUDE_SWITCHES`, `CLAUDE_OPTIONS`).
