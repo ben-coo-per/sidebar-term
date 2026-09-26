@@ -35,7 +35,12 @@
         <p class="detail">{req.detail}</p>
       {/if}
       <div class="actions">
-        <button type="button" class="btn" onclick={() => answerConfirm(false)}>Cancel</button>
+        {#if !req.notice}
+          <button type="button" class="btn" onclick={() => answerConfirm(false)}>Cancel</button>
+        {/if}
+        {#if req.alternativeLabel}
+          <button type="button" class="btn" onclick={() => answerConfirm("alternative")}>{req.alternativeLabel}</button>
+        {/if}
         <button
           type="button"
           class="btn primary"
@@ -61,7 +66,8 @@
     animation: fade var(--duration-fast) var(--ease-standard);
   }
   .dialog {
-    width: 320px;
+    width: 360px;
+    max-width: calc(100vw - 32px);
     background: var(--sidebar-bg-raised);
     border: 1px solid var(--sidebar-border);
     border-radius: var(--radius-md);
@@ -81,6 +87,12 @@
     font-size: 12px;
     color: var(--text-secondary);
     line-height: 1.4;
+    /* Handoff's explanation is one line per fact. */
+    white-space: pre-line;
+    overflow-wrap: anywhere;
+  }
+  .actions {
+    flex-wrap: wrap;
   }
   .message:last-of-type {
     margin-bottom: 14px;

@@ -168,6 +168,63 @@ export interface ResumeEntry {
   cwd: string | null;
 }
 
+/** A running Claude Code conversation's files on this Mac, for Handoff (`handoff_probe`). */
+export interface ClaudeConversation {
+  /** The conversation's session id (`claude --resume <id>`). */
+  id: string;
+  /** The directory the conversation runs in. */
+  cwd: string;
+  /** The transcript's path, `<config dir>/projects/<key>/<id>.jsonl`. */
+  transcript: string;
+  /** The project's `memory/` directory beside the transcript, when there is one. */
+  memory: string | null;
+}
+
+/** One memory file shipped with a conversation: its path under `memory/`, and its text. */
+export interface ConversationFile {
+  name: string;
+  content: string;
+}
+
+/** A conversation's files as they travel to another Host. */
+export interface ConversationFiles {
+  transcript: string;
+  memory: ConversationFile[];
+}
+
+/** What would not move with a Tab: its checkout's state (`handoff_probe`). */
+export interface GitStatus {
+  /** The branch checked out; null when detached. */
+  branch: string | null;
+  /** Its upstream (`origin/main`), when it has one. */
+  upstream: string | null;
+  /** Commits the upstream lacks; 0 without an upstream. */
+  ahead: number;
+  /** Changed or untracked paths. */
+  changes: number;
+  /** `origin`'s URL, for a `git clone` typed on the Host; null without an `origin`. */
+  remoteUrl: string | null;
+}
+
+/** What Handoff needs to know about a local Session before moving its Tab. From `handoff_probe`. */
+export interface HandoffProbe {
+  /** The Session's facts, freshly probed. */
+  info: SessionInfo;
+  /** What the Session is running, as Resume would record it; null at a prompt. */
+  entry: ResumeEntry | null;
+  /** The Claude Code conversation running in it, with its files located; null otherwise. */
+  conversation: ClaudeConversation | null;
+  /** The checkout's git status when the cwd is in a repo; null otherwise. */
+  git: GitStatus | null;
+}
+
+/** Whether a path exists on a Host (the Host protocol's `path_exists`). */
+export interface PathExists {
+  exists: boolean;
+  /** True when it exists and is a directory. */
+  dir: boolean;
+}
+
 /** A Group as the Host holds it: user-named, user-ordered, its Tabs in display order. */
 export interface Group {
   id: string;

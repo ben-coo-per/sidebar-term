@@ -33,8 +33,11 @@ import type {
   AgentKind,
   AgentStatus,
   AgentUsage,
+  ClaudeConversation,
+  ConversationFiles,
   GitInfo,
   Group,
+  HandoffProbe,
   HostInfo,
   LayoutSnapshot,
   Pairing,
@@ -251,9 +254,10 @@ function createFakeHost(opts: FakeHostOptions) {
       case "npm":
       case "pnpm":
       case "uv":
+      case "sleep":
         s.fg = head;
         s.command = cmd.trim();
-        out(s, `\x1b[2m(fake) ${s.command}: listening on http://localhost:3000\x1b[0m\r\n`);
+        out(s, head === "sleep" ? "" : `\x1b[2m(fake) ${s.command}: listening on http://localhost:3000\x1b[0m\r\n`);
         emit(s);
         break;
       case "ssh":
@@ -968,7 +972,7 @@ export async function loadSettings(): Promise<unknown | null> {
     saved = {};
   }
   if (!("hosts" in saved)) {
-    saved.hosts = [{ id: "h_mockdell", url: MOCK_HOST_URL, token: "mock-token", name: "dell" }];
+    saved.hosts = [{ id: "h_mockdell", url: MOCK_HOST_URL, token: "mock-token", name: "dell", checkoutRoot: "~/Dev", repoPaths: {} }];
   }
   return saved;
 }
@@ -979,6 +983,46 @@ export async function saveSettings(settings: unknown): Promise<void> {
   } catch {
     /* ignore */
   }
+}
+
+// --- Handoff: what the local fake Host says about a Session; no files move ---------------------
+
+/** The fake conversation id every fake `claude` runs (see `recordResume`). */
+const FAKE_CLAUDE_ID = "5b6d103b-fake";
+
+export async function handoffProbe(sessionId: SessionId): Promise<HandoffProbe | null> {
+  const s = local.sessions.get(sessionId);
+  const i = local.infos().find((x) => x.sessionId === sessionId);
+  if (!s || !i) return null;
+  const entry: ResumeEntry | null =
+    s.agent === "claude"
+      ? { key: s.resumeKey ?? "", kind: "claude", line: `claude --resume ${FAKE_CLAUDE_ID}`, cwd: s.cwd }
+      : s.command
+        ? { key: s.resumeKey ?? "", kind: "command", line: s.command, cwd: s.cwd }
+        : null;
+  const conversation: ClaudeConversation | null =
+    s.agent === "claude"
+      ? { id: FAKE_CLAUDE_ID, cwd: s.cwd, transcript: `${HOME}/.claude/projects/-fake/${FAKE_CLAUDE_ID}.jsonl`, memory: null }
+      : null;
+  // The fake `jack` repo is dirty with one unpushed commit; `detached` is clean.
+  const git = i.git
+    ? {
+        branch: i.git.branch,
+        upstream: i.git.branch ? `origin/${i.git.branch}` : null,
+        ahead: i.git.repoName === "jack" ? 1 : 0,
+        changes: i.git.repoName === "jack" ? 2 : 0,
+        remoteUrl: `git@github.com:you/${i.git.repoName}.git`,
+      }
+    : null;
+  return { info: i, entry, conversation, git };
+}
+
+export async function handoffConversationRead(c: ClaudeConversation): Promise<ConversationFiles> {
+  return { transcript: `{"sessionId":"${c.id}","cwd":"${c.cwd}"}\n`, memory: [{ name: "MEMORY.md", content: "# fake memory\n" }] };
+}
+
+export async function handoffConversationForget(c: ClaudeConversation): Promise<void> {
+  console.info("[mock] forget", c.transcript);
 }
 
 // --- Resume: localStorage stands in for resume.json ---------------------------------------------
@@ -1208,11 +1252,21 @@ export function hostClient(url: string, token: string): HostClient {
           return void (await host.groupDelete(msg.groupId));
         case "group_set_collapsed":
           return void (await host.groupSetCollapsed(msg.groupId, msg.collapsed));
+        case "path_exists": {
+          // The fake dell has `~/Dev/jack` (with `src`) and `~/Dev`; nothing else.
+          const known = [DELL_HOME, `${DELL_HOME}/Dev`, `${DELL_HOME}/Dev/jack`, `${DELL_HOME}/Dev/jack/src`];
+          return { exists: known.includes(msg.path), dir: known.includes(msg.path) };
+        }
       }
     },
     async upload(file) {
       if (!online) throw new Error("Not connected.");
       return `${DELL_HOME}/.local/share/sidebar-term/uploads/${Date.now()}/${file.name}`;
+    },
+    async putConversation(cwd, sessionId, files) {
+      if (!online) throw new Error("Not connected.");
+      console.info("[mock] conversation placed on dell", { cwd, sessionId, memory: files.memory.map((f) => f.name) });
+      return `${DELL_HOME}/.claude/projects/${cwd.replace(/[^A-Za-z0-9]/g, "-")}/${sessionId}.jsonl`;
     },
   };
 }

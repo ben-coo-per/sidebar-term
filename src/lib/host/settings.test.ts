@@ -36,8 +36,15 @@ describe("webSocketUrl", () => {
 describe("the hosts section", () => {
   it("parses what is whole and drops the rest", () => {
     const parsed = parseHostsSection([
-      { id: "h_1", url: "http://127.0.0.1:47699/", token: "t1", name: "dell" },
-      { id: "h_2", url: "dell.tail1234.ts.net", token: "t2" },
+      {
+        id: "h_1",
+        url: "http://127.0.0.1:47699/",
+        token: "t1",
+        name: "dell",
+        checkoutRoot: "~/Dev/",
+        repoPaths: { jack: "/srv/jack/", " ": "/x", bad: "relative", empty: "" },
+      },
+      { id: "h_2", url: "dell.tail1234.ts.net", token: "t2", checkoutRoot: "not/absolute", repoPaths: ["x"] },
       { id: "h_1", url: "http://dup", token: "t3" },
       { id: "h_3", url: "http://no-token" },
       { id: "", url: "http://no-id", token: "t" },
@@ -46,8 +53,8 @@ describe("the hosts section", () => {
       null,
     ]);
     expect(parsed).toEqual([
-      { id: "h_1", url: "http://127.0.0.1:47699", token: "t1", name: "dell" },
-      { id: "h_2", url: "https://dell.tail1234.ts.net", token: "t2", name: null },
+      { id: "h_1", url: "http://127.0.0.1:47699", token: "t1", name: "dell", checkoutRoot: "~/Dev", repoPaths: { jack: "/srv/jack" } },
+      { id: "h_2", url: "https://dell.tail1234.ts.net", token: "t2", name: null, checkoutRoot: null, repoPaths: {} },
     ]);
     expect(parseHostsSection(undefined)).toEqual([]);
     expect(parseHostsSection({ hosts: [] })).toEqual([]);

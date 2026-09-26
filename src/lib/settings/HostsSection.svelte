@@ -1,14 +1,47 @@
 <!-- The Settings page's Hosts section: the Hosts this Mac is paired with (each with its
-     connection state and a Remove button), and pairing a new one by its URL and the code its
-     Settings page shows (or `sidebar-termd --pair` prints). State: src/lib/host/hosts.svelte.ts. -->
+     connection state, its repo-to-path map for Handoff and a Remove button), and pairing a new
+     one by its URL and the code its Settings page shows (or `sidebar-termd --pair` prints).
+     State: src/lib/host/hosts.svelte.ts. -->
 <script lang="ts">
-  import { addHost, hostName, hosts, reconnectHost, removeHost, type HostState } from "../host/hosts.svelte";
+  import {
+    addHost,
+    hostName,
+    hosts,
+    reconnectHost,
+    removeHost,
+    setHostCheckoutRoot,
+    setHostRepoPath,
+    type HostState,
+  } from "../host/hosts.svelte";
   import { codeFromPairingLink } from "../host/settings";
 
   let url = $state("");
   let code = $state("");
   let busy = $state(false);
   let error = $state<string | null>(null);
+
+  /** A new override being typed per Host: repo name and path. */
+  let newRepo = $state<Record<string, { repo: string; path: string }>>({});
+
+  function draft(id: string): { repo: string; path: string } {
+    return newRepo[id] ?? { repo: "", path: "" };
+  }
+
+  function setDraft(id: string, field: "repo" | "path", value: string) {
+    newRepo[id] = { ...draft(id), [field]: value };
+  }
+
+  function draftReady(id: string): boolean {
+    const d = draft(id);
+    return d.repo.trim() !== "" && d.path.trim() !== "";
+  }
+
+  function addOverride(id: string) {
+    if (!draftReady(id)) return;
+    const d = draft(id);
+    setHostRepoPath(id, d.repo, d.path);
+    newRepo[id] = { repo: "", path: "" };
+  }
 
   const ready = $derived(url.trim() !== "" && code.replace(/[^A-Za-z0-9]/g, "").length === 8 && !busy);
 
@@ -77,6 +110,70 @@
           <button type="button" class="text-btn small" onclick={() => reconnectHost(h.id)}>Retry</button>
         {/if}
         <button type="button" class="text-btn small danger" onclick={() => removeHost(h.id)}>Remove</button>
+        <!-- Handoff's repo-to-path map: where this Host keeps its checkouts. -->
+        <div class="map">
+          <label class="map-row">
+            <span class="map-label">Checkout root</span>
+            <input
+              class="field path"
+              value={h.checkoutRoot ?? ""}
+              onchange={(e) => setHostCheckoutRoot(h.id, e.currentTarget.value)}
+              placeholder="~/Dev"
+              autocomplete="off"
+              autocorrect="off"
+              spellcheck="false"
+              aria-label="Checkout root on {hostName(h.id)}"
+            />
+          </label>
+          <span class="detail">
+            A Tab in repo <code>x</code> lands in <code>&lt;root&gt;/x</code> on this Host (New Tab on Host, Move Tab to Host).
+            Overrides below name a repo's checkout elsewhere.
+          </span>
+          {#each Object.entries(h.repoPaths) as [repo, path] (repo)}
+            <div class="map-row">
+              <span class="map-label mono">{repo}</span>
+              <input
+                class="field path"
+                value={path}
+                onchange={(e) => setHostRepoPath(h.id, repo, e.currentTarget.value)}
+                autocomplete="off"
+                autocorrect="off"
+                spellcheck="false"
+                aria-label="Checkout of {repo} on {hostName(h.id)}"
+              />
+              <button type="button" class="text-btn small danger" onclick={() => setHostRepoPath(h.id, repo, "")}>Remove</button>
+            </div>
+          {/each}
+          <form
+            class="map-row"
+            onsubmit={(e) => {
+              e.preventDefault();
+              addOverride(h.id);
+            }}
+          >
+            <input
+              class="field repo"
+              value={draft(h.id).repo}
+              oninput={(e) => setDraft(h.id, "repo", e.currentTarget.value)}
+              placeholder="repo"
+              autocomplete="off"
+              autocorrect="off"
+              spellcheck="false"
+              aria-label="Repo to override on {hostName(h.id)}"
+            />
+            <input
+              class="field path"
+              value={draft(h.id).path}
+              oninput={(e) => setDraft(h.id, "path", e.currentTarget.value)}
+              placeholder="/srv/checkouts/repo"
+              autocomplete="off"
+              autocorrect="off"
+              spellcheck="false"
+              aria-label="Its checkout on {hostName(h.id)}"
+            />
+            <button type="submit" class="text-btn small" disabled={!draftReady(h.id)}>Add override</button>
+          </form>
+        </div>
       </li>
     {/each}
     {#if hosts.ready && hosts.list.length === 0}
@@ -232,6 +329,38 @@
     font-family: "SF Mono", ui-monospace, Menlo, monospace;
     letter-spacing: 0.08em;
     text-transform: uppercase;
+  }
+  .map {
+    flex: 1 0 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 4px 0 4px 14px;
+  }
+  .map-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .map-label {
+    flex: 0 0 110px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .map-label.mono,
+  .field.path,
+  .field.repo {
+    font-family: "SF Mono", ui-monospace, Menlo, monospace;
+    font-size: 11.5px;
+  }
+  .field.path {
+    flex: 1 1 auto;
+  }
+  .field.repo {
+    flex: 0 0 110px;
   }
   .text-btn {
     appearance: none;

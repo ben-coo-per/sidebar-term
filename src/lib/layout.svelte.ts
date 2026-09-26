@@ -346,11 +346,22 @@ function report(what: string): (e: unknown) => void {
 /**
  * New Tab, on `host` (default: the Group's Host, else the Host of the Tab in view) in the active
  * Tab's Group there, right after it, spawned at that Tab's cwd (the Host's rule; `groupId` puts
- * it at the end of that Group instead). Shown as soon as its Host names it. Resolves to its id.
+ * it at the end of that Group instead). Shown as soon as its Host names it, unless `show` is
+ * false (Handoff moving a Tab that was not in view). Resolves to its id.
  */
-export async function newTab(opts?: { cwd?: string | null; groupId?: string; host?: HostId }): Promise<string> {
+export async function newTab(opts?: { cwd?: string | null; groupId?: string; host?: HostId; show?: boolean }): Promise<string> {
   const host = opts?.host ?? (opts?.groupId ? (findGroup(opts.groupId)?.host ?? activeHost()) : activeHost());
+  // Not shown, while the view is on a Tab of the same Host: the Host makes its new Tab active
+  // there, and its snapshot would pull the view along; keep the view, and give the Host its
+  // active Tab back.
+  const view = layout.activeTabId ? (layout.tabs[layout.activeTabId] ?? null) : null;
+  const keep = opts?.show === false && view?.host === host ? view.id : null;
+  if (keep) pendingView = { host, tabId: keep };
   const tab = await commandsFor(host).tabNew({ cwd: opts?.cwd, groupId: opts?.groupId, ...terminals.grid() });
+  if (opts?.show === false) {
+    if (keep) void commandsFor(host).tabActivate(keep).catch(report("going back to a Tab"));
+    return tab.id;
+  }
   if (layout.tabs[tab.id]) activateTab(tab.id);
   else pendingView = { host, tabId: tab.id };
   return tab.id;

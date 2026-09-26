@@ -41,4 +41,12 @@ describe("resumeInput", () => {
   it("runs where the shell is when the entry has no directory", () => {
     expect(resumeInput(entry({ kind: "command", line: "npm run dev", cwd: null }), "/x")).toBe("\x15npm run dev\r");
   });
+
+  it("takes another directory and a command to run first (Handoff)", () => {
+    expect(resumeInput(entry(), "/home/b/Dev/jack", { cwd: "/home/b/Dev/jack", before: "git switch main" })).toBe(
+      "\x15git switch main && claude --resume 5b6d103b\r",
+    );
+    expect(resumeInput(entry(), "/home/b", { cwd: "/home/b/Dev/jack" })).toBe("\x15cd -- /home/b/Dev/jack && claude --resume 5b6d103b\r");
+    expect(resumeInput(entry(), "/home/b", { cwd: null })).toBe("\x15claude --resume 5b6d103b\r");
+  });
 });

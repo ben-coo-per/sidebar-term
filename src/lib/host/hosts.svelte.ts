@@ -8,14 +8,14 @@
 // manager's, reached through the transport made here. See docs/architecture.md "Hosts".
 
 import { loadSection, saveSection } from "../settings/store";
-import type { ActivitySession, HostInfo, SessionId } from "../types";
+import type { ActivitySession, ConversationFiles, HostInfo, PathExists, SessionId } from "../types";
 import type { SessionTransport, TerminalSink } from "../terminal/manager";
 import { applyHostSnapshot, dropHost, ensureHostSection, type LayoutCommands } from "../layout.svelte";
 import { applySessionInfo, forgetSession, setHostHome } from "../sessions.svelte";
 import type { ConnectionStatus, HostClient } from "./client";
 import { openHostClient, pairHost } from "./connect";
 import { sessionKey, type HostId } from "./ids";
-import { newHostId, normalizeHostUrl, parseHostsSection, type PairedHost } from "./settings";
+import { cleanPath, newHostId, normalizeHostUrl, parseHostsSection, type PairedHost } from "./settings";
 
 /** The name a Host records for this Mac at pairing (its list of paired clients). */
 const DEVICE_NAME = "Mac app";
@@ -66,8 +66,32 @@ export function hostActivity(host: HostId, sessionId: SessionId | null): Activit
 function persist(): void {
   saveSection(
     HOSTS_SECTION,
-    hosts.list.map(({ id, url, token, name }): PairedHost => ({ id, url, token, name })),
+    hosts.list.map(
+      ({ id, url, token, name, checkoutRoot, repoPaths }): PairedHost => ({ id, url, token, name, checkoutRoot, repoPaths: { ...repoPaths } }),
+    ),
   );
+}
+
+/** Set a Host's Checkout root (Settings): where its repos are, `<root>/<repo>`. Empty clears it. */
+export function setHostCheckoutRoot(id: HostId, root: string): void {
+  const h = hostState(id);
+  if (!h) return;
+  h.checkoutRoot = cleanPath(root);
+  persist();
+}
+
+/** Set (or, with an empty path, drop) where one repo is on a Host, overriding its Checkout root. */
+export function setHostRepoPath(id: HostId, repo: string, path: string): void {
+  const h = hostState(id);
+  const name = repo.trim();
+  if (!h || name === "") return;
+  const clean = cleanPath(path);
+  if (clean) h.repoPaths = { ...h.repoPaths, [name]: clean };
+  else {
+    const { [name]: _dropped, ...rest } = h.repoPaths;
+    h.repoPaths = rest;
+  }
+  persist();
 }
 
 function connect(state: HostState): void {
@@ -196,6 +220,8 @@ export async function addHost(url: string, code: string): Promise<void> {
     url: base,
     token: paired.token,
     name: null,
+    checkoutRoot: null,
+    repoPaths: {},
     status: "offline",
     detail: null,
     paired: true,
@@ -260,6 +286,27 @@ export function hostCommands(id: HostId): LayoutCommands {
     groupDelete: async (groupId) => void (await send({ t: "group_delete", groupId })),
     groupSetCollapsed: async (groupId, collapsed) => void (await send({ t: "group_set_collapsed", groupId, collapsed })),
   };
+}
+
+// --- What Handoff needs of a Host (src/lib/handoff/handoff.svelte.ts) -------------------------
+
+/** Whether an absolute path exists on the Host (`path_exists`). Rejects when not connected. */
+export async function hostPathExists(id: HostId, path: string): Promise<PathExists> {
+  const answer = await (clientOf(id)?.command({ t: "path_exists", path }) ?? notConnected());
+  if (!answer || !("exists" in answer)) throw new Error("The Host answered path_exists without an answer.");
+  return answer;
+}
+
+/** Type into a Session on the Host (what a Terminal would send). */
+export function hostInput(id: HostId, sessionId: SessionId, data: string): void {
+  const client = clientOf(id);
+  if (!client) throw new Error("Not connected to the Host.");
+  client.input(sessionId, data);
+}
+
+/** Hand a Claude Code conversation to the Host; resolves with the transcript's path there. */
+export function hostPutConversation(id: HostId, cwd: string, sessionId: string, files: ConversationFiles): Promise<string> {
+  return clientOf(id)?.putConversation(cwd, sessionId, files) ?? notConnected();
 }
 
 /**

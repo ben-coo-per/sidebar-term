@@ -16,7 +16,10 @@ import {
   EVENT_USAGE,
   type ActivitySnapshot,
   type AgentKind,
+  type ClaudeConversation,
+  type ConversationFiles,
   type Group,
+  type HandoffProbe,
   type LayoutSnapshot,
   type Pairing,
   type RemoteSnapshot,
@@ -315,6 +318,28 @@ export function resolvePaths(sessionId: SessionId, candidates: string[]): Promis
 export function openPath(path: string): Promise<void> {
   if (!inTauri) return mock.openPath(path);
   return invoke("path_open", { path });
+}
+
+/**
+ * What Handoff needs to know about a local Session before moving its Tab: fresh facts, its
+ * Resume entry, the Claude Code conversation running in it, its checkout's git status (runs
+ * `git`). null for a Session that is gone.
+ */
+export function handoffProbe(sessionId: SessionId): Promise<HandoffProbe | null> {
+  if (!inTauri) return mock.handoffProbe(sessionId);
+  return invoke("handoff_probe", { sessionId });
+}
+
+/** A conversation's files, once its transcript has stopped changing: call after the Session is killed. */
+export function handoffConversationRead(conversation: ClaudeConversation): Promise<ConversationFiles> {
+  if (!inTauri) return mock.handoffConversationRead(conversation);
+  return invoke("handoff_conversation_read", { conversation });
+}
+
+/** Delete this Mac's copy of a conversation's transcript, once the Host has it. */
+export function handoffConversationForget(conversation: ClaudeConversation): Promise<void> {
+  if (!inTauri) return mock.handoffConversationForget(conversation);
+  return invoke("handoff_conversation_forget", { conversation });
 }
 
 /** Real paths of the files in the drop just received (read off the macOS drag pasteboard). */
