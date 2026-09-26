@@ -1,7 +1,7 @@
 //! sidebar-term: the Mac app. Tauri's window, menu and IPC around the sidebar-term core
-//! (`sidebar_term_core`, ADR 0002), which owns Sessions (ptys) and the facts about them; the
-//! webview owns the sidebar layout. This crate is the local Host; `daemon/` is the headless one.
-//! See docs/architecture.md.
+//! (`sidebar_term_core`, ADR 0002), which owns Sessions (ptys), the facts about them and the
+//! layout (Groups, Tabs, the active Tab); the webview mirrors the layout and owns presentation.
+//! This crate is the local Host; `daemon/` is the headless one. See docs/architecture.md.
 //! CONTRACT: command names and signatures here are mirrored by `src/lib/ipc.ts`.
 
 mod caffeinate;
@@ -9,12 +9,13 @@ mod drop;
 mod host;
 
 use host::AppHost;
+use sidebar_term_core::layout::{Layout, TabNew};
 use sidebar_term_core::model::{
-    AgentKind, GuardSnapshot, Pairing, RemoteSnapshot, ResumeEntry, SessionId, SessionInfo,
-    EVENT_CAFFEINATE, EVENT_MEMORY_GUARD, EVENT_MENU_SETTINGS,
+    AgentKind, Group, GuardSnapshot, LayoutSnapshot, Pairing, RemoteSnapshot, ResumeEntry,
+    SessionId, SessionInfo, Tab, EVENT_CAFFEINATE, EVENT_MEMORY_GUARD, EVENT_MENU_SETTINGS,
 };
 use sidebar_term_core::session::SessionManager;
-use sidebar_term_core::{activity, detect, guard, layout, monitor, paths, remote, resume, usage};
+use sidebar_term_core::{activity, detect, guard, monitor, paths, remote, resume, store, usage};
 use std::sync::Arc;
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
@@ -26,20 +27,16 @@ const MENU_SETTINGS: &str = "settings";
 /// The Session registry, shared with Remote and the core's threads.
 type Sessions = Arc<SessionManager>;
 
+/// The webview's Terminal for Session `session_id` takes its output from here on, as raw bytes
+/// down `on_data`, starting with whatever the Session printed before (the shell's prompt).
 #[tauri::command]
-fn session_spawn(
-    sessions: State<'_, Sessions>,
-    cwd: Option<String>,
-    cols: u16,
-    rows: u16,
-    resume_key: Option<String>,
+fn session_attach(
+    layout: State<'_, Arc<Layout>>,
+    session_id: SessionId,
     on_data: Channel<InvokeResponseBody>,
-) -> Result<SessionId, String> {
-    sessions.spawn(
-        cwd,
-        cols,
-        rows,
-        resume_key,
+) -> Result<(), String> {
+    layout.attach(
+        session_id,
         Box::new(move |bytes| {
             // Err only when the webview is gone; nothing useful to do about it here.
             let _ = on_data.send(InvokeResponseBody::Raw(bytes));
@@ -67,30 +64,21 @@ fn session_resume(sessions: State<'_, Sessions>, session_id: SessionId) -> Resul
     sessions.resume(session_id)
 }
 
-#[tauri::command]
-fn session_kill(
-    sessions: State<'_, Sessions>,
-    guard: State<'_, guard::Guard>,
-    session_id: SessionId,
-) -> Result<(), String> {
-    guard.release(session_id); // a frozen Session would not get the hangup
-    sessions.kill(session_id)
-}
-
-/// Kill every Session and stop Activity and Usage reading. The webview calls this once at startup
-/// so a webview reload does not leave the previous page's shells (or `ps` runs) going with nowhere
-/// to send output. What those shells were running becomes Resume leftover, for the new page.
+/// The webview is starting: replace every Session a previous page's Terminal was attached to
+/// (a reload leaves those shells with nowhere to send output) with a fresh one in the same Tab,
+/// and stop Activity and Usage reading. What the replaced shells were running becomes Resume
+/// leftover, for the new page. At the app's first page nothing is attached yet, so the Sessions
+/// the core spawned at launch are kept.
 #[tauri::command]
 fn session_reset(
     sessions: State<'_, Sessions>,
+    layout: State<'_, Arc<Layout>>,
     activity: State<'_, activity::Activity>,
     usage: State<'_, usage::Usage>,
     resume: State<'_, resume::Resume>,
-    guard: State<'_, guard::Guard>,
 ) {
     resume.end_run(resume::entries(&sessions.keyed_targets()));
-    guard.release_all();
-    sessions.kill_all();
+    layout.respawn_attached();
     activity.watch(false);
     usage.watch(false, Vec::new());
 }
@@ -183,24 +171,106 @@ fn resume_forget(resume: State<'_, resume::Resume>, keys: Vec<String>) {
     resume.forget(&keys);
 }
 
+// --- The layout: one snapshot, and the commands that change it (the core's `layout/`) --------
+
+/// The whole layout, for the webview's first read; every change after that comes as `layout`.
 #[tauri::command]
-fn layout_load(app: AppHandle) -> Result<Option<serde_json::Value>, String> {
-    layout::load(&AppHost(app), layout::LAYOUT)
+fn layout_get(layout: State<'_, Arc<Layout>>) -> LayoutSnapshot {
+    layout.snapshot()
+}
+
+/// A new Tab with its Session, active. Defaults: the active Tab's Group, right after it, at its
+/// cwd; `cols` / `rows` size the pty so the Terminal's first fit is a no-op.
+#[tauri::command]
+fn tab_new(
+    layout: State<'_, Arc<Layout>>,
+    group_id: Option<String>,
+    after_tab_id: Option<String>,
+    cwd: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<Tab, String> {
+    layout.tab_new(TabNew {
+        group_id,
+        after_tab_id,
+        cwd,
+        cols,
+        rows,
+    })
+}
+
+/// Close a Tab and kill its Session, no questions asked: the webview confirms first
+/// (`src/lib/sidebar/closeTabFlow.ts`).
+#[tauri::command]
+fn tab_close(layout: State<'_, Arc<Layout>>, tab_id: String) -> Result<(), String> {
+    layout.tab_close(&tab_id)
+}
+
+/// Rename a Tab; an empty title restores the automatic Title.
+#[tauri::command]
+fn tab_rename(layout: State<'_, Arc<Layout>>, tab_id: String, title: String) -> Result<(), String> {
+    layout.tab_rename(&tab_id, &title)
+}
+
+/// Move a Tab to `index` in a Group (default: its end).
+#[tauri::command]
+fn tab_move(
+    layout: State<'_, Arc<Layout>>,
+    tab_id: String,
+    group_id: String,
+    index: Option<usize>,
+) -> Result<(), String> {
+    layout.tab_move(&tab_id, &group_id, index)
 }
 
 #[tauri::command]
-fn layout_save(app: AppHandle, layout: serde_json::Value) -> Result<(), String> {
-    layout::save(&AppHost(app), layout::LAYOUT, &layout)
+fn tab_activate(layout: State<'_, Arc<Layout>>, tab_id: String) -> Result<(), String> {
+    layout.tab_activate(&tab_id)
+}
+
+/// A new Group at the end ("New Group" unless named); with `tab_id`, that Tab moves into it.
+#[tauri::command]
+fn group_new(
+    layout: State<'_, Arc<Layout>>,
+    name: Option<String>,
+    tab_id: Option<String>,
+) -> Result<Group, String> {
+    layout.group_new(name.as_deref(), tab_id.as_deref())
+}
+
+#[tauri::command]
+fn group_rename(layout: State<'_, Arc<Layout>>, group_id: String, name: String) -> Result<(), String> {
+    layout.group_rename(&group_id, &name)
+}
+
+#[tauri::command]
+fn group_move(layout: State<'_, Arc<Layout>>, group_id: String, index: usize) -> Result<(), String> {
+    layout.group_move(&group_id, index)
+}
+
+/// Delete a Group and close every Tab in it. Never the last Group.
+#[tauri::command]
+fn group_delete(layout: State<'_, Arc<Layout>>, group_id: String) -> Result<(), String> {
+    layout.group_delete(&group_id)
+}
+
+#[tauri::command]
+fn group_set_collapsed(
+    layout: State<'_, Arc<Layout>>,
+    group_id: String,
+    collapsed: bool,
+) -> Result<(), String> {
+    layout.group_set_collapsed(&group_id, collapsed)
 }
 
 #[tauri::command]
 fn settings_load(app: AppHandle) -> Result<Option<serde_json::Value>, String> {
-    layout::load(&AppHost(app), layout::SETTINGS)
+    store::load(&AppHost(app), store::SETTINGS)
 }
 
 #[tauri::command]
 fn settings_save(app: AppHandle, settings: serde_json::Value) -> Result<(), String> {
-    layout::save(&AppHost(app), layout::SETTINGS, &settings)
+    store::save(&AppHost(app), store::SETTINGS, &settings)
 }
 
 /// For each path printed in the Session, the absolute path of the file or directory it names, or
@@ -265,12 +335,6 @@ fn remote_revoke(remote: State<'_, remote::Remote>, id: String) {
     remote.revoke(&id)
 }
 
-/// The sidebar as the phone should show it (opaque to Rust); relayed to every phone.
-#[tauri::command]
-fn remote_sidebar(remote: State<'_, remote::Remote>, sidebar: serde_json::Value) {
-    remote.publish_sidebar(sidebar)
-}
-
 /// Paths of the files on the macOS drag pasteboard, i.e. those of the drop just received.
 #[tauri::command]
 fn drop_paths() -> Vec<String> {
@@ -315,15 +379,30 @@ pub fn run() {
             let events = host.events.clone();
             let sessions: Sessions = Arc::new(SessionManager::new(taps.clone(), events.clone()));
             app.manage(sessions.clone());
-            let for_targets = sessions.clone();
-            monitor::spawn(events.clone(), move || for_targets.probe_targets());
-            let frozen_file = layout::path(&*host.paths, layout::FROZEN)
+            let frozen_file = store::path(&*host.paths, store::FROZEN)
                 .inspect_err(|e| eprintln!("memory guard: no app data dir ({e}); not persisted"))
                 .ok();
             let for_guard_events = events.clone();
             app.manage(guard::Guard::open(frozen_file, move |snapshot| {
                 for_guard_events.emit(EVENT_MEMORY_GUARD, &snapshot);
             }));
+            // The layout: Tabs and Groups from `layout.json`, each Tab's Session spawned now. A
+            // Session frozen by Memory Guard is thawed before the layout kills it.
+            let for_kill = handle.clone();
+            let layout = Layout::open(
+                host.paths.clone(),
+                events.clone(),
+                sessions.clone(),
+                Box::new(move |id| for_kill.state::<guard::Guard>().release(id)),
+            );
+            app.manage(layout.clone());
+            let for_targets = sessions.clone();
+            let for_observe = layout.clone();
+            monitor::spawn(
+                events.clone(),
+                move || for_targets.probe_targets(),
+                move |infos| for_observe.observe(infos),
+            );
             let for_activity = sessions.clone();
             let for_guard = handle.clone();
             app.manage(activity::spawn(
@@ -337,7 +416,7 @@ pub fn run() {
             app.manage(caffeinate::Caffeinate::new(move || {
                 for_caffeinate.emit(EVENT_CAFFEINATE, &false);
             }));
-            let resume_file = layout::path(&*host.paths, layout::RESUME)
+            let resume_file = store::path(&*host.paths, store::RESUME)
                 .inspect_err(|e| eprintln!("resume: no app data dir ({e}); not persisted"))
                 .ok();
             app.manage(resume::Resume::open(resume_file));
@@ -350,10 +429,15 @@ pub fn run() {
                     .record(resume::entries(&targets));
             });
             app.manage(usage::spawn(events.clone()));
-            let remote_file = layout::path(&*host.paths, layout::REMOTE)
+            let remote_file = store::path(&*host.paths, store::REMOTE)
                 .inspect_err(|e| eprintln!("remote: no app data dir ({e}); pairings not persisted"))
                 .ok();
             app.manage(remote::Remote::open(host, sessions, taps, remote_file));
+            // Phones list the Host's sidebar: the layout joined with each Session's facts.
+            let for_sidebar = handle.clone();
+            layout.watch(Box::new(move |sidebar| {
+                for_sidebar.state::<remote::Remote>().publish_sidebar(sidebar)
+            }));
             app.state::<remote::Remote>().start_if_enabled();
             // Dev aid: `SIDEBAR_TERM_REMOTE_PAIR=1 pnpm tauri dev` starts a pairing at launch and
             // prints its code, so a browser can pair without clicking through Settings.
@@ -367,14 +451,24 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            session_spawn,
+            session_attach,
             session_write,
             session_resize,
             session_pause,
             session_resume,
-            session_kill,
             session_reset,
             session_info,
+            layout_get,
+            tab_new,
+            tab_close,
+            tab_rename,
+            tab_move,
+            tab_activate,
+            group_new,
+            group_rename,
+            group_move,
+            group_delete,
+            group_set_collapsed,
             activity_watch,
             guard_state,
             guard_set,
@@ -386,8 +480,6 @@ pub fn run() {
             caffeinate_set,
             resume_leftover,
             resume_forget,
-            layout_load,
-            layout_save,
             settings_load,
             settings_save,
             path_resolve,
@@ -399,7 +491,6 @@ pub fn run() {
             remote_pair_begin,
             remote_pair_cancel,
             remote_revoke,
-            remote_sidebar,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -407,6 +498,10 @@ pub fn run() {
     app.run(|handle, event| {
         if let RunEvent::Exit = event {
             let sessions = handle.state::<Sessions>();
+            // The layout as it stands, ahead of the saver's quiet period.
+            if let Some(layout) = handle.try_state::<Arc<Layout>>() {
+                layout.flush();
+            }
             // Record what is running before killing it, so the next launch can resume it.
             if let Some(resume) = handle.try_state::<resume::Resume>() {
                 resume.finish(resume::entries(&sessions.keyed_targets()));

@@ -1,6 +1,6 @@
 // Reactive per-Session facts: the latest SessionInfo, the Terminal's OSC title/bell/activity,
-// and the derived Agent status (see src/lib/agentStatus.ts for the pure rules). Also keeps each
-// Tab's `lastCwd` in step and computes the automatic Title. See docs/architecture.md
+// and the derived Agent status (see src/lib/agentStatus.ts for the pure rules). Also computes the
+// automatic Title (each Tab's `lastCwd` is the Host's to keep). See docs/architecture.md
 // "Agent status" and "Naming".
 //
 // OWNER: sidebar agent.
@@ -9,7 +9,7 @@ import { inTauri, onSessionInfo } from "./ipc";
 import { terminals } from "./terminal/manager";
 import type { SessionId, SessionInfo } from "./types";
 import { computeAgentStatus, computeAutomaticTitle, type AgentStatus } from "./agentStatus";
-import { layout, setTabLastCwd, setTabUnread, tabIdForSession, type Tab } from "./layout.svelte";
+import { layout, setTabUnread, tabIdForSession, type Tab } from "./layout.svelte";
 
 export interface SessionState {
   info: SessionInfo | null;
@@ -73,11 +73,6 @@ void onSessionInfo((info) => {
   const s = ensure(info.sessionId);
   const previousAgent = s.info?.agent ?? null;
   s.info = info;
-
-  if (!info.remote && info.cwd) {
-    const tabId = tabIdForSession(info.sessionId);
-    if (tabId) setTabLastCwd(tabId, info.cwd);
-  }
 
   if (previousAgent && !info.agent) {
     // The agent's last title (Claude Code: conversation text) must not outlive it.

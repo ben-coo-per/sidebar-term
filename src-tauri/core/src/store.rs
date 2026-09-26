@@ -1,12 +1,16 @@
-//! Persistence of the JSON blobs the webview owns: the sidebar layout (Groups, Tabs, Titles,
-//! order) and the app settings (Hotkeys). The core only stores them, in the Host's data dir
-//! (`host::Paths`: the app-data dir in the app, `$XDG_DATA_HOME/sidebar-term` for the daemon).
+//! The Host's files: atomic JSON read and write in its data dir (`host::Paths`: the app-data dir
+//! in the app, `$XDG_DATA_HOME/sidebar-term` for the daemon). `layout.json` is the core's own
+//! (`layout/`); `settings.json` is the webview's, stored opaque; the rest belong to the modules
+//! named below.
 
 use crate::host::Paths;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Groups, Tabs and the active Tab (`layout/file.rs`).
 pub const LAYOUT: &str = "layout.json";
+/// The webview's settings, one section per owner; opaque to the core except for the one-time
+/// migration in `layout/file.rs`.
 pub const SETTINGS: &str = "settings.json";
 /// What each Session was running, for Resume (`resume.rs`).
 pub const RESUME: &str = "resume.json";

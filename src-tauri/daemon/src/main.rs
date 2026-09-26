@@ -2,12 +2,12 @@
 //! with no display (a Linux box under `systemctl --user`, `packaging/systemd/`), or on a Mac for
 //! a smoke test, and serves its Sessions over Remote. See docs/architecture.md "Host daemon".
 //!
-//! At this stage (#25) it starts the Session core, the monitor, Resume and the Remote server,
-//! exactly as `remote_set(true)` does in the app, and stops on SIGTERM after recording Resume
-//! entries and killing every Session, as the app does on quit. Tabs and Groups come with #20,
-//! process facts on Linux with #26 and #27, and a way for a client to spawn a Session with #28;
-//! until then the daemon serves whatever Sessions exist, which is none, and is tested by pairing
-//! a browser and reading `hello`.
+//! It starts the Session core, the layout (its own `layout.json`: every Tab's Session is spawned
+//! at launch, one Tab on a fresh install), the monitor, Resume and the Remote server, exactly as
+//! the app does, and stops on SIGTERM after writing the layout, recording Resume entries and
+//! killing every Session, as the app does on quit. Phones list its Tabs and drive their
+//! Sessions; Tab and Group commands reach it over the protocol with #28, process facts on Linux
+//! with #26 and #27.
 //!
 //! Flags: `--data-dir <dir>` (default: see [`default_data_dir`]), `--port <n>` (kept in
 //! `remote.json`), `--web-root <dir>` (the built phone page, `pnpm build`'s `build/`; default
@@ -16,11 +16,14 @@
 //! journal. Everything is logged to stderr.
 
 use sidebar_term_core::host::{Asset, Assets, Events, Host, Paths};
-use sidebar_term_core::model::{RemoteSnapshot, SessionExit, EVENT_REMOTE, EVENT_SESSION_EXIT};
+use sidebar_term_core::layout::Layout;
+use sidebar_term_core::model::{
+    LayoutSnapshot, RemoteSnapshot, SessionExit, EVENT_LAYOUT, EVENT_REMOTE, EVENT_SESSION_EXIT,
+};
 use sidebar_term_core::remote::{Remote, Taps};
 use sidebar_term_core::resume::{self, Resume};
 use sidebar_term_core::session::SessionManager;
-use sidebar_term_core::{layout, monitor};
+use sidebar_term_core::{monitor, store};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::signal::unix::{signal, SignalKind};
@@ -228,6 +231,15 @@ fn log_event(event: &Event) {
                 exit.code.map_or("signal".to_owned(), |c| format!("code {c}"))
             ));
         }
+    } else if event.name == EVENT_LAYOUT {
+        if let Ok(snap) = serde_json::from_value::<LayoutSnapshot>(event.payload.clone()) {
+            log(&format!(
+                "layout: {} Group(s), {} Tab(s), active {}",
+                snap.groups.len(),
+                snap.tabs.len(),
+                snap.active_tab_id.as_deref().unwrap_or("none")
+            ));
+        }
     }
 }
 
@@ -311,18 +323,42 @@ fn main() {
     // no use for yet: Activity and Memory Guard (#27), Usage (app-only), Caffeinate (app-only).
     let taps = Arc::new(Taps::default());
     let sessions = Arc::new(SessionManager::new(taps.clone(), host.events.clone()));
-    let for_monitor = sessions.clone();
-    monitor::spawn(host.events.clone(), move || for_monitor.probe_targets());
-    let resume_file = layout::path(&*host.paths, layout::RESUME)
+    // Resume first: what the last run left running becomes leftover before the Tabs respawn.
+    let resume_file = store::path(&*host.paths, store::RESUME)
         .inspect_err(|e| log(&format!("resume: no data dir ({e}); not persisted")))
         .ok();
     let resume = Arc::new(Resume::open(resume_file));
+    // The layout: Tabs and Groups from this Host's layout.json, each Tab's Session spawned now.
+    // No Memory Guard here, so nothing to thaw before a kill.
+    let layout = Layout::open(
+        host.paths.clone(),
+        host.events.clone(),
+        sessions.clone(),
+        Box::new(|_| {}),
+    );
+    {
+        let snap = layout.snapshot();
+        log(&format!(
+            "layout: {} Group(s), {} Tab(s) respawned",
+            snap.groups.len(),
+            snap.tabs.len()
+        ));
+    }
+    let (for_monitor, for_observe) = (sessions.clone(), layout.clone());
+    monitor::spawn(
+        host.events.clone(),
+        move || for_monitor.probe_targets(),
+        move |infos| for_observe.observe(infos),
+    );
     let (for_recorder, recorder) = (sessions.clone(), resume.clone());
     resume::spawn(move || recorder.record(resume::entries(&for_recorder.keyed_targets())));
-    let remote_file = layout::path(&*host.paths, layout::REMOTE)
+    let remote_file = store::path(&*host.paths, store::REMOTE)
         .inspect_err(|e| log(&format!("remote: no data dir ({e}); pairings not persisted")))
         .ok();
-    let remote = Remote::open(host.clone(), sessions.clone(), taps, remote_file);
+    let remote = Arc::new(Remote::open(host.clone(), sessions.clone(), taps, remote_file));
+    // Phones list this Host's sidebar: the layout joined with each Session's facts.
+    let for_sidebar = remote.clone();
+    layout.watch(Box::new(move |sidebar| for_sidebar.publish_sidebar(sidebar)));
     if let Some(port) = args.port {
         remote.set_port(port);
     }
@@ -340,8 +376,10 @@ fn main() {
     if let Err(e) = &outcome {
         log(e);
     }
-    // As the app on quit: record what was running before killing it, so the next run can resume it.
-    log("stopping: recording Resume entries, then killing every Session");
+    // As the app on quit: write the layout, record what was running before killing it, so the
+    // next run can resume it.
+    log("stopping: writing the layout, recording Resume entries, then killing every Session");
+    layout.flush();
     resume.finish(resume::entries(&sessions.keyed_targets()));
     sessions.kill_all();
     if outcome.is_err() {

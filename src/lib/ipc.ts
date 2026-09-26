@@ -7,6 +7,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   EVENT_ACTIVITY,
   EVENT_CAFFEINATE,
+  EVENT_LAYOUT,
   EVENT_MEMORY_GUARD,
   EVENT_MENU_SETTINGS,
   EVENT_REMOTE,
@@ -15,6 +16,8 @@ import {
   EVENT_USAGE,
   type ActivitySnapshot,
   type AgentKind,
+  type Group,
+  type LayoutSnapshot,
   type Pairing,
   type RemoteSnapshot,
   type GuardSnapshot,
@@ -22,35 +25,25 @@ import {
   type SessionExit,
   type SessionId,
   type SessionInfo,
+  type Tab,
   type UsageSnapshot,
 } from "./types";
 import * as mock from "./mock";
 
 export const inTauri: boolean = isTauri();
 
-export interface SpawnOptions {
-  cwd?: string | null;
-  cols: number;
-  rows: number;
-  /** Key for this Session in Resume entries: its Tab id. A Session without one is never resumed. */
-  resumeKey?: string | null;
-  /** Raw pty output bytes, in order. Feed straight to `terminal.write(bytes)`. */
-  onData: (bytes: Uint8Array) => void;
-}
-
-export async function spawnSession(opts: SpawnOptions): Promise<SessionId> {
-  if (!inTauri) return mock.spawnSession(opts);
-  const onData = new Channel<ArrayBuffer | number[]>();
-  onData.onmessage = (msg) => {
-    opts.onData(msg instanceof ArrayBuffer ? new Uint8Array(msg) : Uint8Array.from(msg));
+/**
+ * Take a Session's output from here on: raw pty bytes, in order, to feed straight to
+ * `terminal.write(bytes)`, starting with what the Session printed before (its shell's prompt).
+ * Rejects for a Session that is gone.
+ */
+export async function attachSession(sessionId: SessionId, onData: (bytes: Uint8Array) => void): Promise<void> {
+  if (!inTauri) return mock.attachSession(sessionId, onData);
+  const channel = new Channel<ArrayBuffer | number[]>();
+  channel.onmessage = (msg) => {
+    onData(msg instanceof ArrayBuffer ? new Uint8Array(msg) : Uint8Array.from(msg));
   };
-  return invoke<SessionId>("session_spawn", {
-    cwd: opts.cwd ?? null,
-    cols: opts.cols,
-    rows: opts.rows,
-    resumeKey: opts.resumeKey ?? null,
-    onData,
-  });
+  return invoke("session_attach", { sessionId, onData: channel });
 }
 
 export function writeSession(sessionId: SessionId, data: string): Promise<void> {
@@ -73,15 +66,101 @@ export function resumeSession(sessionId: SessionId): Promise<void> {
   return invoke("session_resume", { sessionId });
 }
 
-export function killSession(sessionId: SessionId): Promise<void> {
-  if (!inTauri) return mock.killSession(sessionId);
-  return invoke("session_kill", { sessionId });
-}
-
-/** Kill every Session. Called once at startup so a webview reload leaves no orphaned shells. */
+/**
+ * Called once at startup: the Sessions a previous page's Terminals were attached to are replaced
+ * (a reload would otherwise leave those shells with nowhere to send output); the app's first page
+ * finds nothing attached and keeps what the Host spawned at launch.
+ */
 export function resetSessions(): Promise<void> {
   if (!inTauri) return Promise.resolve();
   return invoke("session_reset");
+}
+
+// --- The layout: the Host's, mirrored here (docs/architecture.md "Split of responsibility") ----
+
+/** The whole layout, for the first read; every change after that arrives on `onLayout`. */
+export function layoutGet(): Promise<LayoutSnapshot> {
+  if (!inTauri) return mock.layoutGet();
+  return invoke("layout_get");
+}
+
+export function onLayout(cb: (snapshot: LayoutSnapshot) => void): Promise<UnlistenFn> {
+  if (!inTauri) return mock.onLayout(cb);
+  return listen<LayoutSnapshot>(EVENT_LAYOUT, (e) => cb(e.payload));
+}
+
+export interface TabNewOptions {
+  /** The Group to add to; the active Tab's, else the first, when omitted. */
+  groupId?: string | null;
+  /** The Tab to go right after; the active Tab when it is in the Group, else the end, when omitted. */
+  afterTabId?: string | null;
+  /** Where the Session starts; the active Tab's last cwd, else home, when omitted. */
+  cwd?: string | null;
+  /** The pty's size, so the Terminal's first fit is a no-op. */
+  cols?: number;
+  rows?: number;
+}
+
+/** A new Tab with its Session, active. Resolves to the Tab. */
+export function tabNew(opts: TabNewOptions = {}): Promise<Tab> {
+  if (!inTauri) return mock.tabNew(opts);
+  return invoke("tab_new", {
+    groupId: opts.groupId ?? null,
+    afterTabId: opts.afterTabId ?? null,
+    cwd: opts.cwd ?? null,
+    cols: opts.cols ?? null,
+    rows: opts.rows ?? null,
+  });
+}
+
+/** Close a Tab and kill its Session, no questions asked (src/lib/sidebar/closeTabFlow.ts asks). */
+export function tabClose(tabId: string): Promise<void> {
+  if (!inTauri) return mock.tabClose(tabId);
+  return invoke("tab_close", { tabId });
+}
+
+/** Rename a Tab; an empty title restores the automatic Title. */
+export function tabRename(tabId: string, title: string): Promise<void> {
+  if (!inTauri) return mock.tabRename(tabId, title);
+  return invoke("tab_rename", { tabId, title });
+}
+
+/** Move a Tab to `index` in a Group (default: its end). */
+export function tabMove(tabId: string, groupId: string, index?: number): Promise<void> {
+  if (!inTauri) return mock.tabMove(tabId, groupId, index);
+  return invoke("tab_move", { tabId, groupId, index: index ?? null });
+}
+
+export function tabActivate(tabId: string): Promise<void> {
+  if (!inTauri) return mock.tabActivate(tabId);
+  return invoke("tab_activate", { tabId });
+}
+
+/** A new Group at the end ("New Group" unless named); with `tabId`, that Tab moves into it. */
+export function groupNew(name?: string | null, tabId?: string | null): Promise<Group> {
+  if (!inTauri) return mock.groupNew(name, tabId);
+  return invoke("group_new", { name: name ?? null, tabId: tabId ?? null });
+}
+
+export function groupRename(groupId: string, name: string): Promise<void> {
+  if (!inTauri) return mock.groupRename(groupId, name);
+  return invoke("group_rename", { groupId, name });
+}
+
+export function groupMove(groupId: string, index: number): Promise<void> {
+  if (!inTauri) return mock.groupMove(groupId, index);
+  return invoke("group_move", { groupId, index });
+}
+
+/** Delete a Group and close every Tab in it. Rejects for the last Group. */
+export function groupDelete(groupId: string): Promise<void> {
+  if (!inTauri) return mock.groupDelete(groupId);
+  return invoke("group_delete", { groupId });
+}
+
+export function groupSetCollapsed(groupId: string, collapsed: boolean): Promise<void> {
+  if (!inTauri) return mock.groupSetCollapsed(groupId, collapsed);
+  return invoke("group_set_collapsed", { groupId, collapsed });
 }
 
 /** Fresh probe of one Session, bypassing the monitor tick. null if the Session is gone. */
@@ -211,12 +290,6 @@ export function remoteRevoke(id: string): Promise<void> {
   return invoke("remote_revoke", { id });
 }
 
-/** The sidebar as phones should show it (shape: src/lib/mobile/protocol.ts); relayed to every phone. */
-export function publishSidebar(sidebar: unknown): Promise<void> {
-  if (!inTauri) return Promise.resolve();
-  return invoke("remote_sidebar", { sidebar });
-}
-
 /** Remote's state changed: turned on or off, a phone connected or paired, a pairing expired. */
 export function onRemote(cb: (snapshot: RemoteSnapshot) => void): Promise<UnlistenFn> {
   if (!inTauri) return mock.onRemote(cb);
@@ -269,18 +342,7 @@ export function resumeForget(keys: string[]): Promise<void> {
   return invoke("resume_forget", { keys });
 }
 
-/** The persisted sidebar layout blob, or null on first run. Shape is owned by src/lib/layout. */
-export function loadLayout(): Promise<unknown | null> {
-  if (!inTauri) return mock.loadLayout();
-  return invoke("layout_load");
-}
-
-export function saveLayout(layout: unknown): Promise<void> {
-  if (!inTauri) return mock.saveLayout(layout);
-  return invoke("layout_save", { layout });
-}
-
-/** The persisted app settings blob (Hotkeys, Usage agents), or null on first run. Shape is owned by src/lib/settings/store.ts. */
+/** The persisted app settings blob (Hotkeys, Usage agents, the sidebar's presentation), or null on first run. Shape is owned by src/lib/settings/store.ts. */
 export function loadSettings(): Promise<unknown | null> {
   if (!inTauri) return mock.loadSettings();
   return invoke("settings_load");

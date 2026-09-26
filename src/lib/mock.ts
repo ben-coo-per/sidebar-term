@@ -9,7 +9,8 @@
 //   cd ~/Dev/jack/.claude/worktrees/navbar -> linked Worktree `navbar` on `navbar-new-gift`
 //   cd ~/Dev/detached         -> detached HEAD
 //   ls                        -> file paths to double-click (opening one logs it to the console)
-// Layout persistence uses localStorage. Activity is invented: each fake Session has a shell (and
+// The layout (Groups, Tabs, the active Tab) is a copy of the Host's rules (src-tauri/core/src/layout/)
+// kept in localStorage. Activity is invented: each fake Session has a shell (and
 // its foreground program, busy when it is an agent) next to a fixed cast of jittering system
 // processes. Usage is invented too: fixed limits, Claude Code's 5-hour window creeping up.
 // Caffeinate is only a flag: nothing is kept awake. Memory Guard runs its policy on the invented
@@ -17,7 +18,7 @@
 // `exit` one to see it thawed. Frozen Sessions are only marked, nothing stops. Resume is kept in localStorage like Rust's
 // resume.json: start `claude` or `npm run dev` in a Tab, reload the page, and the banner offers it.
 
-import type { SpawnOptions } from "./ipc";
+import type { TabNewOptions } from "./ipc";
 import type {
   ActivityProcess,
   ActivitySession,
@@ -25,6 +26,8 @@ import type {
   AgentKind,
   AgentUsage,
   GitInfo,
+  Group,
+  LayoutSnapshot,
   Pairing,
   RemoteSnapshot,
   GuardSnapshot,
@@ -32,6 +35,7 @@ import type {
   SessionExit,
   SessionId,
   SessionInfo,
+  Tab,
   UsageSnapshot,
 } from "./types";
 
@@ -41,7 +45,9 @@ type ActivityCb = (a: ActivitySnapshot) => void;
 
 interface FakeSession {
   id: SessionId;
-  onData: (b: Uint8Array) => void;
+  /** The attached Terminal's sink; output before one attaches is held. */
+  onData: ((b: Uint8Array) => void) | null;
+  held: Uint8Array[];
   line: string;
   cwd: string;
   fg: string;
@@ -97,11 +103,19 @@ function info(s: FakeSession): SessionInfo {
 function emit(s: FakeSession) {
   recordResume();
   const i = info(s);
+  // As the Host does from the monitor: the Tab's last cwd follows its Session.
+  const tab = Object.values(model.tabs).find((t) => t.sessionId === s.id);
+  if (tab && !i.remote && i.cwd && tab.lastCwd !== i.cwd) {
+    tab.lastCwd = i.cwd;
+    layoutChanged();
+  }
   setTimeout(() => infoCbs.forEach((cb) => cb(i)), 50);
 }
 
 function out(s: FakeSession, text: string) {
-  s.onData(enc.encode(text));
+  const bytes = enc.encode(text);
+  if (s.onData) s.onData(bytes);
+  else s.held.push(bytes);
 }
 
 function prompt(s: FakeSession) {
@@ -166,9 +180,7 @@ function run(s: FakeSession, cmd: string) {
       emit(s);
       break;
     case "exit":
-      sessions.delete(s.id);
-      recordResume();
-      exitCbs.forEach((cb) => cb({ sessionId: s.id, code: 0 }));
+      endSession(s.id, 0);
       return;
     case "help":
       out(s, "fake shell: cd, claude, codex, gemini, ssh, npm, pnpm, uv, exit, ls\r\n");
@@ -182,25 +194,45 @@ function run(s: FakeSession, cmd: string) {
   prompt(s);
 }
 
-export async function spawnSession(opts: SpawnOptions): Promise<SessionId> {
+/** Spawn a fake Session (the Host does this as it makes a Tab). Its prompt is held until a Terminal attaches. */
+function spawn(cwd: string | null, resumeKey: string): SessionId {
   const s: FakeSession = {
     id: nextId++,
-    onData: opts.onData,
+    onData: null,
+    held: [],
     line: "",
-    cwd: opts.cwd ?? HOME,
+    cwd: cwd ?? HOME,
     fg: "zsh",
     agent: null,
     remote: false,
     command: null,
-    resumeKey: opts.resumeKey ?? null,
+    resumeKey,
   };
   sessions.set(s.id, s);
   setTimeout(() => {
+    if (!sessions.has(s.id)) return;
     out(s, "\x1b[2mmock backend: type `help`\x1b[0m\r\n");
     prompt(s);
     emit(s);
   }, 30);
   return s.id;
+}
+
+/** A Session ended (its shell exited, or its Tab was closed): its Tab goes with it. */
+function endSession(id: SessionId, code: number | null) {
+  if (!sessions.delete(id)) return;
+  recordResume();
+  const tab = Object.values(model.tabs).find((t) => t.sessionId === id);
+  if (tab) removeTab(tab.id);
+  setTimeout(() => exitCbs.forEach((cb) => cb({ sessionId: id, code })), 0);
+}
+
+export async function attachSession(id: SessionId, onData: (b: Uint8Array) => void): Promise<void> {
+  const s = sessions.get(id);
+  if (!s) throw new Error(`no Session ${id}`);
+  for (const bytes of s.held) onData(bytes);
+  s.held = [];
+  s.onData = onData;
 }
 
 export async function writeSession(id: SessionId, data: string): Promise<void> {
@@ -238,12 +270,6 @@ export async function writeSession(id: SessionId, data: string): Promise<void> {
 
 export async function resizeSession(_id: SessionId, _c: number, _r: number): Promise<void> {}
 
-export async function killSession(id: SessionId): Promise<void> {
-  if (!sessions.delete(id)) return;
-  recordResume();
-  exitCbs.forEach((cb) => cb({ sessionId: id, code: null }));
-}
-
 export async function sessionInfo(id: SessionId): Promise<SessionInfo | null> {
   const s = sessions.get(id);
   return s ? info(s) : null;
@@ -276,22 +302,200 @@ export async function onSessionExit(cb: ExitCb) {
   return () => void exitCbs.delete(cb);
 }
 
-const KEY = "sidebar-term:mock-layout";
-export async function loadLayout(): Promise<unknown | null> {
-  try {
-    const raw = localStorage.getItem(KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
+// --- The layout: the Host's model, in localStorage ---------------------------------------------
+
+const LAYOUT_KEY = "sidebar-term:mock-layout";
+const layoutCbs = new Set<(s: LayoutSnapshot) => void>();
+
+interface MockLayout {
+  groups: Group[];
+  tabs: Record<string, Tab>;
+  activeTabId: string | null;
 }
 
-export async function saveLayout(layout: unknown): Promise<void> {
+let revision = 0;
+const model: MockLayout = loadModel();
+// Launch: every persisted Tab respawns; a fresh install gets one Tab.
+for (const t of Object.values(model.tabs)) t.sessionId = spawn(t.lastCwd, t.id);
+if (Object.keys(model.tabs).length === 0 && typeof localStorage !== "undefined") {
+  const group = model.groups[0];
+  const tab = makeTab(group.id, null);
+  group.tabIds.push(tab.id);
+  model.activeTabId = tab.id;
+}
+
+function mockId(prefix: string): string {
+  return `${prefix}_${Math.random().toString(16).slice(2)}${Math.random().toString(16).slice(2)}`;
+}
+
+function makeTab(groupId: string, cwd: string | null): Tab {
+  const id = mockId("tab");
+  const tab: Tab = { id, groupId, sessionId: spawn(cwd, id), customTitle: null, lastCwd: cwd };
+  model.tabs[id] = tab;
+  return tab;
+}
+
+function loadModel(): MockLayout {
   try {
-    localStorage.setItem(KEY, JSON.stringify(layout));
+    const raw = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? "null") as {
+      groups?: Group[];
+      tabs?: Omit<Tab, "sessionId">[];
+      activeTabId?: string | null;
+    } | null;
+    if (raw?.groups?.length && raw.tabs) {
+      const tabs: Record<string, Tab> = {};
+      for (const t of raw.tabs) tabs[t.id] = { ...t, sessionId: null };
+      return { groups: raw.groups, tabs, activeTabId: raw.activeTabId ?? null };
+    }
+  } catch {
+    /* start fresh */
+  }
+  return { groups: [{ id: mockId("group"), name: "Tabs", collapsed: false, tabIds: [] }], tabs: {}, activeTabId: null };
+}
+
+function snapshot(): LayoutSnapshot {
+  return structuredClone({ revision, groups: model.groups, tabs: model.tabs, activeTabId: model.activeTabId });
+}
+
+/** Every change: a new revision, one `layout` event, the file (minus Session ids). */
+function layoutChanged() {
+  revision += 1;
+  try {
+    localStorage.setItem(
+      LAYOUT_KEY,
+      JSON.stringify({
+        version: 2,
+        groups: model.groups,
+        tabs: Object.values(model.tabs).map(({ sessionId: _, ...t }) => t),
+        activeTabId: model.activeTabId,
+      }),
+    );
   } catch {
     /* ignore */
   }
+  const snap = snapshot();
+  setTimeout(() => layoutCbs.forEach((cb) => cb(snap)), 0);
+}
+
+function orderedTabIds(): string[] {
+  return model.groups.flatMap((g) => g.tabIds);
+}
+
+function removeTab(tabId: string) {
+  const tab = model.tabs[tabId];
+  if (!tab) return;
+  const order = orderedTabIds();
+  const idx = order.indexOf(tabId);
+  const next = order[idx + 1] ?? order[idx - 1] ?? null;
+  delete model.tabs[tabId];
+  const group = model.groups.find((g) => g.id === tab.groupId);
+  if (group) group.tabIds = group.tabIds.filter((id) => id !== tabId);
+  if (model.activeTabId === tabId) model.activeTabId = next;
+  layoutChanged();
+}
+
+export async function layoutGet(): Promise<LayoutSnapshot> {
+  return snapshot();
+}
+
+export async function onLayout(cb: (s: LayoutSnapshot) => void) {
+  layoutCbs.add(cb);
+  return () => void layoutCbs.delete(cb);
+}
+
+export async function tabNew(opts: TabNewOptions): Promise<Tab> {
+  const active = model.activeTabId ? model.tabs[model.activeTabId] : null;
+  const groupId = opts.groupId ?? active?.groupId ?? model.groups[0]?.id;
+  const group = model.groups.find((g) => g.id === groupId);
+  if (!group) throw new Error(`no Group ${groupId}`);
+  const after = opts.afterTabId ?? (active && active.groupId === groupId ? active.id : null);
+  const tab = makeTab(group.id, opts.cwd ?? active?.lastCwd ?? null);
+  const afterAt = after ? group.tabIds.indexOf(after) : -1;
+  group.tabIds.splice(afterAt === -1 ? group.tabIds.length : afterAt + 1, 0, tab.id);
+  model.activeTabId = tab.id;
+  layoutChanged();
+  return structuredClone(tab);
+}
+
+export async function tabClose(tabId: string): Promise<void> {
+  const tab = model.tabs[tabId];
+  if (!tab) throw new Error(`no Tab ${tabId}`);
+  removeTab(tabId);
+  if (tab.sessionId !== null) endSession(tab.sessionId, null);
+}
+
+export async function tabRename(tabId: string, title: string): Promise<void> {
+  const tab = model.tabs[tabId];
+  if (!tab) throw new Error(`no Tab ${tabId}`);
+  tab.customTitle = title.trim() === "" ? null : title.trim();
+  layoutChanged();
+}
+
+export async function tabMove(tabId: string, groupId: string, index?: number): Promise<void> {
+  const tab = model.tabs[tabId];
+  const target = model.groups.find((g) => g.id === groupId);
+  if (!tab || !target) throw new Error("no such Tab or Group");
+  const source = model.groups.find((g) => g.id === tab.groupId);
+  let insertAt = index ?? target.tabIds.length;
+  if (source) {
+    const removedAt = source.tabIds.indexOf(tabId);
+    source.tabIds = source.tabIds.filter((id) => id !== tabId);
+    if (source === target && removedAt !== -1 && removedAt < insertAt) insertAt -= 1;
+  }
+  target.tabIds.splice(Math.max(0, Math.min(insertAt, target.tabIds.length)), 0, tabId);
+  tab.groupId = groupId;
+  layoutChanged();
+}
+
+export async function tabActivate(tabId: string): Promise<void> {
+  if (!model.tabs[tabId]) throw new Error(`no Tab ${tabId}`);
+  if (model.activeTabId === tabId) return;
+  model.activeTabId = tabId;
+  layoutChanged();
+}
+
+export async function groupNew(name?: string | null, tabId?: string | null): Promise<Group> {
+  const group: Group = { id: mockId("group"), name: name?.trim() || "New Group", collapsed: false, tabIds: [] };
+  model.groups.push(group);
+  if (tabId) await tabMove(tabId, group.id);
+  else layoutChanged();
+  return structuredClone(group);
+}
+
+export async function groupRename(groupId: string, name: string): Promise<void> {
+  const group = model.groups.find((g) => g.id === groupId);
+  if (!group) throw new Error(`no Group ${groupId}`);
+  if (name.trim() === "") return;
+  group.name = name.trim();
+  layoutChanged();
+}
+
+export async function groupMove(groupId: string, index: number): Promise<void> {
+  const idx = model.groups.findIndex((g) => g.id === groupId);
+  if (idx === -1) throw new Error(`no Group ${groupId}`);
+  const [group] = model.groups.splice(idx, 1);
+  model.groups.splice(Math.max(0, Math.min(index, model.groups.length)), 0, group);
+  layoutChanged();
+}
+
+export async function groupDelete(groupId: string): Promise<void> {
+  if (model.groups.length <= 1) throw new Error("the last Group cannot be deleted");
+  const group = model.groups.find((g) => g.id === groupId);
+  if (!group) throw new Error(`no Group ${groupId}`);
+  const tabs = group.tabIds.map((id) => model.tabs[id]).filter((t): t is Tab => Boolean(t));
+  model.groups = model.groups.filter((g) => g.id !== groupId);
+  for (const t of tabs) delete model.tabs[t.id];
+  if (model.activeTabId && tabs.some((t) => t.id === model.activeTabId)) model.activeTabId = orderedTabIds()[0] ?? null;
+  layoutChanged();
+  for (const t of tabs) if (t.sessionId !== null) endSession(t.sessionId, null);
+}
+
+export async function groupSetCollapsed(groupId: string, collapsed: boolean): Promise<void> {
+  const group = model.groups.find((g) => g.id === groupId);
+  if (!group) throw new Error(`no Group ${groupId}`);
+  if (group.collapsed === collapsed) return;
+  group.collapsed = collapsed;
+  layoutChanged();
 }
 
 const activityCbs = new Set<ActivityCb>();

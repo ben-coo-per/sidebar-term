@@ -8,25 +8,35 @@ names the ticket; the user may revise it there. Vocabulary: `CONTEXT.md`.
 
 | Side | Owns | Never does |
 |---|---|---|
-| The core (`src-tauri/core`, Rust) | Sessions (ptys, shells), facts about Sessions (Foreground process, Agent session, cwd, git), Memory Guard, Resume, the Remote server, layout file I/O | Knows nothing about Tabs, Groups or Titles (until #20); never names Tauri |
+| The core (`src-tauri/core`, Rust) | Sessions (ptys, shells), facts about Sessions (Foreground process, Agent session, cwd, git), the layout (Groups, Tabs, order, custom Titles, each Tab's last cwd and Session, the active Tab; `layout.json`), Memory Guard, Resume, the Remote server and the sidebar phones list | Knows nothing about automatic Titles, Agent status or Unread (a client's); never names Tauri |
 | The app (`src-tauri/src`, Rust + Tauri) | The window, the menu, the IPC commands, Caffeinate, file drops; links the core as the local Host | - |
 | `sidebar-termd` (`src-tauri/daemon`, Rust) | The headless Host: links the core, serves it over Remote, runs under systemd | Never needs a display |
-| Webview (`src`) | The layout model: Groups, Tabs, Titles, order, active Tab; xterm.js Terminals; all UI | Never shells out or reads the filesystem |
+| Webview (`src`) | A mirror of the Host's layout, and what is presentation: sidebar width and visibility, the Panel, automatic Titles, Agent status, Unread, drag-and-drop, the close-Tab confirmation (`settings.json`, section `sidebar`); xterm.js Terminals; all UI | Never shells out or reads the filesystem; never changes the layout except through the Host's commands |
 
 A **Tab** points at a **Session** by `SessionId`. Session ids are per app run; the persisted layout
-stores each Tab's last cwd instead and respawns a shell there on relaunch.
+stores each Tab's last cwd instead and the Host respawns a shell there at launch, with its Tab.
+A Session is spawned by the Host as its Tab is made; the webview *attaches* its Terminal to it
+(`session_attach`) and gets what the Session printed before, then the live output.
 
 ## IPC (contract: `src-tauri/src/lib.rs` <-> `src/lib/ipc.ts`)
 
 | Command | Args (JS names) | Returns |
 |---|---|---|
-| `session_spawn` | `cwd?, cols, rows, resumeKey?, onData: Channel` | `SessionId`; output bytes stream on `onData` as raw `ArrayBuffer`; `resumeKey` (the Tab id) names the Session in Resume entries |
+| `session_attach` | `sessionId, onData: Channel` | - ; the Session's output streams on `onData` as raw `ArrayBuffer`, starting with what it printed before the Terminal attached; rejects for a Session that is gone |
 | `session_write` | `sessionId, data: string` | - |
 | `session_resize` | `sessionId, cols, rows` | - |
 | `session_pause` / `session_resume` | `sessionId` | - (flow control, see `docs/research/pty.md`) |
-| `session_kill` | `sessionId` | - (thaws it if Memory Guard froze it, then kills it; then `session-exit` fires) |
-| `session_reset` | - | - (thaws every frozen Session, kills every Session and stops Activity and Usage reading; called once at webview startup so a reload leaves no orphans; what the killed Sessions ran becomes Resume leftover) |
+| `session_reset` | - | - (called once at webview startup: every Session a previous page's Terminal was attached to is replaced by a fresh one in its Tab, so a reload leaves no orphans, and Activity and Usage reading stop; what the replaced Sessions ran becomes Resume leftover; the app's first page finds nothing attached and keeps what the Host spawned at launch) |
 | `session_info` | `sessionId` | `SessionInfo \| null` (fresh probe) |
+| `layout_get` | - | `LayoutSnapshot`: the whole layout, for the first read; every change after that is a `layout` event |
+| `tab_new` | `groupId?, afterTabId?, cwd?, cols?, rows?` | `Tab`, with its Session, active; defaults: the active Tab's Group, right after it, at its cwd (see "Naming") |
+| `tab_close` | `tabId` | - (the Tab goes at once and its Session is killed, thawed first if frozen; no confirmation: the webview asks, `src/lib/sidebar/closeTabFlow.ts`) |
+| `tab_rename` | `tabId, title` | - (an empty title restores the automatic Title) |
+| `tab_move` | `tabId, groupId, index?` | - (default: the end of the Group) |
+| `tab_activate` | `tabId` | - |
+| `group_new` | `name?, tabId?` | `Group` (at the end, "New Group" unless named; with `tabId` that Tab moves into it) |
+| `group_rename` / `group_move` / `group_set_collapsed` | `groupId, name` / `groupId, index` / `groupId, collapsed` | - |
+| `group_delete` | `groupId` | - (closes every Tab in it; rejects for the last Group) |
 | `activity_watch` | `on: boolean` | - (start / stop sampling Activity) |
 | `guard_state` | - | `GuardSnapshot`: Memory Guard's state |
 | `guard_set` | `on: boolean, limitPercent: number` | `GuardSnapshot` (turn Memory Guard on or off, set its limit, clamped to 50..95; off thaws every Tab it froze, not those frozen by hand) |
@@ -38,18 +48,17 @@ stores each Tab's last cwd instead and respawns a shell there on relaunch.
 | `caffeinate_set` | `on: boolean` | `boolean`: whether Caffeinate is on now |
 | `resume_leftover` | - | `ResumeEntry[]`: what earlier runs left running, not yet resumed or dismissed (see "Resume") |
 | `resume_forget` | `keys: string[]` | - (drop leftover entries: resumed, dismissed, or their Tab is gone) |
-| `layout_load` / `layout_save` | `layout: json` | opaque JSON blob in the app data dir |
-| `settings_load` / `settings_save` | `settings: json` | opaque JSON blob in the app data dir; one section per owner (`hotkeys`, `usage`, `activity`, `memoryGuard`), merged by `src/lib/settings/store.ts` |
+| `settings_load` / `settings_save` | `settings: json` | opaque JSON blob in the app data dir; one section per owner (`hotkeys`, `usage`, `activity`, `memoryGuard`, `sidebar`), merged by `src/lib/settings/store.ts` |
 | `remote_state` | - | `RemoteSnapshot` after re-reading Tailscale's state (async: runs its CLI) |
 | `remote_set` | `on: boolean` | `RemoteSnapshot` (turn Remote on or off; rejects with why the server could not start) |
 | `remote_pair_begin` / `remote_pair_cancel` | - | `Pairing` (a code, its QR link and expiry) / - |
 | `remote_revoke` | `id: string` | - (forget a paired phone) |
-| `remote_sidebar` | `sidebar: json` | - (the sidebar as phones show it, `src/lib/mobile/protocol.ts`; relayed opaque) |
 
 | Event | Payload | When |
 |---|---|---|
+| `layout` | `LayoutSnapshot` | the layout changed: a Tab or Group made, closed, renamed, moved, collapsed or activated, a Tab's Session or last cwd changed. The whole model each time, with a revision |
 | `session-info` | `SessionInfo` | first probe of a Session, then on every change (monitor tick 500 ms) |
-| `session-exit` | `SessionExit` | the shell exited or was killed |
+| `session-exit` | `SessionExit` | the shell exited or was killed (its Tab is already gone from the layout) |
 | `activity` | `ActivitySnapshot` | every 2 s while `activity_watch(true)`; the first right away |
 | `usage` | `UsageSnapshot` | right away on `usage_watch(true, ..)`, then whenever a number changes (checked every 5 s) |
 | `menu-settings` | - | the app menu's "Settings…" was chosen |
@@ -72,14 +81,27 @@ answers it (see "Host daemon" for the daemon's answer).
 - `host.rs` — what the core takes from its binary: `Events` (emit a named JSON event), `Paths`
   (the data dir), `Assets` (the phone page's files), an `OutputSink` per Session, and a tokio
   runtime handle, bundled as `Host`.
+- `layout/` — the layout, owned by the Host (ADR 0002). `mod.rs`: `Layout`, the owner: loads
+  `layout.json`, spawns each Tab's Session at launch (Tab id as Resume key) and on `tab_new`,
+  kills it on `tab_close`, drops the Tab when its Session exits, emits `layout` on every change
+  (under its lock, so snapshots arrive in order), rewrites the file 500 ms after the last change,
+  takes each Session's facts from the monitor (`observe`: the Tab's last cwd, the sidebar for
+  phones) and hands the webview's Terminal a Session's output (`attach`). `model.rs`: the pure
+  state and every transition, tested without a pty. `file.rs`: the version-2 file, the defensive
+  read, and the one-time move of a version-1 file's presentation fields into `settings.json`.
+  `sidebar.rs`: the `SidebarSnapshot` phones list, with the Title a Host can derive.
+- `outlet.rs` — where a Session's output goes before a Terminal attaches: held, bounded, handed
+  over first on attach under the same lock the reader delivers through.
 - `session.rs` — `SessionManager`: spawn `$SHELL -l` on a `portable-pty` pty, one reader thread
   per Session coalescing output into chunks for the Session's `OutputSink` and its tap, write,
-  resize, pause/resume, kill, `probe_targets()`; `session-exit` through `Events`.
+  resize, pause/resume, kill, `probe_targets()`, exit hooks (the layout's); `session-exit`
+  through `Events`.
 - `detect/` — `probe(&ProbeTarget) -> SessionInfo`: libproc for the Foreground process group,
   agent classification, remote-hop detection, cwd; `.git` file reading for repo / Worktree / branch.
   `detect/resume.rs`: the Resume entry of a Session's Foreground job (see "Resume"). The libproc
   readers are macOS-only; elsewhere they are stubs that read nothing until #26.
-- `monitor.rs` — thread ticking every 500 ms: probe every target, emit `session-info` on change.
+- `monitor.rs` — thread ticking every 500 ms: probe every target, hand the changed infos to the
+  layout, emit `session-info` for each.
 - `activity.rs` — `Activity`: thread idle until watched (by the webview, or by Memory Guard), then
   every 2 s runs `/bin/ps` over every process, reads this user's processes' footprints, attributes
   each to a Session by ppid descent from its shell, emits `activity` if the webview watches and
@@ -90,12 +112,12 @@ answers it (see "Host daemon" for the daemon's answer).
 - `usage.rs` — `Usage`: thread idle until watched, then every 5 s reads the chosen agents' usage
   limits and emits `usage` on change (see "Panel"). App-only: the daemon never starts it.
 - `remote/` — Remote (see "Remote"): `mod.rs` the `Remote` state (on/off, pairing, the relay of
-  the sidebar to phones), `server.rs` the axum routes and the WebSocket protocol on the Host's
-  runtime, `tap.rs` each Session's recent output and attached phones (fed by `session.rs`),
+  the layout's sidebar to phones), `server.rs` the axum routes and the WebSocket protocol on the
+  Host's runtime, `tap.rs` each Session's recent output and attached phones (fed by `session.rs`),
   `auth.rs` paired phones and pairing codes (`remote.json`), `tailscale.rs` the Tailscale CLI.
 - `resume.rs` — `Resume`: a thread records every keyed Session's Resume entry to `resume.json`
   each second it changes, and a last time on exit (see "Resume").
-- `layout.rs` — atomic JSON read/write of `layout.json`, `settings.json`, `resume.json`,
+- `store.rs` — atomic JSON read/write of `layout.json`, `settings.json`, `resume.json`,
   `remote.json` and `frozen.json` in the Host's data dir (`Paths`).
 - `paths.rs` — which paths printed in a Terminal name a file on this Host.
 - `model.rs` — the types every event and command carries; mirrored by `src/lib/types.ts`.
@@ -116,10 +138,14 @@ answers it (see "Host daemon" for the daemon's answer).
 
 ## Webview modules
 
-- `src/lib/terminal/manager.ts` — `terminals`: one xterm.js `Terminal` per Session, mount only the
-  active one, WebGL on the mounted Terminal with DOM fallback, fit, flow control, title/bell events.
+- `src/lib/terminal/manager.ts` — `terminals`: one xterm.js `Terminal` per Session, attached to
+  the Session's output as the layout names it, mount only the active one, WebGL on the mounted
+  Terminal with DOM fallback, fit, flow control, title/bell events.
 - `src/lib/terminal/TerminalPane.svelte` — shows the active Session's Terminal.
-- `src/lib/layout.svelte.ts` — Groups/Tabs model, actions, persistence (debounced `layout_save`).
+- `src/lib/layout.svelte.ts` — the mirror of the Host's layout (`layout_get`, then every `layout`
+  event, older revisions ignored) with the actions that call the `tab_*` / `group_*` commands,
+  plus this client's own state: sidebar width and visibility, the Panel, the user's unread marks
+  (persisted, debounced, as the `sidebar` settings section: `src/lib/sidebar/settings.ts`).
 - `src/lib/sessions.svelte.ts` — reactive `SessionInfo` per Session plus derived Agent status.
 - `src/lib/hotkeys.ts` — Hotkey actions, defaults and the pure rules for combos;
   `src/lib/hotkeys.svelte.ts` — the live bindings (persisted overrides); `src/lib/shortcuts.ts` —
@@ -133,9 +159,8 @@ answers it (see "Host daemon" for the daemon's answer).
   (`memoryGuard.svelte.ts`) and pure rules (`model.ts`).
 - `src/lib/resume/*` — the Resume banner (`ResumeBanner.svelte`), its state and actions
   (`resume.svelte.ts`) and the pure rule for what to type (`model.ts`).
-- `src/lib/remote/*` — Remote on the Mac: the state mirror and the sidebar publisher
-  (`remote.svelte.ts`), the pure snapshot builder (`sidebar.ts`); the Settings section is
-  `src/lib/settings/RemoteSection.svelte`.
+- `src/lib/remote/*` — Remote on the Mac: the state mirror (`remote.svelte.ts`); the Settings
+  section is `src/lib/settings/RemoteSection.svelte`.
 - `src/lib/mobile/*` + `src/routes/m` — the phone's page: the protocol (`protocol.ts`), the
   connection (`client.ts`), its state (`store.svelte.ts`), font fitting (`fit.ts`) and the
   screens (pairing, Tab list, `TerminalScreen` with `KeyBar`). `src/service-worker.ts` caches it.
@@ -148,8 +173,10 @@ answers it (see "Host daemon" for the daemon's answer).
 
 - **Scope** (#7): one window, no split panes, no profiles, no settings UI beyond Usage agents and Hotkeys, no quick
   switcher. Tabs move between Groups by drag-and-drop and by a context menu.
-- **Persistence** (#8): Groups (name, order, collapsed), Tabs (order, custom Title, last cwd, unread mark), the
-  active Tab, sidebar width and the Panel (view, collapsed, height) persist. On relaunch every Tab respawns a shell at its last cwd.
+- **Persistence** (#8): Groups (name, order, collapsed), Tabs (order, custom Title, last cwd) and
+  the active Tab persist in the Host's `layout.json`; the sidebar width, the Panel (view,
+  collapsed, height) and the user's unread marks in the webview's `settings.json` (`sidebar`).
+  On relaunch the Host respawns every Tab's shell at its last cwd.
 - **Naming** (#10): automatic Title priority: agent name ("Claude Code", "Codex", "Gemini") when an
   Agent session; else the OSC title if the Foreground process set one; else the Foreground process
   name when it is not the shell; else the cwd basename (`~` for home). A rename sticks until the
@@ -175,7 +202,8 @@ answers it (see "Host daemon" for the daemon's answer).
   `layout.json`). A Group header shows its go-to-Group Hotkey and its Tab count as `NAME (2)  ⌘1`.
   Closing a Tab whose Foreground process is not the shell asks for confirmation in an in-app dialog
   (never `window.confirm`). Sidebar width is draggable.
-- **Architecture** (#14): as above; ADR `docs/adr/0001-rust-owns-sessions-webview-owns-layout.md`.
+- **Architecture** (#14): as above; ADR `docs/adr/0002-host-daemon-owns-sessions-and-layout.md`
+  (0001 is superseded).
 
 ## Agent status
 
@@ -307,8 +335,8 @@ When the app closes with Tabs still running something, the next launch offers to
 in the same Tabs. Every way of closing counts: a crash, Cmd-Q, `pnpm app:install`'s restart, a
 webview reload. A close with every shell at its prompt offers nothing.
 
-**Recording** (Rust, `resume.rs` + `detect/resume.rs`). The webview spawns each Session with its
-Tab id as `resumeKey`. Every second a thread works out each keyed Session's `ResumeEntry` (`kind`,
+**Recording** (Rust, `resume.rs` + `detect/resume.rs`). The layout spawns each Tab's Session with
+the Tab id as its Resume key. Every second a thread works out each keyed Session's `ResumeEntry` (`kind`,
 `line`, `cwd`) from its Foreground process group, and rewrites `resume.json` when the list
 changed. On `RunEvent::Exit` Rust records once more, before killing the shells, then writes no
 more, so the dying shells cannot empty it. A crash leaves the last second's list. Rust, not the
@@ -348,11 +376,12 @@ count, since shell startup files run commands too.
 
 ## Remote
 
-The Mac app serving its Sessions to a phone (ADR 0002; vocabulary in `CONTEXT.md`). v1 is
+A Host serving its Sessions to a phone (ADR 0002; vocabulary in `CONTEXT.md`). v1 is
 attach-and-drive: the phone sees the sidebar and drives any Session; it cannot create, close,
-rename or move Tabs (#20 moves the layout into Rust first). Off by default.
+rename or move Tabs yet (the layout is the Host's now; the commands reach the protocol with #28).
+Off by default.
 
-**Server** (`src-tauri/src/remote/`). `remote_set(true)` binds `127.0.0.1:<port>` (47611 unless
+**Server** (`src-tauri/core/src/remote/`). `remote_set(true)` binds `127.0.0.1:<port>` (47611 unless
 `remote.json` says otherwise; never a LAN address) and runs axum on Tauri's tokio runtime. It
 then asks Tailscale to publish it: `tailscale serve --bg --https=443 http://127.0.0.1:<port>`,
 which gives `https://<mac>.<tailnet>.ts.net` with a real certificate, reachable only from the
@@ -386,13 +415,15 @@ and removes them. Tailscale Serve's `Tailscale-User-Login` header is recorded on
 display only: a local process could set it, so it is never what admits a phone. The pairing
 endpoint and the page are reachable without a token by design (the page has no secrets).
 
-**Sidebar for phones** (`src/lib/remote/`). Rust knows no Tabs (ADR 0001), so the Mac webview
-publishes what a phone should list: `initSidebarPublisher` builds a `SidebarSnapshot` (Groups,
-Tabs with Title, Agent status, `finished`, Badge facts, the active Tab: `sidebar.ts`) from the
-layout and Session facts, and sends it through `remote_sidebar` when it changed, debounced
-150 ms, while Remote is on. Rust keeps the latest for `hello` and relays each to every phone.
-`remote.svelte.ts` also mirrors `RemoteSnapshot` for the Settings section
-(`src/lib/settings/RemoteSection.svelte`: switch, Tailscale status, pairing card, paired phones).
+**Sidebar for phones** (`core/src/layout/sidebar.rs`). The Host builds what a phone lists, a
+`SidebarSnapshot` (Groups, Tabs with a Title, the agent, Badge facts, the active Tab), from its
+layout and the latest `SessionInfo` of each Session, after every change to either; Remote keeps
+the latest for `hello` and relays each new one to every phone. The Title is what a Host can
+derive without a Terminal: a rename, else the agent's name, the Foreground process when it is
+not the shell, the cwd's basename; Agent status and "finished" stay null until the core reads
+OSC titles and BEL itself (#28). The daemon's phones get the same. `src/lib/remote/remote.svelte.ts`
+mirrors `RemoteSnapshot` for the Settings section (`src/lib/settings/RemoteSection.svelte`:
+switch, Tailscale status, pairing card, paired phones).
 
 **The phone** (`src/routes/m`, `src/lib/mobile/`). `store.svelte.ts`: paired or not (token in
 `localStorage`), the connection (`client.ts`: one WebSocket, backoff 1–15 s, re-attaches what was
@@ -424,22 +455,24 @@ default data dir is the app's app-data dir with `daemon/` appended
 (`~/Library/Application Support/com.bencooper.sidebarterm/daemon`), so a daemon and the app on
 one Mac never read each other's `remote.json`, `resume.json` or `layout.json`.
 
-**What it does at this stage (#25).** At launch it starts the Session core, the monitor and
-Resume, loads `remote.json`, and turns Remote on exactly as `remote_set(true)` does in the app:
-binds `127.0.0.1:<port>` and asks Tailscale Serve to publish it. `--port` changes the port and
-keeps it in `remote.json`; `--web-root` names the built phone page (`pnpm build`'s `build/`;
-default `<data dir>/web`, and without it `/m` is 404 while pairing and `/ws` still work);
-`--pair` starts a pairing at launch and prints its code and link; SIGUSR1 starts one at any time,
-so on a headless box `systemctl --user kill -s USR1 sidebar-termd` puts a code in the journal.
-It logs to stderr. On SIGTERM (or SIGINT) it records Resume entries a last time and hangs up every
-Session, as the app does on quit; it does not turn Remote off, so Tailscale's Serve rule stays
-for the next run. Not started, because a Host has no use for them yet: Activity and Memory Guard
-(#27 brings their Linux reading), Usage and Caffeinate (app-only).
+**What it does at this stage (#25, #20).** At launch it starts the Session core, Resume, the
+layout (its own `layout.json`: a Session is spawned for every Tab at its last cwd, or one Tab in
+one Group on a fresh install, exactly as the app does), the monitor, loads `remote.json`, and
+turns Remote on exactly as `remote_set(true)` does in the app: binds `127.0.0.1:<port>` and asks
+Tailscale Serve to publish it. Phones get its sidebar in `hello` and on every change. `--port`
+changes the port and keeps it in `remote.json`; `--web-root` names the built phone page (`pnpm
+build`'s `build/`; default `<data dir>/web`, and without it `/m` is 404 while pairing and `/ws`
+still work); `--pair` starts a pairing at launch and prints its code and link; SIGUSR1 starts
+one at any time, so on a headless box `systemctl --user kill -s USR1 sidebar-termd` puts a code
+in the journal. It logs to stderr (each layout change in one line). On SIGTERM (or SIGINT) it
+writes the layout, records Resume entries a last time and hangs up every Session, as the app does
+on quit; it does not turn Remote off, so Tailscale's Serve rule stays for the next run. Not
+started, because a Host has no use for them yet: Activity and Memory Guard (#27 brings their
+Linux reading), Usage and Caffeinate (app-only).
 
-Its Sessions are none until a client can create one: Tabs and Groups move into the core with
-#20, and the protocol gains Session and Tab commands with #28. Until then the daemon is tested by
-pairing a browser to it and reading `hello` (see the PR for #25 for the recipe; `hello.sidebar`
-is null, since the sidebar snapshot is the Mac webview's).
+Nothing attaches to its Sessions' outlets, so each holds its last 256 KiB of output for good
+(phones replay the tap instead). A client can drive its Sessions now, and create, close, rename
+or move its Tabs once the protocol carries the layout commands (#28).
 
 **Linux.** `cargo build --release --bin sidebar-termd` builds only the core and the daemon (no
 Tauri). The macOS-only reading in `detect/process.rs` and `activity.rs` is behind

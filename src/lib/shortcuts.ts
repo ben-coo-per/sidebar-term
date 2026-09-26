@@ -75,7 +75,7 @@ function run(action: ActionId): void {
       if (layout.activeTabId) setTabUnread(layout.activeTabId, true);
       return;
     case "group.new":
-      newGroup();
+      void newGroup();
       return;
     case "sidebar.toggle":
       toggleSidebarVisible();

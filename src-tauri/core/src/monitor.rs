@@ -18,14 +18,16 @@ const TICK: Duration = Duration::from_millis(500);
 
 /// Start the monitor thread. `targets` is called once per tick to get live Sessions.
 /// Emit a `SessionInfo` for a Session the first time it is seen and whenever it changes.
-/// Forget cached state for Sessions that disappear.
+/// Forget cached state for Sessions that disappear. `observe` sees each tick's changed infos
+/// first, in one call (the layout keeps each Tab's last cwd and the facts phones are shown).
 ///
 /// The thread never exits: a panic in `targets` skips the tick, a panic in one probe skips
 /// that Session for the tick. (Only with `panic = "unwind"`; the release profile aborts on
 /// panic, so the probe path is written not to panic at all.)
-pub fn spawn<F>(events: Arc<dyn Events>, targets: F)
+pub fn spawn<F, O>(events: Arc<dyn Events>, targets: F, observe: O)
 where
     F: Fn() -> Vec<ProbeTarget> + Send + 'static,
+    O: Fn(&[SessionInfo]) + Send + 'static,
 {
     let started = thread::Builder::new()
         .name("session-monitor".into())
@@ -33,7 +35,11 @@ where
             let mut tracker = Tracker::default();
             loop {
                 if let Ok(live) = catch_unwind(AssertUnwindSafe(&targets)) {
-                    for info in tracker.tick(&live, detect::probe) {
+                    let changed = tracker.tick(&live, detect::probe);
+                    if !changed.is_empty() {
+                        observe(&changed);
+                    }
+                    for info in changed {
                         events.emit(EVENT_SESSION_INFO, &info);
                     }
                 } else {

@@ -1,4 +1,4 @@
-// Mirror of src-tauri/src/model.rs. CONTRACT: owned by the tech lead; keep in sync with Rust.
+// Mirror of src-tauri/core/src/model.rs. CONTRACT: owned by the tech lead; keep in sync with Rust.
 
 /** Identity of one Session (one shell on one pty). Never reused within an app run. */
 export type SessionId = number;
@@ -145,6 +145,38 @@ export interface ResumeEntry {
   cwd: string | null;
 }
 
+/** A Group as the Host holds it: user-named, user-ordered, its Tabs in display order. */
+export interface Group {
+  id: string;
+  name: string;
+  collapsed: boolean;
+  /** Tab ids, in display order. */
+  tabIds: string[];
+}
+
+/** A Tab as the Host holds it: the entry for one Session, in exactly one Group. */
+export interface Tab {
+  id: string;
+  groupId: string;
+  /** null while the Tab has no Session (its shell failed to spawn). */
+  sessionId: SessionId | null;
+  /** A rename that sticks; null means "the automatic Title". */
+  customTitle: string | null;
+  /** Last known non-remote cwd, where the Tab's Session respawns at the next launch. */
+  lastCwd: string | null;
+}
+
+/** The whole layout, from `layout_get` and the `layout` event; the webview mirrors it. */
+export interface LayoutSnapshot {
+  /** Counts up on every change: a snapshot older than the one shown is ignored. */
+  revision: number;
+  /** In sidebar order. */
+  groups: Group[];
+  /** Every Tab, by id. */
+  tabs: Record<string, Tab>;
+  activeTabId: string | null;
+}
+
 /** What Tailscale says about this Mac, read from its CLI. */
 export interface TailscaleState {
   /** The Tailscale CLI was found (the app or a Homebrew install). */
@@ -209,3 +241,5 @@ export const EVENT_CAFFEINATE = "caffeinate";
 export const EVENT_REMOTE = "remote";
 /** Memory Guard froze or thawed a Session, or was turned on or off; payload GuardSnapshot. */
 export const EVENT_MEMORY_GUARD = "memory-guard";
+/** The layout changed; payload LayoutSnapshot, the whole of it. */
+export const EVENT_LAYOUT = "layout";

@@ -221,6 +221,80 @@ pub struct ResumeEntry {
     pub cwd: Option<String>,
 }
 
+/// A Group of the sidebar: user-named, user-ordered, holding Tabs in display order (`layout/`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Group {
+    pub id: String,
+    pub name: String,
+    pub collapsed: bool,
+    /// Tab ids, in display order.
+    pub tab_ids: Vec<String>,
+}
+
+/// A Tab of the sidebar: the entry for one Session, in exactly one Group (`layout/`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Tab {
+    pub id: String,
+    pub group_id: String,
+    /// The Session this Tab points at; `None` while it has none (its shell failed to spawn).
+    pub session_id: Option<SessionId>,
+    /// A rename the user typed, which sticks; `None` means "the automatic Title".
+    pub custom_title: Option<String>,
+    /// Last known non-remote cwd, where the Tab's Session respawns at the next launch.
+    pub last_cwd: Option<String>,
+}
+
+/// The whole layout, as the Host holds it. Payload of `layout` and of `layout_get`; every
+/// client mirrors it (ADR 0002).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayoutSnapshot {
+    /// Counts up on every change, so a client can tell a stale snapshot from a newer one.
+    pub revision: u64,
+    /// In sidebar order.
+    pub groups: Vec<Group>,
+    /// Every Tab, by id.
+    pub tabs: std::collections::BTreeMap<String, Tab>,
+    pub active_tab_id: Option<String>,
+}
+
+/// A Tab as a phone lists it: what its row shows, already derived by the Host (`layout/sidebar.rs`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SidebarTab {
+    pub id: String,
+    /// `None` while the Tab has no Session: not attachable.
+    pub session_id: Option<SessionId>,
+    pub title: String,
+    pub agent: Option<AgentKind>,
+    /// Running / needs input / done. The Host derives none yet (that needs the Session's OSC
+    /// titles and BEL, #28); a client with a Terminal derives its own.
+    pub status: Option<String>,
+    /// An agent finished while the Tab was in the background. Per client; never set by the Host.
+    pub finished: bool,
+    pub git: Option<GitInfo>,
+    pub remote: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SidebarGroup {
+    pub id: String,
+    pub name: String,
+    pub tabs: Vec<SidebarTab>,
+}
+
+/// The sidebar as phones show it: the layout joined with each Session's facts. Sent as the
+/// Remote protocol's `sidebar` message (`src/lib/mobile/protocol.ts`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SidebarSnapshot {
+    pub groups: Vec<SidebarGroup>,
+    pub active_tab_id: Option<String>,
+}
+
 /// What Tailscale says about this Mac, read from its CLI (`remote/tailscale.rs`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -295,3 +369,6 @@ pub const EVENT_CAFFEINATE: &str = "caffeinate";
 pub const EVENT_REMOTE: &str = "remote";
 /// Memory Guard froze or thawed a Session, or was turned on or off; payload `GuardSnapshot`.
 pub const EVENT_MEMORY_GUARD: &str = "memory-guard";
+/// The layout changed (a Tab or Group made, closed, renamed, moved, activated, a Tab's Session
+/// or last cwd changed); payload `LayoutSnapshot`, the whole of it.
+pub const EVENT_LAYOUT: &str = "layout";

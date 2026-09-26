@@ -1,6 +1,7 @@
 # 2. A headless Host daemon owns Sessions and the layout; clients own presentation
 
-Status: **proposed** (epic #24; revise there). Supersedes 0001 once accepted.
+Status: **proposed** (epic #24; revise there). Supersedes 0001, which is marked so: the layout
+part of this decision is built (#20, after #25 split the core), and the code follows this ADR.
 
 ## Context
 
@@ -28,10 +29,32 @@ into two binaries: the Mac app (Tauri window, the local Host) and `sidebar-termd
 sink, data dir), not through Tauri types.
 
 **The Host owns the layout.** Groups, Tabs, their order, custom Titles, each Tab's last cwd and
-Session, and the active Tab live in the core and persist in the Host's `layout.json`. The core
-emits one `layout` snapshot event on change and exposes the layout commands (`tab_new`,
-`tab_close`, `tab_rename`, `tab_move`, `tab_activate`, `group_*`) as pure state transitions with
-Session spawn and kill as their only side effects. This is issue #20, done in the core.
+Session, and the active Tab live in the core (`core/src/layout/`) and persist in the Host's
+`layout.json` (version 2). The core emits one `layout` snapshot event on change (the whole model,
+with a revision, so a client never shows an older one) and exposes the layout commands (`tab_new`,
+`tab_close`, `tab_rename`, `tab_move`, `tab_activate`, `group_new`, `group_rename`, `group_move`,
+`group_delete`, `group_set_collapsed`) as pure state transitions (`layout/model.rs`, tested
+without a pty) with Session spawn and kill as their only side effects. This is issue #20, done in
+the core. Decisions made there:
+
+- A Tab's Session is spawned by the Host as the Tab is made (at launch for every persisted Tab,
+  with its Tab id as the Resume key; on `tab_new`), before any Terminal exists for it. A client
+  with a Terminal then *attaches* to the Session's output (`session_attach` in the app, in
+  process); what the Session printed before is held per Session (`core/src/outlet.rs`, bounded)
+  and handed over first. Phones keep reading the tap. So the daemon spawns a shell per Tab at
+  launch too, and one Tab on a fresh install, as the app does.
+- `tab_close` takes the Tab out at once and kills its Session; a Session that exits on its own
+  takes its Tab with it. Killing a Session directly is no longer a command.
+- A webview reload replaces the Sessions the old page's Terminals were attached to (a Terminal's
+  state is gone with the page; Resume records what they ran, as for a quit) and keeps the rest,
+  so the app's first page keeps what the Host spawned at launch.
+- What was in the webview's `layout.json` (version 1) but is presentation stays the client's, in
+  `settings.json` under a `sidebar` section (sidebar width, the Panel, the user's unread marks),
+  not in an opaque section of the Host's file: one file per owner. The Host's version-1 read moves
+  those fields there once and rewrites the file as version 2.
+- Automatic Titles, Agent status and "finished" stay the client's until the core scans output
+  for OSC titles and BEL (#28). The Host derives what it can for phones: a rename, else the
+  agent's name, the Foreground process, the cwd's basename.
 
 **The Host serves Session facts.** `SessionInfo` (Foreground process, Agent session, cwd, git,
 remote hop, and CPU / memory when Activity is on) is probed on the Host, where it is true, and
@@ -40,9 +63,10 @@ for OSC titles and BEL, so Agent status can be derived without a webview.
 
 **Clients own presentation.** A client (the Mac webview, later the phone) owns sidebar width and
 visibility, the Panel, automatic Titles, Unread, drag-and-drop mechanics, the close-Tab
-confirmation, and which Hosts it is paired with. The Mac webview's layout `$state` becomes a mirror
-of the local Host's snapshot plus its presentation state; a remote Host's snapshot is mirrored the
-same way under a Host section.
+confirmation, and which Hosts it is paired with. The Mac webview's layout `$state` is a mirror of
+the local Host's snapshot plus its presentation state (`src/lib/layout.svelte.ts`; the
+presentation state persists in `settings.json`, section `sidebar`); a remote Host's snapshot is
+mirrored the same way under a Host section.
 
 **One protocol for every client.** The Host protocol (from the `worktree-mobile` branch: WebSocket
 over a localhost server that Tailscale Serve publishes tailnet-only, pairing codes and hashed
@@ -62,6 +86,9 @@ research question (#31), not an assumption.
 - `detect/` and `activity.rs` need a Linux backend (`/proc`) behind their existing logic (#26, #27).
   `caffeinate.rs`, `drop.rs` and `usage.rs` stay app-only.
 - Session ids stay per Host run; Tabs persist by cwd and respawn at launch, as before, on each Host.
+- The Host holds each Session's output until a Terminal attaches (256 KiB, then the oldest goes),
+  which on the daemon is forever: the cost of one attach path for every client.
+- Unread is per client, so the user's mark persists with the client (`settings.json`), not the Host.
 - A Host's Sessions outlive any client. On the Dell the daemon is what keeps agents running; on the
   Mac the app is still the local Host, so quitting it still kills local Sessions (Resume covers
   that, as today).
