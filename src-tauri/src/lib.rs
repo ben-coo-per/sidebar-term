@@ -86,7 +86,7 @@ fn session_reset(
 /// On-demand probe, e.g. to decide whether closing a Tab needs confirmation.
 #[tauri::command]
 fn session_info(sessions: State<'_, Sessions>, session_id: SessionId) -> Option<SessionInfo> {
-    sessions.probe_target(session_id).map(|t| detect::probe(&t))
+    sessions.info(session_id)
 }
 
 /// Start or stop the Activity sampler; while on, `activity` fires every 2 s.
@@ -397,10 +397,12 @@ pub fn run() {
             );
             app.manage(layout.clone());
             let for_targets = sessions.clone();
+            let for_marks = sessions.clone();
             let for_observe = layout.clone();
             monitor::spawn(
                 events.clone(),
                 move || for_targets.probe_targets(),
+                move |id| for_marks.marks(id),
                 move |infos| for_observe.observe(infos),
             );
             let for_activity = sessions.clone();
@@ -409,7 +411,11 @@ pub fn run() {
                 events.clone(),
                 move || for_activity.probe_targets(),
                 move |snapshot, targets| {
-                    for_guard.state::<guard::Guard>().observe(snapshot, targets)
+                    for_guard.state::<guard::Guard>().observe(snapshot, targets);
+                    // Clients on the socket get each Session's CPU and memory too.
+                    if let Some(remote) = for_guard.try_state::<remote::Remote>() {
+                        remote.publish_activity(snapshot);
+                    }
                 },
             ));
             let for_caffeinate = events.clone();
@@ -432,12 +438,9 @@ pub fn run() {
             let remote_file = store::path(&*host.paths, store::REMOTE)
                 .inspect_err(|e| eprintln!("remote: no app data dir ({e}); pairings not persisted"))
                 .ok();
-            app.manage(remote::Remote::open(host, sessions, taps, remote_file));
-            // Phones list the Host's sidebar: the layout joined with each Session's facts.
-            let for_sidebar = handle.clone();
-            layout.watch(Box::new(move |sidebar| {
-                for_sidebar.state::<remote::Remote>().publish_sidebar(sidebar)
-            }));
+            // Clients on the socket get the layout and each Session's facts through Remote,
+            // which watches the layout.
+            app.manage(remote::Remote::open(host, sessions, taps, layout, remote_file));
             app.state::<remote::Remote>().start_if_enabled();
             // Dev aid: `SIDEBAR_TERM_REMOTE_PAIR=1 pnpm tauri dev` starts a pairing at launch and
             // prints its code, so a browser can pair without clicking through Settings.

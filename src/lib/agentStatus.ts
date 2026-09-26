@@ -1,12 +1,15 @@
-// Pure title-parsing and status/title derivation rules. No timers, no DOM, no IPC:
-// every input a caller can observe (title, timestamps, agent kind) is passed in, so callers
-// can inject their own clock. See docs/architecture.md "Agent status" and "Naming".
+// Pure title-derivation rules. No timers, no DOM, no IPC: every input a caller can observe is
+// passed in. See docs/architecture.md "Naming".
+//
+// Agent status (Running / Needs input / Done) is not derived here any more: the Host derives it
+// from the Session's OSC title, BELs and output (src-tauri/core/src/status.rs) and sends it as
+// `SessionInfo.status`, so the Mac webview, a phone and a headless Host all show one answer.
 //
 // OWNER: sidebar agent. Kept dependency-free on purpose so it stays trivially unit-testable.
 
-import type { AgentKind } from "./types";
+import type { AgentKind, AgentStatus } from "./types";
 
-export type AgentStatus = "running" | "needs-input" | "done";
+export type { AgentStatus };
 
 /** Display name for the automatic Title when a Session is an Agent session. */
 export const AGENT_NAMES: Record<AgentKind, string> = {
@@ -14,67 +17,6 @@ export const AGENT_NAMES: Record<AgentKind, string> = {
   codex: "Codex",
   gemini: "Gemini",
 };
-
-/** A braille spinner frame, per Codex's `tui.terminal_title` "activity" item. */
-const BRAILLE_SPINNER = /^[⠀-⣿]/;
-
-/** Claude Code's title prefix while busy: alternates ◐ / ◑ (frozen on one frame when unfocused). */
-const CLAUDE_BUSY_PREFIX = /^[◐◑]/;
-/** Claude Code's title prefix while idle or waiting on a prompt. */
-const CLAUDE_IDLE_PREFIX = "✳";
-
-/**
- * How long Claude Code counts as "Running" after the last output activity. Only a fallback, for
- * when its title carries no state prefix (CLAUDE_CODE_DISABLE_TERMINAL_TITLE, older versions).
- */
-export const CLAUDE_RUNNING_WINDOW_MS = 3000;
-
-export interface AgentStatusInput {
-  agent: AgentKind | null;
-  /** Latest OSC 0/2 title, "" (or null) when none has been set / it was cleared. */
-  title: string | null;
-  /** Caller-supplied clock reading, ms. Never read from Date.now() internally. */
-  now: number;
-  /** Timestamp of the last output-activity event on this Session, ms, or null if none yet. */
-  lastActivityAt: number | null;
-  /** Timestamp of the last BEL received while this agent was foreground, ms, or null. */
-  lastBellAt: number | null;
-}
-
-/**
- * Derive Running / Needs input / Done for an Agent session, per the table in
- * docs/architecture.md. Returns null when `agent` is null (not an Agent session).
- */
-export function computeAgentStatus(input: AgentStatusInput): AgentStatus | null {
-  const { agent, now, lastActivityAt, lastBellAt } = input;
-  if (!agent) return null;
-  const title = input.title ?? "";
-
-  if (agent === "codex") {
-    if (BRAILLE_SPINNER.test(title)) return "running";
-    if (title.includes("Action Required")) return "needs-input";
-    return "done";
-  }
-
-  if (agent === "gemini") {
-    if (title.startsWith("✦")) return "running";
-    if (title.startsWith("✋")) return "needs-input";
-    return "done"; // "◇" (Ready), or no marker yet: treat as idle/done.
-  }
-
-  // Claude Code: its title prefix says busy vs not. Without a prefix, fall back to output activity
-  // (which also counts keystroke echo and redraws, hence only a fallback).
-  if (CLAUDE_BUSY_PREFIX.test(title)) return "running";
-  const hasIdlePrefix = title.startsWith(CLAUDE_IDLE_PREFIX);
-  const activeRecently = lastActivityAt !== null && now - lastActivityAt < CLAUDE_RUNNING_WINDOW_MS;
-  if (!hasIdlePrefix && activeRecently) return "running";
-  // A BEL that landed after the last activity (and hasn't been superseded by fresh activity)
-  // means the agent is still waiting on that prompt.
-  if (lastBellAt !== null && (lastActivityAt === null || lastBellAt >= lastActivityAt)) {
-    return "needs-input";
-  }
-  return "done";
-}
 
 export interface AutomaticTitleInput {
   agent: AgentKind | null;

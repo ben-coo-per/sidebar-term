@@ -67,6 +67,8 @@ pub fn probe(target: &ProbeTarget) -> SessionInfo {
         None => focus.map(|m| m.comm.clone()),
     };
 
+    // What the Host read in the Session's output, and the status, are the monitor's to add
+    // (`status::apply`): the probe knows processes, not output.
     SessionInfo {
         session_id: target.session_id,
         foreground,
@@ -75,6 +77,9 @@ pub fn probe(target: &ProbeTarget) -> SessionInfo {
         cwd,
         remote,
         git,
+        title: None,
+        bells: 0,
+        status: None,
     }
 }
 
@@ -155,13 +160,9 @@ mod tests {
             assert_eq!(
                 info,
                 SessionInfo {
-                    session_id: 7,
                     foreground: Some("sleep".into()),
-                    shell_is_foreground: true,
-                    agent: None,
                     cwd: Some(tmp.canonical_str().into()),
-                    remote: false,
-                    git: None,
+                    ..SessionInfo::empty(7)
                 }
             );
         }

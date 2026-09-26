@@ -52,27 +52,36 @@ the core. Decisions made there:
   `settings.json` under a `sidebar` section (sidebar width, the Panel, the user's unread marks),
   not in an opaque section of the Host's file: one file per owner. The Host's version-1 read moves
   those fields there once and rewrites the file as version 2.
-- Automatic Titles, Agent status and "finished" stay the client's until the core scans output
-  for OSC titles and BEL (#28). The Host derives what it can for phones: a rename, else the
-  agent's name, the Foreground process, the cwd's basename.
+- Automatic Titles and "finished" stay the client's; Agent status is the Host's (#28, below).
 
 **The Host serves Session facts.** `SessionInfo` (Foreground process, Agent session, cwd, git,
-remote hop, and CPU / memory when Activity is on) is probed on the Host, where it is true, and
-forwarded whole. Because a headless Host has no Terminal, the core also scans each Session's output
-for OSC titles and BEL, so Agent status can be derived without a webview.
+remote hop) is probed on the Host, where it is true, and forwarded whole; each Session's CPU /
+memory goes alongside as an `activity` message while the Host samples Activity. Because a
+headless Host has no Terminal, the core scans each Session's output for OSC 0 / 2 titles and
+BEL as it passes the Session's tap (`remote/tap.rs`), and derives Agent status itself
+(`status.rs`, the rules that were `src/lib/agentStatus.ts`), so `SessionInfo` carries `title`,
+`bells` and `status`. Built in #28. Decision made there: **the Mac webview shows the Host's
+status too**, rather than keeping a second derivation from xterm.js that could disagree; the
+cost is that a status change reaches the Mac's sidebar within a monitor tick (500 ms) instead of
+at once. The webview keeps xterm's title only for the automatic Title, which stays a client's.
 
-**Clients own presentation.** A client (the Mac webview, later the phone) owns sidebar width and
+**Clients own presentation.** A client (the Mac webview, the phone) owns sidebar width and
 visibility, the Panel, automatic Titles, Unread, drag-and-drop mechanics, the close-Tab
 confirmation, and which Hosts it is paired with. The Mac webview's layout `$state` is a mirror of
 the local Host's snapshot plus its presentation state (`src/lib/layout.svelte.ts`; the
 presentation state persists in `settings.json`, section `sidebar`); a remote Host's snapshot is
-mirrored the same way under a Host section.
+mirrored the same way under a Host section. The phone mirrors the Host's layout and Session
+facts the same way and derives its rows from them (`src/lib/mobile/rows.ts`).
 
 **One protocol for every client.** The Host protocol (from the `worktree-mobile` branch: WebSocket
 over a localhost server that Tailscale Serve publishes tailnet-only, pairing codes and hashed
 tokens, per-Session output rings with replay) carries the layout snapshot, Session facts, output
-frames, input, resize, the layout commands and a file upload. The Mac app and the phone are both
-clients of it. The local Host on the Mac is reached in-process, not over the socket.
+frames, input, resize, the layout commands (with a client-chosen `id` and an `ok` / `error`
+reply each) and a file upload (`POST /api/upload`). Built in #28 (docs/architecture.md "Host
+protocol"; types in `src/lib/host/protocol.ts`). The Mac app and the phone are both clients of
+it. The local Host on the Mac is reached in-process, not over the socket. `resize` is honoured
+only for the one client attached to a Session (no other socket client, no in-process
+Terminal), so attaching from elsewhere never disturbs a Terminal that is showing the Session.
 
 **Handoff reuses Resume.** Moving a Tab to another Host kills the local Session after recording its
 Resume entry and reruns that entry on the Host at a mapped cwd. Nothing is rsynced; code moves by

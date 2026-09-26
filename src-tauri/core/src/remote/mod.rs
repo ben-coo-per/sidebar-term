@@ -1,18 +1,20 @@
-//! Remote: a Host serving its Sessions to a phone. While on, an HTTP + WebSocket server listens
-//! on 127.0.0.1 (never on the LAN) and Tailscale Serve publishes it to the tailnet as
-//! `https://<this Host>.ts.net`, with a real certificate, so the phone's browser can install the
-//! page as an app. A phone must pair once (a code shown in Settings on the Mac, or printed by
-//! `sidebar-termd`) and then sends its token on every connection. See docs/architecture.md
-//! "Remote".
+//! Remote: a Host serving its Sessions, Tabs and Groups to clients over the Host protocol. While
+//! on, an HTTP + WebSocket server listens on 127.0.0.1 (never on the LAN) and Tailscale Serve
+//! publishes it to the tailnet as `https://<this Host>.ts.net`, with a real certificate, so a
+//! phone's browser can install the page as an app. A client must pair once (a code shown in
+//! Settings on the Mac, or printed by `sidebar-termd`) and then sends its token on every
+//! connection. See docs/architecture.md "Host protocol".
 //!
-//! - `tap.rs`: each Session's recent output and attached phones, fed by `session.rs`.
-//! - `auth.rs`: the store of paired phones (`remote.json`) and pairing codes.
+//! - `tap.rs`: each Session's recent output, attached clients and the marks read in its output
+//!   (the OSC title, BELs), fed by `session.rs`.
+//! - `auth.rs`: the store of paired clients (`remote.json`) and pairing codes.
 //! - `tailscale.rs`: the Tailscale CLI (status, Serve on / off).
-//! - `server.rs`: the axum routes: the page, pairing, the WebSocket.
+//! - `server.rs`: the axum routes: the page, pairing, the upload, the WebSocket.
 //!
-//! The sidebar the phone shows (Groups, Tabs, Titles, Badges) is the Host's own: the layout
-//! (`layout/sidebar.rs`) hands `publish_sidebar` a `SidebarSnapshot` after every change, which
-//! Remote keeps for `hello` and relays to every phone. Agent status stays a client's (#28).
+//! What a client shows is the Host's own: the layout (`layout/`) tells `publish` of every
+//! change to itself or to a Session's facts (`SessionInfo`, Agent status included), and Remote
+//! relays it to every client, which reads the latest back from the layout; `hello` carries the
+//! whole of both. The layout's commands are served over the socket, one to one.
 
 mod auth;
 mod server;
@@ -20,12 +22,13 @@ mod tailscale;
 pub mod tap;
 
 use crate::host::{Assets, Host};
-use crate::store;
+use crate::layout::{Layout, Update};
 use crate::model::{
-    Pairing, RemoteDevice, RemoteSnapshot, SessionId, SidebarSnapshot, TailscaleState,
-    EVENT_REMOTE,
+    ActivitySnapshot, HostInfo, Pairing, RemoteDevice, RemoteSnapshot, SessionId,
+    TailscaleState, EVENT_REMOTE,
 };
 use crate::session::SessionManager;
+use crate::store;
 use auth::{PairingCode, Store, Verdict};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -35,17 +38,25 @@ use tokio::sync::broadcast;
 
 pub use tap::Taps;
 
+/// Where `POST /api/upload` puts files, under the Host's data dir.
+pub const UPLOAD_DIR: &str = "uploads";
+
 /// Remote (app state, and the daemon's). Everything lives in `Inner`, shared with the server's
 /// tasks.
 pub struct Remote {
     inner: Arc<Inner>,
 }
 
-/// What the hub pushes to every connected phone.
+/// What the hub pushes to every connected client. Layout and Session changes carry no data:
+/// the connection reads the latest from the layout, so a client that lags sees the newest.
 #[derive(Clone)]
 pub(crate) enum HubMsg {
-    /// The Host's latest sidebar snapshot.
-    Sidebar(Arc<serde_json::Value>),
+    /// The layout changed.
+    Layout,
+    /// A Session's facts changed.
+    Session(SessionId),
+    /// An Activity sample: each Session's CPU and memory, while the Host samples.
+    Activity(Arc<serde_json::Value>),
     /// Remote is turning off: every connection closes.
     Shutdown,
 }
@@ -54,11 +65,11 @@ pub(crate) struct Inner {
     host: Host,
     sessions: Arc<SessionManager>,
     taps: Arc<Taps>,
+    layout: Arc<Layout>,
     /// `remote.json`; `None` when the app data dir is unavailable (pairings then last one run).
     path: Option<PathBuf>,
     store: Mutex<Store>,
     pairing: Mutex<Option<PairingCode>>,
-    sidebar: Mutex<Option<Arc<serde_json::Value>>>,
     hub: broadcast::Sender<HubMsg>,
     clients: AtomicU32,
     server: Mutex<Option<server::Handle>>,
@@ -79,23 +90,33 @@ pub(crate) enum PairError {
 
 impl Remote {
     /// Load `remote.json` at `path`. The server is not started: see `start_if_enabled` and `set`.
+    /// Watches `layout` for what to relay to clients.
     pub fn open(
         host: Host,
         sessions: Arc<SessionManager>,
         taps: Arc<Taps>,
+        layout: Arc<Layout>,
         path: Option<PathBuf>,
     ) -> Self {
         let store = path.as_deref().and_then(read_store).unwrap_or_default();
-        let (hub, _) = broadcast::channel(16);
+        let (hub, _) = broadcast::channel(256);
+        let for_watch = hub.clone();
+        layout.watch(Box::new(move |update| {
+            // Err means no client right now; the updates are not owed to anyone.
+            let _ = for_watch.send(match update {
+                Update::Layout => HubMsg::Layout,
+                Update::Session(id) => HubMsg::Session(id),
+            });
+        }));
         Self {
             inner: Arc::new(Inner {
                 host,
                 sessions,
                 taps,
+                layout,
                 path,
                 store: Mutex::new(store),
                 pairing: Mutex::new(None),
-                sidebar: Mutex::new(None),
                 hub,
                 clients: AtomicU32::new(0),
                 server: Mutex::new(None),
@@ -172,24 +193,18 @@ impl Remote {
         }
     }
 
-    /// The sidebar changed (the layout, or a Session's facts): keep it for the next `hello` and
-    /// relay it to every phone, unless it reads the same as the last one.
-    pub fn publish_sidebar(&self, sidebar: &SidebarSnapshot) {
-        let value = match serde_json::to_value(sidebar) {
-            Ok(v) => Arc::new(v),
-            Err(e) => {
-                eprintln!("remote: the sidebar does not serialize: {e}");
-                return;
-            }
-        };
-        {
-            let mut last = lock(&self.inner.sidebar);
-            if last.as_deref() == Some(&*value) {
-                return;
-            }
-            *last = Some(value.clone());
+    /// An Activity sample (while the Host samples: the Mac's Panel, Memory Guard): each
+    /// Session's CPU and memory goes to every client as `activity`.
+    pub fn publish_activity(&self, snapshot: &ActivitySnapshot) {
+        if self.inner.hub.receiver_count() == 0 {
+            return;
         }
-        let _ = self.inner.hub.send(HubMsg::Sidebar(value));
+        match serde_json::to_value(&snapshot.sessions) {
+            Ok(v) => {
+                let _ = self.inner.hub.send(HubMsg::Activity(Arc::new(v)));
+            }
+            Err(e) => eprintln!("remote: the activity sample does not serialize: {e}"),
+        }
     }
 }
 
@@ -330,8 +345,45 @@ impl Inner {
         self.hub.subscribe()
     }
 
-    pub(crate) fn sidebar(&self) -> Option<Arc<serde_json::Value>> {
-        lock(&self.sidebar).clone()
+    pub(crate) fn layout(&self) -> &Arc<Layout> {
+        &self.layout
+    }
+
+    /// This Host, for `hello`.
+    pub(crate) fn host_info(&self) -> HostInfo {
+        HostInfo {
+            name: hostname(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            home: std::env::var("HOME").ok().filter(|h| !h.is_empty()),
+        }
+    }
+
+    /// Where uploads go: `<data dir>/uploads`, created.
+    pub(crate) fn upload_dir(&self) -> Result<PathBuf, String> {
+        let dir = self.host.paths.data_dir()?.join(UPLOAD_DIR);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        Ok(dir)
+    }
+
+    /// Size Session `id`'s pty for a client, when that client is the only one showing it: no
+    /// other client on the socket (`others` counts them, this one excluded) and no Terminal
+    /// attached in process (the Mac webview's).
+    pub(crate) fn resize(
+        &self,
+        id: SessionId,
+        cols: u16,
+        rows: u16,
+        others: usize,
+    ) -> Result<(), String> {
+        if others > 0 || self.layout.is_attached(id) {
+            return Err(format!(
+                "Session {id} is shown by another client; only the only client attached may size it"
+            ));
+        }
+        if cols == 0 || rows == 0 {
+            return Err("cols and rows must be at least 1".into());
+        }
+        self.sessions.resize(id, cols, rows)
     }
 
     /// A phone presents a pairing code: on success it is paired and gets its token.
@@ -398,6 +450,23 @@ fn read_store(path: &Path) -> Option<Store> {
     serde_json::from_slice(&bytes)
         .inspect_err(|e| eprintln!("remote: {} unreadable ({e}); starting fresh", path.display()))
         .ok()
+}
+
+/// This machine's hostname, or `"host"` when it cannot be read.
+fn hostname() -> String {
+    let mut buf = [0u8; 256];
+    // SAFETY: a plain libc call into a buffer of the stated size.
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+    if rc != 0 {
+        return "host".into();
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let name = String::from_utf8_lossy(&buf[..end]).trim().to_owned();
+    if name.is_empty() {
+        "host".into()
+    } else {
+        name
+    }
 }
 
 pub(crate) fn now_ms() -> u64 {

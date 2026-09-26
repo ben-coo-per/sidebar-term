@@ -1,6 +1,6 @@
 // Remote on the Mac: a mirror of the core's state (src-tauri/core/src/remote/) for the Settings
 // page. The sidebar phones list is the Host's own (the core's layout joined with Session facts),
-// so nothing is published from here. See docs/architecture.md "Remote".
+// so nothing is published from here. See docs/architecture.md "Host protocol".
 
 import { onRemote, remotePairBegin, remotePairCancel, remoteRevoke, remoteState, setRemote } from "../ipc";
 import type { RemoteSnapshot } from "../types";

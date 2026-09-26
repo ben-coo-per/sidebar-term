@@ -24,7 +24,8 @@
 //! never hit.
 
 use crate::host::{Events, OutputSink};
-use crate::model::{ProbeTarget, SessionExit, SessionId, EVENT_SESSION_EXIT};
+use crate::model::{ProbeTarget, SessionExit, SessionId, SessionInfo, EVENT_SESSION_EXIT};
+use crate::remote::tap::Marks;
 use crate::remote::Taps;
 use portable_pty::{
     native_pty_system, Child, CommandBuilder, ExitStatus, MasterPty, PtyPair, PtySize,
@@ -199,6 +200,19 @@ impl SessionManager {
 
     pub fn probe_target(&self, id: SessionId) -> Option<ProbeTarget> {
         self.host.probe_target(id)
+    }
+
+    /// What the Host read in a live Session's output so far (`remote/tap.rs`).
+    pub fn marks(&self, id: SessionId) -> Option<Marks> {
+        self.taps.marks(id)
+    }
+
+    /// A fresh `SessionInfo` for a live Session: probed now, with its marks and Agent status,
+    /// as the monitor would emit it. `None` for a Session that is gone.
+    pub fn info(&self, id: SessionId) -> Option<SessionInfo> {
+        let mut info = crate::detect::probe(&self.host.probe_target(id)?);
+        crate::status::apply(&mut info, self.marks(id).as_ref(), Instant::now());
+        Some(info)
     }
 
     /// `probe_targets` of the Sessions with a Resume key, with their key.

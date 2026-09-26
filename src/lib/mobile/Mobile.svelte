@@ -1,5 +1,5 @@
 <!-- The phone's page (/m): pairing, then the Tab list, then one Tab's Session on screen.
-     See docs/architecture.md "Remote". -->
+     See docs/architecture.md "Host protocol". -->
 <script lang="ts">
   import PairScreen from "./PairScreen.svelte";
   import TabList from "./TabList.svelte";

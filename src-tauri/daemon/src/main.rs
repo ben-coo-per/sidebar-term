@@ -344,10 +344,11 @@ fn main() {
             snap.tabs.len()
         ));
     }
-    let (for_monitor, for_observe) = (sessions.clone(), layout.clone());
+    let (for_monitor, for_marks, for_observe) = (sessions.clone(), sessions.clone(), layout.clone());
     monitor::spawn(
         host.events.clone(),
         move || for_monitor.probe_targets(),
+        move |id| for_marks.marks(id),
         move |infos| for_observe.observe(infos),
     );
     let (for_recorder, recorder) = (sessions.clone(), resume.clone());
@@ -355,10 +356,14 @@ fn main() {
     let remote_file = store::path(&*host.paths, store::REMOTE)
         .inspect_err(|e| log(&format!("remote: no data dir ({e}); pairings not persisted")))
         .ok();
-    let remote = Arc::new(Remote::open(host.clone(), sessions.clone(), taps, remote_file));
-    // Phones list this Host's sidebar: the layout joined with each Session's facts.
-    let for_sidebar = remote.clone();
-    layout.watch(Box::new(move |sidebar| for_sidebar.publish_sidebar(sidebar)));
+    // Clients get this Host's layout and each Session's facts from the layout, through Remote.
+    let remote = Arc::new(Remote::open(
+        host.clone(),
+        sessions.clone(),
+        taps,
+        layout.clone(),
+        remote_file,
+    ));
     if let Some(port) = args.port {
         remote.set_port(port);
     }

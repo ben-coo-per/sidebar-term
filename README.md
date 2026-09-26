@@ -40,7 +40,7 @@ reachable only over your Tailscale network. Once:
 
 Nothing listens while Remote is off. On, the server binds 127.0.0.1 only; Tailscale publishes it
 to your tailnet (never the internet) with a real certificate. Each phone needs a one-time pairing
-code and holds a token you can revoke in Settings. Details: `docs/architecture.md` "Remote".
+code and holds a token you can revoke in Settings. Details: `docs/architecture.md` "Host protocol".
 
 **Status and next steps.** The phone can see the sidebar and drive any Session (attach-and-drive).
 Still to do, in order:
@@ -53,8 +53,8 @@ Still to do, in order:
    key bar's Esc / Shift-Tab, and see whether the fit-to-width font is readable in portrait.
 3. Passkey / Face ID re-lock after idle (WebAuthn; the page is on a real HTTPS origin, so it is
    cheap to add). Not built yet: today the token alone admits a paired phone.
-4. Full control from the phone (create, close, rename, move Tabs): blocked on #20, which moves
-   the layout into Rust; then expose those commands over the Remote protocol.
+4. Full control from the phone (create, close, rename, move Tabs): the Host protocol carries
+   the commands (`docs/architecture.md` "Host protocol"); the phone's UI for them is #16.
 5. Notifications when an agent needs input (web push works for installed pages on iOS 16.4+).
 
 ## Host daemon
