@@ -27,6 +27,9 @@ export type CommandMessage =
   | { t: "group_delete"; id: CommandId; groupId: string }
   | { t: "group_set_collapsed"; id: CommandId; groupId: string; collapsed: boolean };
 
+/** A command as a client hands it to its connection, which puts the `id` on it. */
+export type Command = CommandMessage extends infer M ? (M extends CommandMessage ? Omit<M, "id"> : never) : never;
+
 /** What a command's `ok` carries in `result`: `tab_new` the Tab, `group_new` the Group, else nothing. */
 export type CommandResult = Tab | Group | undefined;
 

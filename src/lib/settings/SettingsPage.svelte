@@ -25,6 +25,7 @@
   import { GUARD_LIMITS, THAW_GAP } from "../guard/model";
   import CloseIcon from "../sidebar/icons/CloseIcon.svelte";
   import RemoteSection from "./RemoteSection.svelte";
+  import HostsSection from "./HostsSection.svelte";
 
   const CATEGORIES: ActionCategory[] = ["Tabs", "Groups", "App"];
   const byCategory = CATEGORIES.map((category) => ({
@@ -172,6 +173,8 @@
     </section>
 
     <RemoteSection />
+
+    <HostsSection />
 
     <section>
       <div class="section-header">

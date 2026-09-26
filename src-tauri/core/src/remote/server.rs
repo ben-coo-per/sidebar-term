@@ -12,6 +12,8 @@
 //! - `POST /api/upload`: multipart, `Authorization: Bearer <token>`; the first file part is
 //!   written under `<data dir>/uploads/<stamp>/<name>` and `{path}` comes back, so a file
 //!   dragged onto a remote Tab can be attached by path, as `drop.rs` does on the Mac.
+//!   Both answer CORS preflights for the Mac app's webview, whose page is another origin
+//!   (`tauri://localhost`; `http://localhost:1420` in dev); no other origin is allowed.
 //! - `GET /ws`: a client's connection. The first text frame must be `{"t":"auth","token"}`
 //!   within five seconds. Then, from the client: `attach` / `detach` `{sessionId}`, `input`
 //!   `{sessionId, data}`, `ping`, and the commands, each with a client-chosen `id` answered by
@@ -34,7 +36,7 @@ use crate::model::SessionId;
 use axum::body::Bytes;
 use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::extract::{DefaultBodyLimit, Multipart, State};
-use axum::http::{header, HeaderMap, StatusCode, Uri};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -47,8 +49,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast::error::RecvError;
+use tower_http::cors::CorsLayer;
 
 const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
+/// The origins the API routes answer CORS preflights for: the Mac app's webview page
+/// (Tauri's custom scheme on macOS) and its dev server (`pnpm dev`, either spelling of the
+/// loopback). A browser on the tailnet is not one.
+const APP_ORIGINS: [&str; 3] = ["tauri://localhost", "http://localhost:1420", "http://127.0.0.1:1420"];
 /// WebSocket pings, which also check every attached Session is still attached.
 const PING_EVERY: Duration = Duration::from_secs(5);
 /// The most an upload may be.
@@ -78,13 +85,16 @@ pub fn start(inner: Arc<Inner>, port: u16) -> Result<Handle, String> {
         .set_nonblocking(true)
         .map_err(|e| format!("listener: {e}"))?;
     let runtime = inner.runtime().clone();
-    let router = Router::new()
-        .route("/", get(root))
+    let api = Router::new()
         .route("/api/pair", post(pair))
         .route(
             "/api/upload",
             post(upload).layer(DefaultBodyLimit::max(UPLOAD_MAX)),
         )
+        .layer(api_cors());
+    let router = Router::new()
+        .route("/", get(root))
+        .merge(api)
         .route("/ws", get(ws))
         .fallback(get(asset))
         .with_state(inner);
@@ -101,6 +111,16 @@ pub fn start(inner: Arc<Inner>, port: u16) -> Result<Handle, String> {
         }
     });
     Ok(Handle { task })
+}
+
+/// CORS for the API routes, for the Mac app's webview only (`APP_ORIGINS`): a browser lets a
+/// cross-origin `fetch` through only when the preflight names its origin. What admits a client
+/// is unchanged: the pairing code, then the token.
+fn api_cors() -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(APP_ORIGINS.map(HeaderValue::from_static))
+        .allow_methods([Method::POST, Method::OPTIONS])
+        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
 }
 
 async fn root() -> Redirect {

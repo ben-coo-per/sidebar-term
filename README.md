@@ -60,10 +60,11 @@ Still to do, in order:
 ## Host daemon
 
 `sidebar-termd` runs the same core as the app on a machine with no display (a Linux box on your
-tailnet), so Sessions can live there and be driven from a phone, and from the Mac once #29
-lands. It keeps its own Tabs and Groups (`layout.json` in its data dir: one Tab on first run,
-every Tab's shell respawned at launch) and phones list them. It is a second binary from the same
-workspace; `docs/architecture.md` "Host daemon" says what it does at this stage.
+tailnet), so Sessions can live there and be driven from the Mac app (Settings > Hosts: its Tabs
+join the sidebar under the Host's name) and from a phone. It keeps its own Tabs and Groups
+(`layout.json` in its data dir: one Tab on first run, every Tab's shell respawned at launch). It
+is a second binary from the same workspace; `docs/architecture.md` "Host daemon" and "Hosts" say
+what it does at this stage.
 
 ```sh
 cargo build --release --bin sidebar-termd --manifest-path src-tauri/Cargo.toml   # no Tauri

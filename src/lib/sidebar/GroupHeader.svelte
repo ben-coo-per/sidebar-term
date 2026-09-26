@@ -1,8 +1,9 @@
-<!-- A Group header: chevron, name (inline rename), Tab count, its go-to-Group Hotkey, drag
-     handle, context menu. -->
+<!-- A Group header, on any Host: chevron, name (inline rename), Tab count, its go-to-Group Hotkey
+     (the local Host's Groups only: go-to-Group numbers count those), drag handle, context menu. -->
 <script lang="ts">
   import type { Group } from "../layout.svelte";
-  import { deleteGroup, layout, newTab, renameGroup, toggleGroupCollapsed } from "../layout.svelte";
+  import { deleteGroup, groupsOf, layout, newTab, renameGroup, toggleGroupCollapsed } from "../layout.svelte";
+  import { isLocal } from "../host/ids";
   import ChevronIcon from "./icons/ChevronIcon.svelte";
   import { dnd, startGroupDrag, endDrag, overGroupHeader, dropOnGroupHeader } from "./dnd.svelte";
   import { openContextMenu } from "./menu.svelte";
@@ -13,8 +14,11 @@
 
   let { group }: { group: Group } = $props();
 
-  const position = $derived(layout.groups.indexOf(group) + 1);
+  const local = $derived(isLocal(group.host));
+  const position = $derived(local ? layout.groups.indexOf(group) + 1 : 0);
   const hotkey = $derived(position >= 1 && position <= GROUP_JUMP_COUNT ? hotkeyLabel(groupJumpAction(position)) : "");
+  /** A Host's last Group cannot be deleted. */
+  const lastOnHost = $derived(groupsOf(group.host).length <= 1);
 
   let editing = $state(false);
   let draft = $state("");
@@ -55,7 +59,7 @@
   });
 
   async function handleDelete() {
-    if (layout.groups.length <= 1) return;
+    if (lastOnHost) return;
     if (group.tabIds.length > 0) {
       const ok = await requestConfirm({
         message: `Delete "${group.name}"?`,
@@ -77,7 +81,7 @@
         label: "Delete Group",
         action: handleDelete,
         danger: true,
-        disabled: layout.groups.length <= 1,
+        disabled: lastOnHost,
         separatorBefore: true,
       },
     ];
