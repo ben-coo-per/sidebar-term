@@ -643,15 +643,27 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// `/proc/<pid>/stat` state letter of `pid`: `T` when stopped.
+    /// `/proc/<pid>/stat` state letter of `pid`: `T` when stopped. A process just sent SIGSTOP
+    /// is woken to take the signal, so it reads `R` for a moment before `T` (macOS's `ps` run
+    /// above takes long enough to hide that): wait out a transient `R`.
     #[cfg(target_os = "linux")]
     fn state(pid: u32) -> String {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
-        stat.rsplit(") ")
-            .next()
-            .and_then(|fields| fields.chars().next())
-            .map(String::from)
-            .unwrap_or_default()
+        let read = || {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            stat.rsplit(") ")
+                .next()
+                .and_then(|fields| fields.chars().next())
+                .map(String::from)
+                .unwrap_or_default()
+        };
+        for _ in 0..20 {
+            let state = read();
+            if state != "R" {
+                return state;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        read()
     }
 
     fn children_of(pid: u32) -> Vec<u32> {

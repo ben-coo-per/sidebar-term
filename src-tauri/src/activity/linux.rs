@@ -17,8 +17,9 @@
 //! so it is only the fallback: for another user's process, whose `smaps_rollup` is unreadable (it
 //! needs ptrace read access), and for kernels without `smaps_rollup` (before 4.14). A kernel thread
 //! (no address space) or a process gone between reads falls back to `stat`'s resident pages.
-//! `smaps_rollup` walks the process's page tables, so it costs more than `status`: measured at
-//! tens of microseconds for a small process and about a millisecond per gigabyte mapped.
+//! `smaps_rollup` walks the process's page tables, so it costs more than `status` and grows with
+//! what is mapped: measured at ~30 µs for a 300 KiB process and ~300 µs for a 14 MiB one
+//! (`read_costs` below), against ~30 µs per process for the `stat` and `exe` reads.
 //!
 //! A process's start time is `stat`'s `starttime`, clock ticks since boot; Memory Guard records it
 //! with each pid it stops so a recycled pid is never signalled.
