@@ -262,11 +262,13 @@ mod tests {
         assert_eq!(info.branch.as_deref(), Some("agent-1"));
         assert_agrees_with_git(&nested, &info);
 
-        if relative {
-            let rel = tmp.path().join("wt-rel");
-            assert!(fs::read_to_string(rel.join(".git"))
+        // Older git ignores the unknown option and links absolutely: nothing new to check then.
+        let rel = tmp.path().join("wt-rel");
+        if relative
+            && fs::read_to_string(rel.join(".git"))
                 .unwrap()
-                .contains("gitdir: ../"));
+                .contains("gitdir: ../")
+        {
             let info = resolve(&rel).unwrap();
             assert_eq!(info.common_dir, common);
             assert_eq!(info.worktree_name.as_deref(), Some("wt-rel"));

@@ -7,7 +7,9 @@
 //! `/proc/<pid>/environ` (NUL-separated). Permissions differ from libproc: `stat` and `cmdline`
 //! are readable for every process, so a `sudo`'d job's argv is known here (and is rerun by
 //! Resume); `exe`, `cwd` and `environ` need ptrace read access (same uid, or root), so they
-//! read as `None` / empty for another user's process, as on macOS.
+//! read as `None` / empty for another user's process, as on macOS. A process caught in the
+//! last microseconds of its exec reads the same way (its argv area and dumpable flag are not
+//! set yet); the next tick sees it whole.
 //!
 //! Members of a process group: there is no `proc_listpids(PROC_PGRP_ONLY)`, so one scan of every
 //! `/proc/<pid>/stat` (a few ms) is cached for `SCAN_TTL` and shared by every probe of one
@@ -257,10 +259,6 @@ mod tests {
     use super::*;
     use crate::detect::testutil::{spawn_in_own_group, wait_until, TempDir};
 
-    fn strings(v: &[&str]) -> Vec<String> {
-        v.iter().map(|s| s.to_string()).collect()
-    }
-
     #[test]
     fn stat_lines() {
         // A plain process; only the first fields matter.
@@ -279,8 +277,8 @@ mod tests {
         // the last `)`; and the 15-byte truncation the kernel applies.
         let s = parse_stat("7 (my (odd) app) R 1 7 7 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 1 0 0 0").unwrap();
         assert_eq!((s.comm.as_str(), s.state, s.ppid, s.pgrp), ("my (odd) app", 'R', 1, 7));
-        let s = parse_stat("8 (codex-aarch64-un) S 1 8 8 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 1 0 0 0").unwrap();
-        assert_eq!(s.comm, "codex-aarch64-un");
+        let s = parse_stat("8 (codex-aarch64-u) S 1 8 8 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 1 0 0 0").unwrap();
+        assert_eq!(s.comm, "codex-aarch64-u");
         // Zombies and dead tasks are not live processes.
         let z = parse_stat("9 (zsh) Z 1 9 9 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 1 0 0 0").unwrap();
         assert_eq!(z.state, 'Z');
@@ -363,15 +361,16 @@ mod tests {
         // `; true` keeps sh from exec'ing: sh stays the leader, sleep is its child.
         let job = spawn_in_own_group("/bin/sh", &["-c", "/bin/sleep 30; true"], dir.path());
         let pgid = job.pid();
-        assert!(
-            wait_until(|| group_members(pgid).len() == 2),
-            "sleep never joined the group: {:?}",
-            group_members(pgid)
-        );
-        let members = group_members(pgid);
-        assert_eq!(members[0], pgid);
-        let child = short_info(members[1]).expect("child");
-        assert_eq!((child.ppid, child.comm.as_str()), (pgid, "sleep"));
+        // Two members, the second having exec'd (a fresh fork still reads as `sh`).
+        let sleeping = || {
+            let members = group_members(pgid);
+            members.len() == 2
+                && members[0] == pgid
+                && short_info(members[1]).is_some_and(|p| p.comm == "sleep")
+        };
+        assert!(wait_until(sleeping), "sleep never joined: {:?}", group_members(pgid));
+        let child = short_info(group_members(pgid)[1]).expect("child");
+        assert_eq!(child.ppid, pgid);
         assert_eq!(argv(child.pid).unwrap(), ["/bin/sleep", "30"]);
     }
 

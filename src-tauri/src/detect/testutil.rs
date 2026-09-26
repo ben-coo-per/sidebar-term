@@ -1,6 +1,7 @@
 //! Test helpers for `detect`: self-cleaning temp dirs, child processes in their own process
 //! group, and a hermetic `git` runner.
 
+use super::process;
 use std::fs;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -112,7 +113,10 @@ pub fn fake_binary(dir: &Path, name: &str) -> PathBuf {
     p
 }
 
-/// Spawn `prog args` in `cwd` as the leader of a new process group (pgid == pid).
+/// Spawn `prog args` in `cwd` as the leader of a new process group (pgid == pid), and wait
+/// until its argv and cwd read back: on Linux `spawn` returns as soon as the exec has passed the
+/// point of no return, a moment before the new image's argv is in place and its `/proc` links
+/// are accessible, so a probe right after it would see an empty argv and no cwd.
 pub fn spawn_in_own_group(prog: impl AsRef<Path>, args: &[&str], cwd: &Path) -> ChildGuard {
     let child = Command::new(prog.as_ref())
         .args(args)
@@ -124,6 +128,11 @@ pub fn spawn_in_own_group(prog: impl AsRef<Path>, args: &[&str], cwd: &Path) -> 
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn child");
+    let pid = child.id() as i32;
+    assert!(
+        wait_until(|| process::argv(pid).is_some() && process::cwd(pid).is_some()),
+        "child {pid} never finished exec'ing (or exited at once)"
+    );
     ChildGuard(child)
 }
 

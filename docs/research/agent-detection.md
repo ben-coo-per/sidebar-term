@@ -176,12 +176,17 @@ file's.** The native Claude Code install (`~/.local/bin/claude -> ~/.local/share
 <ver>`) reads as `comm = claude` on Linux and as `<ver>` on macOS; `classify_agent` already
 accepts both, and the `/claude/versions/` path rule covers the executable link. `comm` is 15
 bytes on Linux (`TASK_COMM_LEN - 1`), 16 on macOS, so `codex-aarch64-unknown-linux-gnu` reads as
-`codex-aarch64-un`; the `codex-<arch>-apple-darwin` file-name rule has no Linux twin yet (Codex
+`codex-aarch64-u`; the `codex-<arch>-apple-darwin` file-name rule has no Linux twin yet (Codex
 release tarballs for Linux are `codex-<triple>` too; add it when one is seen running).
 
-Cost, measured in a Debian 12 (aarch64) container under Docker Desktop on this M1, the crate's
-`detect` tests as an unprivileged user: see the PR for issue #26 (`/proc` scan of the
-container's processes, and `probe` per call with the scan cached). Nothing here needs root.
+Cost, measured by the crate's `detect` tests in a Debian 12 (aarch64) container under Docker
+Desktop on this M1, as an unprivileged user (`cargo test detect -- --nocapture`): `probe` 28 to
+61 µs per call for a shell at its prompt and 41 to 85 µs for a job in a linked Worktree, over 500
+calls with the scan cached (macOS on the same machine: 110 and 241 µs); one `/proc` scan of the
+container's 4 to 8 processes 115 to 266 µs, so about 30 µs per process, a few ms on a box with
+a few hundred. A process caught in the last microseconds of its exec reads with an empty argv
+and no cwd (the new image's argv area and dumpable flag are not set yet); the next tick sees it
+whole. Nothing here needs root. Not measured: a real Linux box with hundreds of processes.
 
 ## Could not verify (needs one run outside this session)
 

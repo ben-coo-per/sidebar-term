@@ -434,11 +434,13 @@ mod tests {
     #[test]
     fn a_command_reruns_from_its_argv_in_its_cwd() {
         let dir = TempDir::new("resume-command");
-        let child = spawn_in_own_group("/bin/sleep", &["30", "it's"], dir.path());
+        // `; true` keeps sh from exec'ing sleep, so sh stays the job the shell forked; its `$0`
+        // needs quoting. (GNU sleep would reject an extra word as an interval and exit.)
+        let child = spawn_in_own_group("/bin/sh", &["-c", "sleep 30; true", "it's"], dir.path());
         let e = entry("tab_1", &target(child.pid())).expect("entry");
         assert_eq!(e.key, "tab_1");
         assert_eq!(e.kind, ResumeKind::Command);
-        assert_eq!(e.line, r"/bin/sleep 30 'it'\''s'");
+        assert_eq!(e.line, r"/bin/sh -c 'sleep 30; true' 'it'\''s'");
         assert_eq!(e.cwd.as_deref(), Some(dir.canonical_str()));
     }
 
