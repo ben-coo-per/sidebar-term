@@ -12,6 +12,8 @@ use std::ptr;
 /// `<sys/proc_info.h>`: `proc_listpids` type selecting the members of one process group.
 /// Not exported by the `libc` crate.
 const PROC_PGRP_ONLY: u32 = 2;
+/// `<sys/proc_info.h>`: `proc_listpids` type selecting the children of one process.
+const PROC_PPID_ONLY: u32 = 6;
 /// `<sys/proc.h>`: `p_stat` of a zombie.
 const SZOMB: u32 = 5;
 /// Upper bound on process-group size we bother to list (a pty's foreground group is tiny).
@@ -32,7 +34,17 @@ pub struct Proc {
 /// Pids of every process in process group `pgid`, ascending. Empty when the group does not
 /// exist (or on any error).
 pub fn group_members(pgid: pid_t) -> Vec<pid_t> {
-    if pgid <= 0 {
+    list_pids(PROC_PGRP_ONLY, pgid)
+}
+
+/// Pids of the direct children of `ppid`, ascending. Empty when it has none (or on any error).
+/// A recursive walk over this is how a Session's whole process tree is read without `ps`.
+pub fn children(ppid: pid_t) -> Vec<pid_t> {
+    list_pids(PROC_PPID_ONLY, ppid)
+}
+
+fn list_pids(kind: u32, id: pid_t) -> Vec<pid_t> {
+    if id <= 0 {
         return Vec::new();
     }
     let mut cap = 16usize;
@@ -41,12 +53,7 @@ pub fn group_members(pgid: pid_t) -> Vec<pid_t> {
         let bytes = (cap * size_of::<pid_t>()) as c_int;
         // SAFETY: `buf` is a writable buffer of exactly `bytes` bytes.
         let n = unsafe {
-            libc::proc_listpids(
-                PROC_PGRP_ONLY,
-                pgid as u32,
-                buf.as_mut_ptr().cast::<c_void>(),
-                bytes,
-            )
+            libc::proc_listpids(kind, id as u32, buf.as_mut_ptr().cast::<c_void>(), bytes)
         };
         if n <= 0 {
             return Vec::new();
@@ -59,7 +66,7 @@ pub fn group_members(pgid: pid_t) -> Vec<pid_t> {
             buf.dedup();
             return buf;
         }
-        // The buffer was filled: the group may be larger. Retry with more room.
+        // The buffer was filled: the list may be longer. Retry with more room.
         cap *= 4;
     }
 }
@@ -790,6 +797,8 @@ mod tests {
         let pid = child.pid();
 
         assert_eq!(group_members(pid), vec![pid]);
+        assert!(children(std::process::id() as pid_t).contains(&pid));
+        assert!(children(pid).is_empty());
         let info = short_info(pid).expect("short info");
         assert_eq!(
             info,

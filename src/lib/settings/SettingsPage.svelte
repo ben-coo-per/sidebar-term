@@ -23,6 +23,7 @@
   import { activitySettings, setTabStats } from "../panel/activity/settings.svelte";
   import { memoryGuard, setGuardLimit, toggleMemoryGuard } from "../guard/memoryGuard.svelte";
   import { GUARD_LIMITS, THAW_GAP } from "../guard/model";
+  import { setSuiteProgress, suiteSettings } from "../suite/settings.svelte";
   import CloseIcon from "../sidebar/icons/CloseIcon.svelte";
 
   const CATEGORIES: ActionCategory[] = ["Tabs", "Groups", "App"];
@@ -215,6 +216,30 @@
                 <option value={limit}>{limit}%</option>
               {/each}
             </select>
+          </label>
+        </li>
+      </ul>
+    </section>
+
+    <section>
+      <div class="section-header">
+        <div>
+          <h2>Tests</h2>
+          <p class="hint">A test suite running in a Tab shows how far it is and how long is left.</p>
+        </div>
+      </div>
+      <ul class="rows">
+        <li class="row">
+          <label class="check">
+            <span class="label">
+              Suite progress
+              <span class="detail">
+                New Tabs get SIDEBAR_TERM_PROGRESS_DIR, SIDEBAR_TERM_REPORTERS, PYTEST_ADDOPTS, PYTHONPATH, PW_TEST_REPORTER,
+                MOCHA_OPTIONS, CARGO_TARGET_&lt;triple&gt;_RUNNER and GOFLAGS, so pytest, Playwright, mocha, cargo test and go
+                test report each test to the app; off, a suite is still recognised and timed against its earlier runs.
+              </span>
+            </span>
+            <input type="checkbox" checked={suiteSettings.progress} onchange={(e) => setSuiteProgress(e.currentTarget.checked)} />
           </label>
         </li>
       </ul>

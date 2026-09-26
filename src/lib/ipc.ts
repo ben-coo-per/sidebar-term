@@ -11,6 +11,7 @@ import {
   EVENT_MENU_SETTINGS,
   EVENT_SESSION_EXIT,
   EVENT_SESSION_INFO,
+  EVENT_SUITE,
   EVENT_USAGE,
   type ActivitySnapshot,
   type AgentKind,
@@ -19,6 +20,7 @@ import {
   type SessionExit,
   type SessionId,
   type SessionInfo,
+  type SuiteSnapshot,
   type UsageSnapshot,
 } from "./types";
 import * as mock from "./mock";
@@ -31,6 +33,11 @@ export interface SpawnOptions {
   rows: number;
   /** Key for this Session in Resume entries: its Tab id. A Session without one is never resumed. */
   resumeKey?: string | null;
+  /**
+   * Give the shell the Suite progress variables (SIDEBAR_TERM_PROGRESS_DIR and the reporters'):
+   * the "Suite progress" setting. Default on; Suites are detected either way.
+   */
+  suiteProgress?: boolean;
   /** Raw pty output bytes, in order. Feed straight to `terminal.write(bytes)`. */
   onData: (bytes: Uint8Array) => void;
 }
@@ -46,6 +53,7 @@ export async function spawnSession(opts: SpawnOptions): Promise<SessionId> {
     cols: opts.cols,
     rows: opts.rows,
     resumeKey: opts.resumeKey ?? null,
+    suiteProgress: opts.suiteProgress ?? true,
     onData,
   });
 }
@@ -145,6 +153,12 @@ export function guardThaw(sessionId: SessionId): Promise<GuardSnapshot> {
 export function onGuard(cb: (snapshot: GuardSnapshot) => void): Promise<UnlistenFn> {
   if (!inTauri) return mock.onGuard(cb);
   return listen<GuardSnapshot>(EVENT_MEMORY_GUARD, (e) => cb(e.payload));
+}
+
+/** Every live (or just finished) Suite, whenever one changes (every tick while any runs). */
+export function onSuite(cb: (suites: SuiteSnapshot[]) => void): Promise<UnlistenFn> {
+  if (!inTauri) return mock.onSuite(cb);
+  return listen<SuiteSnapshot[]>(EVENT_SUITE, (e) => cb(e.payload));
 }
 
 /**

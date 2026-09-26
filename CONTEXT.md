@@ -84,6 +84,10 @@ _Avoid_: Activity monitor (that is Apple's app), stats, usage
 The panel view showing how much of each chosen coding agent's usage limits is spent: one bar per limit window (Claude Code's 5 hours and week, Codex's), with the time until it resets. Which agents it shows is chosen on the Settings page.
 _Avoid_: Quota, credits, stats, Activity (that is CPU and memory)
 
+**Suite**:
+A test run the app has recognised under a Session: a runner (vitest, jest, mocha, Playwright, pytest, cargo test, cargo-nextest, go test) started by the user or by an agent's shell tool. Its Tab shows a thin bar and its count and ETA while it runs, and the result for a few seconds after; the Activity view lists every running one.
+_Avoid_: Test run, job, task, progress bar (that is the Suite's bar, not the Suite)
+
 **Host**:
 A machine running the sidebar-term core, whose Sessions, Tabs and Groups can be shown and driven from a client. The Mac app is its own local Host; a second machine runs the core as a headless daemon (`sidebar-termd`). A client shows each paired Host as a section of the sidebar.
 _Avoid_: Server, remote machine, node, peer

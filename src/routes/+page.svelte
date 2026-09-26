@@ -18,12 +18,15 @@
   import SettingsPage from "$lib/settings/SettingsPage.svelte";
   import ResumeBanner from "$lib/resume/ResumeBanner.svelte";
   import { initResume } from "$lib/resume/resume.svelte";
+  import { initSuiteSettings } from "$lib/suite/settings.svelte";
+  import { initSuites } from "$lib/suite/suites.svelte";
   import { closeSettings, openSettings, settingsPage } from "$lib/settings/visibility.svelte";
   import { untrack } from "svelte";
 
   $effect(() => {
+    // The Suite progress setting is read first: Sessions get their variables at spawn.
     // Resume needs the Tabs: it drops entries whose Tab is gone.
-    void initLayout().then(initResume);
+    void initSuiteSettings().then(initLayout).then(initResume);
     void initHotkeys();
     void initUsageSettings();
     void initActivitySettings();
@@ -31,12 +34,14 @@
     const stopDropGuard = initDropGuard();
     const stopCaffeinate = initCaffeinate();
     const stopMemoryGuard = initMemoryGuard();
+    const stopSuites = initSuites();
     const menuSettings = onMenuSettings(openSettings);
     return () => {
       stopShortcuts();
       stopDropGuard();
       stopCaffeinate();
       stopMemoryGuard();
+      stopSuites();
       void menuSettings.then((stop) => stop());
     };
   });

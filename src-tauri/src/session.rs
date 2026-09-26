@@ -102,7 +102,9 @@ impl SessionManager {
     /// in `cwd` (fallback `$HOME`). Output bytes go to `on_data` as `InvokeResponseBody::Raw`.
     /// When the shell exits, emit `EVENT_SESSION_EXIT` with `SessionExit` via `app`,
     /// then drop the Session from the registry. `resume_key` is the webview's key for the Session
-    /// in Resume entries (`resume.rs`); a Session without one is never resumed.
+    /// in Resume entries (`resume.rs`); a Session without one is never resumed. `env` gets the
+    /// shell's environment last, to add to it (Suite progress: `suite::Suites::inject`).
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         &self,
         app: AppHandle,
@@ -111,8 +113,10 @@ impl SessionManager {
         rows: u16,
         resume_key: Option<String>,
         on_data: Channel<InvokeResponseBody>,
+        env: impl FnOnce(&mut BTreeMap<OsString, OsString>),
     ) -> Result<SessionId, String> {
-        let spec = SpawnSpec::login_shell(cwd.as_deref(), cols, rows);
+        let mut spec = SpawnSpec::login_shell(cwd.as_deref(), cols, rows);
+        env(&mut spec.env);
         let id = self.host.spawn(
             spec,
             move |bytes| {

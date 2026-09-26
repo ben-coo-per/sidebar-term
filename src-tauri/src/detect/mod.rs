@@ -4,6 +4,7 @@
 pub mod git;
 pub mod process;
 pub mod resume;
+pub mod runner;
 #[cfg(test)]
 pub(crate) mod testutil;
 

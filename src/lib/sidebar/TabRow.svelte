@@ -1,6 +1,11 @@
 <!-- A Tab row: Agent/plain icon, Agent status (or a snowflake while Memory Guard has it frozen),
-     Title (inline rename; bold while unread), Badge, the Session's CPU and memory (Settings), close button. -->
+     Title (inline rename; bold while unread), Badge, the Session's CPU and memory (Settings), close button.
+     While a Suite runs under the Session, a 2 px bar sits under the Badge line and its count / ETA
+     takes the stats slot (a frozen Tab's `frozen · …` still wins; the bar stays). -->
 <script lang="ts">
+  import SuiteBar from "../suite/SuiteBar.svelte";
+  import { suiteForSession } from "../suite/suites.svelte";
+  import { suiteView } from "../suite/model";
   import type { Tab } from "../layout.svelte";
   import { activateTab, layout, moveTab, newGroupFromTab, renameTab } from "../layout.svelte";
   import { sessionState, setTabRead, tabIsUnread, tabTitle } from "../sessions.svelte";
@@ -48,17 +53,33 @@
   const usage = $derived(
     activitySettings.tabStats ? activity.snapshot?.sessions.find((s) => s.sessionId === tab.sessionId) : undefined,
   );
+  const suite = $derived(suiteForSession(tab.sessionId));
+  const suiteText = $derived(suite ? suiteView(suite) : null);
+  /** Below this sidebar width the Suite text shrinks to its count, and below `HIDE_SUITE_TEXT_AT` goes. */
+  const SHORT_SUITE_TEXT_AT = 240;
+  const HIDE_SUITE_TEXT_AT = 200;
+  const suiteStats = $derived(
+    !suiteText || layout.sidebarWidth < HIDE_SUITE_TEXT_AT
+      ? null
+      : layout.sidebarWidth < SHORT_SUITE_TEXT_AT
+        ? suiteText.short
+        : suiteText.text,
+  );
   const stats = $derived(
-    frozen ? `frozen · ${formatBytes(usage?.mem ?? frozen.mem)}` : usage ? formatTabStats(usage.cpu, usage.mem) : null,
+    frozen
+      ? `frozen · ${formatBytes(usage?.mem ?? frozen.mem)}`
+      : (suiteStats ?? (usage ? formatTabStats(usage.cpu, usage.mem) : null)),
   );
   const rowTitle = $derived(
     frozen
       ? frozenTitle(frozen, formatBytes(usage?.mem ?? frozen.mem))
-      : agent
-        ? `${AGENT_NAMES[agent]}: ${stateLabel}`
-        : finished
-          ? "Agent finished"
-          : "Terminal session",
+      : suiteText
+        ? suiteText.title
+        : agent
+          ? `${AGENT_NAMES[agent]}: ${stateLabel}`
+          : finished
+            ? "Agent finished"
+            : "Terminal session",
   );
 
   let editing = $state(false);
@@ -194,10 +215,13 @@
         <Badge {git} {remote} />
       </span>
     {/if}
+    {#if suiteText}
+      <SuiteBar view={suiteText} />
+    {/if}
   </span>
 
   {#if stats}
-    <span class="stats" class:frozen>{stats}</span>
+    <span class="stats" class:frozen class:suite={!frozen && suiteStats !== null} data-tone={suiteText?.tone}>{stats}</span>
   {/if}
 
   <button
@@ -341,6 +365,16 @@
   }
   .stats.frozen {
     color: var(--status-frozen);
+  }
+  /* A Suite's count reads in the bar's colour: red once a test fails, amber past the longest run. */
+  .stats.suite {
+    color: var(--text-secondary);
+  }
+  .stats.suite[data-tone="failed"] {
+    color: var(--danger);
+  }
+  .stats.suite[data-tone="overrun"] {
+    color: var(--status-needs-input);
   }
   /* The close button takes the stats' place on hover. */
   .row:hover .stats {

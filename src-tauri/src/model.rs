@@ -221,6 +221,71 @@ pub struct ResumeEntry {
     pub cwd: Option<String>,
 }
 
+/// Where a Suite is in its life.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SuitePhase {
+    /// A two-phase runner (`cargo test`, `go test`) is still compiling: no test binary yet.
+    Building,
+    Testing,
+    /// The runner has exited; the snapshot lingers a few seconds showing the result.
+    Done,
+}
+
+/// Where a Suite's numbers come from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SuiteSource {
+    /// A reporter of ours is streaming per-test progress to the progress file.
+    Stream,
+    /// Only the duration history of earlier runs of the same suite.
+    History,
+    /// Nothing but the clock.
+    None,
+}
+
+/// How a Suite ended, when known.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SuiteOutcome {
+    Passed,
+    Failed,
+}
+
+/// One test suite the app has recognised under a Session. Payload element of `suite`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuiteSnapshot {
+    /// Stable for the life of the Suite (and its lingering `done` state).
+    pub id: u64,
+    pub session_id: SessionId,
+    /// `vitest`, `jest`, `mocha`, `playwright`, `pytest`, `cargo`, `nextest`, `go`.
+    pub runner: String,
+    pub phase: SuitePhase,
+    /// When the runner was first seen, epoch ms.
+    pub started_at: u64,
+    /// Time the Suite has been running, not counting time its Session was frozen.
+    pub elapsed_ms: u64,
+    /// Tests finished so far (stream), or 0.
+    pub done: u32,
+    /// Tests in the run once the reporter knows (stream), else null.
+    pub total: Option<u32>,
+    /// Tests failed so far (stream), or 0.
+    pub failed: u32,
+    /// Known once the reporter or a wrapper reports the end; null for a plain runner exit.
+    pub outcome: Option<SuiteOutcome>,
+    /// Estimated time left, ms: from the stream's rate, else the history's median minus
+    /// `elapsed_ms`, never negative; null without either.
+    pub eta_ms: Option<u64>,
+    pub source: SuiteSource,
+    /// Median duration of the last runs of this suite (same repo, runner and command), ms.
+    pub typical_ms: Option<u64>,
+    /// The longest of those runs, ms: past it the Suite reads as longer than usual.
+    pub longest_ms: Option<u64>,
+    /// How many earlier runs the estimate rests on.
+    pub runs: u32,
+}
+
 /// Event names. Frontend listens with `listen(EVENT_SESSION_INFO, ...)`.
 pub const EVENT_SESSION_INFO: &str = "session-info";
 pub const EVENT_SESSION_EXIT: &str = "session-exit";
@@ -234,3 +299,5 @@ pub const EVENT_MENU_SETTINGS: &str = "menu-settings";
 pub const EVENT_CAFFEINATE: &str = "caffeinate";
 /// Memory Guard froze or thawed a Session, or was turned on or off; payload `GuardSnapshot`.
 pub const EVENT_MEMORY_GUARD: &str = "memory-guard";
+/// Every live (or just finished) Suite, payload `Vec<SuiteSnapshot>`; sent on change each tick.
+pub const EVENT_SUITE: &str = "suite";

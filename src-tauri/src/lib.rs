@@ -13,6 +13,7 @@ mod monitor;
 mod paths;
 mod resume;
 mod session;
+mod suite;
 mod usage;
 
 use model::{
@@ -27,17 +28,30 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 /// Id of the app menu's "Settings…" item.
 const MENU_SETTINGS: &str = "settings";
 
+/// `suite_progress`: whether the Session gets the Suite progress variables (the "Suite progress"
+/// setting; detection and history run either way).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn session_spawn(
     app: AppHandle,
     sessions: State<'_, SessionManager>,
+    suites: State<'_, suite::Suites>,
     cwd: Option<String>,
     cols: u16,
     rows: u16,
     resume_key: Option<String>,
+    suite_progress: Option<bool>,
     on_data: Channel<InvokeResponseBody>,
 ) -> Result<SessionId, String> {
-    sessions.spawn(app, cwd, cols, rows, resume_key, on_data)
+    let reservation = suites.reserve(suite_progress.unwrap_or(true));
+    let spawned = sessions.spawn(app, cwd, cols, rows, resume_key, on_data, |env| {
+        suites.inject(env, &reservation)
+    });
+    match spawned {
+        Ok(id) => suites.bind(&reservation, id),
+        Err(_) => suites.unbind(&reservation),
+    }
+    spawned
 }
 
 #[tauri::command]
@@ -299,6 +313,36 @@ pub fn run() {
                     .state::<resume::Resume>()
                     .record(resume::entries(&targets));
             });
+            let history_file = layout::path(&handle, layout::HISTORY)
+                .inspect_err(|e| eprintln!("suites: no app data dir ({e}); history not persisted"))
+                .ok();
+            let shipped = handle
+                .path()
+                .resource_dir()
+                .map(|d| d.join("reporters"))
+                .inspect_err(|e| eprintln!("suites: no resource dir ({e}); reporters not injected"))
+                .ok();
+            let reporters = suite::reporters_dir(shipped, &std::env::temp_dir().join("sidebar-term"));
+            if reporters.is_none() {
+                eprintln!("suites: reporters directory missing; only detection and history run");
+            }
+            let for_suites = handle.clone();
+            let for_frozen = handle.clone();
+            app.manage(suite::spawn(
+                handle.clone(),
+                reporters,
+                history_file,
+                move || for_suites.state::<SessionManager>().probe_targets(),
+                move || {
+                    for_frozen
+                        .state::<guard::Guard>()
+                        .snapshot()
+                        .frozen
+                        .iter()
+                        .map(|f| f.session_id)
+                        .collect()
+                },
+            ));
             app.manage(usage::spawn(handle));
             Ok(())
         })

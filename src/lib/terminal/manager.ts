@@ -28,6 +28,7 @@ import {
   writeSession,
 } from "../ipc";
 import type { SessionId } from "../types";
+import { suiteSettings } from "../suite/settings.svelte";
 import { FlowController } from "./flow-control";
 import { TERMINAL_BACKGROUND, terminalOptions } from "./theme";
 import { attachWebgl, type WebglRenderer } from "./webgl";
@@ -259,6 +260,7 @@ export const terminals: TerminalManager = {
       sid = await spawnSession({
         cwd: opts?.cwd ?? null,
         resumeKey: opts?.resumeKey ?? null,
+        suiteProgress: suiteSettings.progress,
         cols,
         rows,
         onData: (bytes) => (entry ? feed(entry, bytes) : early.push(bytes)),

@@ -16,6 +16,12 @@
 // memory (each running agent adds 3.5 GB of 16 GB): open two agent Tabs to see one frozen, and
 // `exit` one to see it thawed. Frozen Sessions are only marked, nothing stops. Resume is kept in localStorage like Rust's
 // resume.json: start `claude` or `npm run dev` in a Tab, reload the page, and the banner offers it.
+// Suites are invented: in a shell or under a fake agent, these start a fake test run that shows
+// each of the Tab's states (Ctrl-C or `exit` ends one early):
+//   pnpm test | vitest      -> progress known: 48 tests over 24 s, two fail (state 1)
+//   jest                    -> tests counted, no total
+//   pytest                  -> history only: usually ~40 s, this run takes 50 s, so it overruns (state 2)
+//   cargo test | go test    -> nothing known: 4 s of building, then 12 s of testing (state 3)
 
 import type { SpawnOptions } from "./ipc";
 import type {
@@ -30,6 +36,7 @@ import type {
   SessionExit,
   SessionId,
   SessionInfo,
+  SuiteSnapshot,
   UsageSnapshot,
 } from "./types";
 
@@ -48,6 +55,8 @@ interface FakeSession {
   /** The command line of a fake long-running command, while one runs. */
   command: string | null;
   resumeKey: string | null;
+  /** The fake Suite running in this Session, if any. */
+  suiteId: number | null;
 }
 
 const HOME = "/Users/you";
@@ -115,8 +124,12 @@ function run(s: FakeSession, cmd: string) {
       s.agent = null;
       s.remote = false;
       s.command = null;
+      endFakeSuite(s);
       out(s, "\x1b]0;\x07");
       emit(s);
+    } else if (s.agent && fakeRunner(cmd)) {
+      out(s, `(${s.fg} runs \`${cmd.trim()}\` in a Bash tool call)\r\n`);
+      startFakeSuite(s, cmd);
     } else if (head) {
       out(s, `(${s.fg} pretends to work on: ${cmd})\r\n`);
       if (s.agent === "codex") out(s, "\x1b]0;⠋ jack\x07");
@@ -128,6 +141,14 @@ function run(s: FakeSession, cmd: string) {
       }
     }
     prompt(s);
+    return;
+  }
+  if (fakeRunner(cmd)) {
+    s.fg = head;
+    s.command = cmd.trim();
+    out(s, `\x1b[2m(fake) ${s.command}: running…\x1b[0m\r\n`);
+    startFakeSuite(s, cmd);
+    emit(s);
     return;
   }
   switch (head) {
@@ -165,11 +186,13 @@ function run(s: FakeSession, cmd: string) {
       break;
     case "exit":
       sessions.delete(s.id);
+      endFakeSuite(s);
       recordResume();
       exitCbs.forEach((cb) => cb({ sessionId: s.id, code: 0 }));
       return;
     case "help":
       out(s, "fake shell: cd, claude, codex, gemini, ssh, npm, pnpm, uv, exit, ls\r\n");
+      out(s, "fake test runs: pnpm test, vitest, jest, pytest, cargo test, go test (in the shell or under an agent)\r\n");
       break;
     case "ls":
       out(s, "README.md  src  package.json\r\n");
@@ -191,6 +214,7 @@ export async function spawnSession(opts: SpawnOptions): Promise<SessionId> {
     remote: false,
     command: null,
     resumeKey: opts.resumeKey ?? null,
+    suiteId: null,
   };
   sessions.set(s.id, s);
   setTimeout(() => {
@@ -218,6 +242,7 @@ export async function writeSession(id: SessionId, data: string): Promise<void> {
     } else if (ch === "\x03") {
       s.line = "";
       out(s, "^C\r\n");
+      endFakeSuite(s);
       if (s.command) {
         s.fg = "zsh";
         s.command = null;
@@ -237,9 +262,152 @@ export async function writeSession(id: SessionId, data: string): Promise<void> {
 export async function resizeSession(_id: SessionId, _c: number, _r: number): Promise<void> {}
 
 export async function killSession(id: SessionId): Promise<void> {
-  if (!sessions.delete(id)) return;
+  const s = sessions.get(id);
+  if (!s || !sessions.delete(id)) return;
+  if (s.suiteId !== null) fakeSuites.delete(s.suiteId);
   recordResume();
   exitCbs.forEach((cb) => cb({ sessionId: id, code: null }));
+}
+
+// --- Suites: fake test runs, one SuiteSnapshot each, ticked every 500 ms like Rust's ------------
+
+type SuiteCb = (s: SuiteSnapshot[]) => void;
+const suiteCbs = new Set<SuiteCb>();
+let suiteTimer: ReturnType<typeof setInterval> | null = null;
+let nextSuiteId = 1;
+
+interface FakeSuite {
+  snap: SuiteSnapshot;
+  /** How the run plays out. */
+  kind: "stream" | "count" | "history" | "none";
+  buildMs: number;
+  durationMs: number;
+  total: number;
+  /** Which tests (1-based) fail. */
+  failAt: number[];
+  endedAt: number | null;
+}
+
+const fakeSuites = new Map<number, FakeSuite>();
+
+/** The runner a typed command starts, if it is a fake test run. */
+function fakeRunner(cmd: string): string | null {
+  const words = cmd.trim().split(/\s+/);
+  const [a, b] = words;
+  if ((a === "pnpm" || a === "npm") && b === "test") return "vitest";
+  if (a === "vitest" || a === "jest" || a === "pytest") return a;
+  if ((a === "cargo" || a === "go") && b === "test") return a;
+  return null;
+}
+
+function startFakeSuite(s: FakeSession, cmd: string) {
+  endFakeSuite(s);
+  const runner = fakeRunner(cmd) ?? "vitest";
+  const now = Date.now();
+  const base: SuiteSnapshot = {
+    id: nextSuiteId++,
+    sessionId: s.id,
+    runner,
+    phase: "testing",
+    startedAt: now,
+    elapsedMs: 0,
+    done: 0,
+    total: null,
+    failed: 0,
+    outcome: null,
+    etaMs: null,
+    source: "none",
+    typicalMs: null,
+    longestMs: null,
+    runs: 0,
+  };
+  let suite: FakeSuite;
+  switch (runner) {
+    case "vitest":
+      suite = { snap: { ...base, source: "stream", total: 48 }, kind: "stream", buildMs: 0, durationMs: 24_000, total: 48, failAt: [7, 19], endedAt: null };
+      break;
+    case "jest":
+      suite = { snap: { ...base, source: "stream" }, kind: "count", buildMs: 0, durationMs: 15_000, total: 30, failAt: [], endedAt: null };
+      break;
+    case "pytest":
+      suite = {
+        snap: { ...base, source: "history", typicalMs: 40_000, longestMs: 45_000, runs: 5, etaMs: 40_000 },
+        kind: "history",
+        buildMs: 0,
+        durationMs: 50_000,
+        total: 0,
+        failAt: [],
+        endedAt: null,
+      };
+      break;
+    default:
+      suite = { snap: { ...base, phase: "building" }, kind: "none", buildMs: 4_000, durationMs: 16_000, total: 0, failAt: [], endedAt: null };
+  }
+  fakeSuites.set(suite.snap.id, suite);
+  s.suiteId = suite.snap.id;
+  if (suiteTimer === null) suiteTimer = setInterval(suiteTick, 500);
+  suiteTick();
+}
+
+/** The run's process is gone: the Suite ends now and lingers 5 s. */
+function endFakeSuite(s: FakeSession) {
+  if (s.suiteId === null) return;
+  const f = fakeSuites.get(s.suiteId);
+  s.suiteId = null;
+  if (f && f.endedAt === null) finishFakeSuite(f, Date.now());
+}
+
+function finishFakeSuite(f: FakeSuite, now: number) {
+  f.endedAt = now;
+  f.snap = { ...f.snap, phase: "done", etaMs: null };
+  if (f.kind === "stream" || f.kind === "count") {
+    f.snap.outcome = f.snap.failed > 0 ? "failed" : "passed";
+  }
+  const session = [...sessions.values()].find((s) => s.suiteId === f.snap.id);
+  if (session) {
+    session.suiteId = null;
+    if (session.command) {
+      session.fg = "zsh";
+      session.command = null;
+      out(session, `\x1b[2m(fake) ${f.snap.runner}: ${f.snap.outcome ?? "done"}\x1b[0m\r\n`);
+      prompt(session);
+      emit(session);
+    }
+  }
+}
+
+function suiteTick() {
+  const now = Date.now();
+  for (const [id, f] of fakeSuites) {
+    if (f.endedAt !== null) {
+      if (now - f.endedAt > 5_000) fakeSuites.delete(id);
+      continue;
+    }
+    const elapsed = now - f.snap.startedAt;
+    f.snap = { ...f.snap, elapsedMs: elapsed };
+    if (f.kind === "stream" || f.kind === "count") {
+      const done = Math.min(f.total, Math.floor((elapsed / f.durationMs) * f.total));
+      f.snap.done = done;
+      f.snap.failed = f.failAt.filter((n) => n <= done).length;
+      f.snap.etaMs = done > 0 ? Math.round((elapsed * (f.total - done)) / done) : null;
+    } else if (f.kind === "history") {
+      f.snap.etaMs = Math.max(0, (f.snap.typicalMs ?? 0) - elapsed);
+    } else {
+      f.snap.phase = elapsed < f.buildMs ? "building" : "testing";
+    }
+    if (elapsed >= f.durationMs) finishFakeSuite(f, now);
+  }
+  const list = [...fakeSuites.values()].map((f) => f.snap);
+  suiteCbs.forEach((cb) => cb(list));
+  if (fakeSuites.size === 0 && suiteTimer !== null) {
+    clearInterval(suiteTimer);
+    suiteTimer = null;
+  }
+}
+
+export async function onSuite(cb: SuiteCb) {
+  suiteCbs.add(cb);
+  return () => void suiteCbs.delete(cb);
 }
 
 export async function sessionInfo(id: SessionId): Promise<SessionInfo | null> {

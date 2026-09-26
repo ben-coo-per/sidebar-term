@@ -11,6 +11,8 @@ pub const SETTINGS: &str = "settings.json";
 pub const RESUME: &str = "resume.json";
 /// Processes Memory Guard has frozen, for the next launch to thaw after a crash (`guard.rs`).
 pub const FROZEN: &str = "frozen.json";
+/// The last durations of each test suite, for a Suite's ETA (`suite/history.rs`).
+pub const HISTORY: &str = "history.json";
 
 pub fn path(app: &AppHandle, file: &str) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;

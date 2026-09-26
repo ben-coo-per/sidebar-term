@@ -1,8 +1,14 @@
-<!-- The Activity view: CPU and memory meters split between Tabs and everything else, and the
-     busiest processes. A Session's processes show in its Tab's colour (click one to go to that
-     Tab); every other process is muted grey. See docs/architecture.md "Panel". -->
+<!-- The Activity view: CPU and memory meters split between Tabs and everything else, a "Tests"
+     block listing every running Suite (in its Tab's colour, click one to go to that Tab; hidden
+     when none runs), and the busiest processes. A Session's processes show in its Tab's colour
+     (click one to go to that Tab); every other process is muted grey. See docs/architecture.md
+     "Panel" and "Suites". -->
 <script lang="ts">
   import { activity } from "./activity.svelte";
+  import SuiteBar from "../../suite/SuiteBar.svelte";
+  import { suites } from "../../suite/suites.svelte";
+  import { runnerLabel, sortSuites, suiteView } from "../../suite/model";
+  import type { SuiteSnapshot } from "../../types";
   import {
     formatBytes,
     formatCpu,
@@ -80,6 +86,25 @@
       goToTab(p);
     }
   }
+
+  const tests = $derived(sortSuites(suites.list));
+
+  function suiteTabTitle(s: SuiteSnapshot): string {
+    const tab = tabOf(s.sessionId);
+    return tab ? tabTitle(tab) : "a closed Tab";
+  }
+
+  function goToSuiteTab(s: SuiteSnapshot) {
+    const tabId = tabIdForSession(s.sessionId);
+    if (tabId) activateTab(tabId);
+  }
+
+  function onSuiteKeydown(e: KeyboardEvent, s: SuiteSnapshot) {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      goToSuiteTab(s);
+    }
+  }
 </script>
 
 {#snippet meter(snap: ActivitySnapshot, measure: SortKey, label: string, value: string, title: string)}
@@ -133,6 +158,32 @@
         `Memory used, of ${formatBytes(snapshot.memTotal)}`,
       )}
     </div>
+
+    {#if tests.length > 0}
+      <div class="tests" role="list" aria-label="Tests">
+        <span class="tests-heading">Tests</span>
+        {#each tests as s (s.id)}
+          {@const view = suiteView(s)}
+          <div
+            class="test"
+            role="button"
+            tabindex="-1"
+            style:--row-color={colorOf(s.sessionId)}
+            title="{view.title}. Click to go to {tabLabel(s.sessionId)}."
+            onclick={() => goToSuiteTab(s)}
+            onkeydown={(e) => onSuiteKeydown(e, s)}
+          >
+            <span class="test-line">
+              <span class="dot"></span>
+              <span class="test-tab">{suiteTabTitle(s)}</span>
+              <span class="test-runner">{runnerLabel(s.runner)}</span>
+              <span class="test-text" data-tone={view.tone}>{view.text}</span>
+            </span>
+            <SuiteBar {view} />
+          </div>
+        {/each}
+      </div>
+    {/if}
 
     <div class="columns">
       <span class="col name">Process</span>
@@ -218,6 +269,67 @@
     min-width: 50px;
     text-align: right;
     color: var(--text-secondary);
+  }
+  .tests {
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 0 12px 8px;
+  }
+  .tests-heading {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+  .test {
+    display: flex;
+    flex-direction: column;
+    padding: 2px 4px 3px;
+    margin: 0 -4px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    outline: none;
+  }
+  .test:hover {
+    background: var(--sidebar-bg-raised);
+  }
+  .test-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    height: 17px;
+  }
+  .test .dot {
+    background: var(--row-color);
+  }
+  /* The count and ETA always show in full; the Tab's Title gives up width first. */
+  .test-tab {
+    flex: 1 1 auto;
+    min-width: 3ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--row-color);
+  }
+  .test-runner {
+    flex: none;
+    color: var(--text-tertiary);
+  }
+  .test-text {
+    flex: none;
+    margin-left: auto;
+    white-space: nowrap;
+    color: var(--text-secondary);
+  }
+  .test-text[data-tone="failed"] {
+    color: var(--danger);
+  }
+  .test-text[data-tone="overrun"] {
+    color: var(--status-needs-input);
   }
   .columns,
   .row {

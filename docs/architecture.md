@@ -18,7 +18,7 @@ stores each Tab's last cwd instead and respawns a shell there on relaunch.
 
 | Command | Args (JS names) | Returns |
 |---|---|---|
-| `session_spawn` | `cwd?, cols, rows, resumeKey?, onData: Channel` | `SessionId`; output bytes stream on `onData` as raw `ArrayBuffer`; `resumeKey` (the Tab id) names the Session in Resume entries |
+| `session_spawn` | `cwd?, cols, rows, resumeKey?, suiteProgress?, onData: Channel` | `SessionId`; output bytes stream on `onData` as raw `ArrayBuffer`; `resumeKey` (the Tab id) names the Session in Resume entries; `suiteProgress` (default true) gives the shell the Suite progress variables (see "Suites") |
 | `session_write` | `sessionId, data: string` | - |
 | `session_resize` | `sessionId, cols, rows` | - |
 | `session_pause` / `session_resume` | `sessionId` | - (flow control, see `docs/research/pty.md`) |
@@ -37,7 +37,7 @@ stores each Tab's last cwd instead and respawns a shell there on relaunch.
 | `resume_leftover` | - | `ResumeEntry[]`: what earlier runs left running, not yet resumed or dismissed (see "Resume") |
 | `resume_forget` | `keys: string[]` | - (drop leftover entries: resumed, dismissed, or their Tab is gone) |
 | `layout_load` / `layout_save` | `layout: json` | opaque JSON blob in the app data dir |
-| `settings_load` / `settings_save` | `settings: json` | opaque JSON blob in the app data dir; one section per owner (`hotkeys`, `usage`, `activity`, `memoryGuard`), merged by `src/lib/settings/store.ts` |
+| `settings_load` / `settings_save` | `settings: json` | opaque JSON blob in the app data dir; one section per owner (`hotkeys`, `usage`, `activity`, `memoryGuard`, `suite`), merged by `src/lib/settings/store.ts` |
 
 | Event | Payload | When |
 |---|---|---|
@@ -48,6 +48,7 @@ stores each Tab's last cwd instead and respawns a shell there on relaunch.
 | `menu-settings` | - | the app menu's "Settings…" was chosen |
 | `caffeinate` | `false` | Caffeinate's `caffeinate` run ended without being turned off |
 | `memory-guard` | `GuardSnapshot` | Memory Guard froze or thawed a Tab, or was turned on or off |
+| `suite` | `SuiteSnapshot[]` | every live (or just finished) Suite; on change, each 500 ms tick while any runs (see "Suites") |
 
 Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `ipc.ts` routes to
 `src/lib/mock.ts`, a fake backend for developing the UI in a browser (`pnpm dev`, then open
@@ -61,6 +62,12 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
 - `detect/` — `probe(&ProbeTarget) -> SessionInfo`: libproc for the Foreground process group,
   agent classification, remote-hop detection, cwd; `.git` file reading for repo / Worktree / branch.
   `detect/resume.rs`: the Resume entry of a Session's Foreground job (see "Resume").
+  `detect/runner.rs`: `classify_runner(comm, path, argv)` and the history `signature` of a test
+  runner's command line (see "Suites").
+- `suite/` — `Suites` (Tauri state): a thread ticking every 500 ms walks each Session's process
+  tree for test runners, tails the Session's progress directory, keeps `history.json` and emits
+  `suite`; `suite/env.rs` builds the variables a Session spawns with, `suite/progress.rs` parses
+  the progress files, `suite/history.rs` the durations and the estimate (see "Suites").
 - `monitor.rs` — thread ticking every 500 ms: probe every target, emit `session-info` on change.
 - `activity.rs` — `Activity` (Tauri state): thread idle until watched (by the webview, or by
   Memory Guard), then every 2 s runs `/bin/ps` over every process, reads this user's processes'
@@ -76,8 +83,10 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
   `resume.json` each second it changes, and a last time on exit (see "Resume").
 - `lib.rs` also builds the app menu: Tauri's default plus "Settings…" (no key equivalent: the
   Settings Hotkey stays the webview's, rebindable).
-- `layout.rs` — atomic JSON read/write of `layout.json`, `settings.json`, `resume.json` and
-  `frozen.json` in the app data dir.
+- `layout.rs` — atomic JSON read/write of `layout.json`, `settings.json`, `resume.json`,
+  `frozen.json` and `history.json` in the app data dir.
+- `reporters/` (next to `src/`, shipped as bundle resources) — the reporters and wrappers a
+  Session's environment points test runners at (see "Suites").
 
 ## Webview modules
 
@@ -100,8 +109,11 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
   (`resume.svelte.ts`) and the pure rule for what to type (`model.ts`).
 - `src/lib/panel/*` — the Panel (`Panel.svelte`), its view list (`views.ts`), the Activity view
   (`activity/`: snapshot store, the Tab stats setting, pure sorting / formatting / meter maths,
-  components) and the Usage
+  components, the Tests block) and the Usage
   view (`usage/`: snapshot store, chosen agents, pure formatting, components).
+- `src/lib/suite/*` — Suites: the `suite` event's mirror (`suites.svelte.ts`), the "Suite
+  progress" setting (`settings.svelte.ts`), the pure text / bar / tooltip rules (`model.ts`) and
+  the 2 px bar (`SuiteBar.svelte`) the Tab row and the Tests block share.
 
 ## v1 product defaults (provisional)
 
@@ -221,6 +233,96 @@ with its last numbers dimmed. Closed, the header shows each agent's fullest wind
   `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, newest 14 day directories. Codex writes one per
   turn from its API's rate-limit headers, so the numbers are as fresh as the last Codex turn on
   this Mac. A log is re-parsed only when its mtime or size changes.
+
+## Suites
+
+While a test suite runs under a Session, its Tab shows how far along it is and how much longer to
+expect: a 2 px bar under the Badge line and the count / ETA in the stats slot, where CPU and
+memory show otherwise (`12/48 · 2✗ · ~1m`; `1m 30s of ~2m 10s`; `testing · 1m 30s`). The Activity
+view lists every running Suite in a "Tests" block above its process list, in the Tab's colour; a
+click goes to the Tab. Nothing is added to the Terminal area. Research and mockups:
+`docs/research/test-progress.md`.
+
+**Detection** (`suite/mod.rs`, `detect/runner.rs`). Every 500 ms a thread walks each Session's
+process tree from its shell with `proc_listpids(PROC_PPID_ONLY)` (recursive: Claude Code's Bash
+tool runs commands under a tty-less `zsh -c` in its own session, so nothing it runs is ever in the
+pty's Foreground process group; the walk sees `claude → zsh → runner → workers` all the same, and
+suites run by hand at the prompt too). Each process is classified by `comm`, executable path and
+argv (argv only for node / bun / python / cargo / go): `vitest`, `jest`, `mocha`, `playwright
+test` (node's script argument), `pytest` (`.venv/bin/pytest`, `python -m pytest`, `uv run
+pytest`), `cargo test` and `cargo nextest run`, `go test`; and the test binaries those spawn
+(`target/<profile>/deps/<crate>-<hash>`, `<pkg>.test` under go's build cache). The outermost
+driver is the Suite (nextest under `cargo` is not a second one); a test binary with no driver above
+it (run by hand) is one too. A Suite starts when its runner is first seen and ends when that pid is
+gone; `cargo test` and `go test` read as `building` until their first test binary appears. A
+walk costs microseconds per Session (no `ps`); classification is cached per pid.
+
+**Progress files.** `session_spawn` gives each Session `SIDEBAR_TERM_PROGRESS_DIR`, a directory
+of its own under `<temp>/sidebar-term/progress/<app pid>/` (removed with the Session; a crashed
+run's directories go at the next launch). Every process under the Session inherits it, Claude
+Code's Bash tool included. The app's reporters append one JSON object per line to
+`<writer pid>.jsonl` there:
+
+```
+{"t":1790365752402,"ev":"start","runner":"vitest","pid":91300}
+{"t":1790365752867,"ev":"total","total":24}          once known (collection, onBegin, --list)
+{"t":1790365753183,"ev":"case","status":"passed"}    one per test: passed | failed | skipped
+{"t":1790365754191,"ev":"end","status":"failed","passed":23,"failed":1}
+```
+
+The thread tails the directory each tick and matches a file to a Suite by the writer's pid being
+the runner or one of its descendants (a writer already gone, such as a wrapper that only listed
+the tests, goes to the Session's newest Suite). Several files add up: one per test binary under
+`cargo test`, per package under `go test`, per test process under nextest; a file that ends
+without reporting cases counts its total as done then. Malformed lines are skipped. The files are
+removed when the Suite ends; the numbers linger with it.
+
+**Reporters** (`reporters/`, shipped as bundle resources, `SIDEBAR_TERM_REPORTERS` names the
+directory) and how the Session's environment loads them, when the "Suite progress" setting is on
+(the default; `suite/env.rs`):
+
+| Runner | Variable | Reporter | Agent's output |
+|---|---|---|---|
+| pytest | `PYTEST_ADDOPTS` gets `-p sidebar_progress` appended, `PYTHONPATH` the directory appended | `sidebar_progress.py`: total at collection, a case per test, quiet under `PYTEST_XDIST_WORKER` | unchanged |
+| Playwright | `PW_TEST_REPORTER` (set only if unset) | `playwright.cjs`, added to the configured reporters by Playwright itself; a retried failure is not a case until its last try | unchanged |
+| mocha | `MOCHA_OPTIONS` (set only if unset) | `mocha.cjs`: extends the `.mocharc` reporter, else Spec, since mocha takes one reporter | the base reporter's, unchanged |
+| cargo test, nextest | `CARGO_TARGET_<TRIPLE>_RUNNER` (set only if unset) | `cargo-runner.sh <triple>`: a `runner` in the repo's or `~/.cargo`'s `config.toml` wins and is exec'd untouched; a binary outside `target/*/deps/` (`cargo run`) is exec'd untouched; a test binary is asked `--list --format terse` (less `--list --ignored`) for its total, then waited on, its exit status the end; under nextest each `--list` is passed through and counted, each `--exact <test>` process is one case | byte for byte: same stdin, stdout, stderr, argv and exit status |
+| go test | `GOFLAGS` gets `-exec=go-exec.sh` appended (unless it has an `-exec`) | `go-exec.sh`: a binary not named `*.test` (`go run`) is exec'd untouched; a test binary is asked `-test.list '^(Test|Example)'` (this runs its `TestMain` once more), then waited on | byte for byte |
+| vitest, jest | none: neither reads a reporter from the environment | `vitest.mjs`, `jest.cjs`, added by the repo itself: `reporters: ["default", ...(process.env.SIDEBAR_TERM_REPORTERS ? [`${process.env.SIDEBAR_TERM_REPORTERS}/vitest.mjs`] : [])]` (jest: `jest.cjs`); jest knows no total up front, so its Tab counts tests done | unchanged |
+
+Every reporter is a no-op without `SIDEBAR_TERM_PROGRESS_DIR`. Where the user already set one of
+the single-valued variables, theirs stays; the lists are appended to, once (a Session started
+inside a Session adds nothing). A reporters directory with whitespace in its path (the values of
+`MOCHA_OPTIONS`, `GOFLAGS` and cargo's runner split on it) is copied under the temp dir first.
+Caveat: a tool that passes `PYTEST_ADDOPTS` through but strips `PYTHONPATH` makes pytest fail to
+import the plugin; turn Suite progress off, or pass `PYTHONPATH` through too.
+
+**History** (`suite/history.rs`, `history.json` in the app data dir). When a Suite ends, its
+duration (time run, not counting time frozen) is recorded under `(repo common dir, or cwd outside
+a repo; runner; command signature)`, last ten kept; the signature is the runner plus the positional
+arguments that select tests (`pytest tests/unit` and `pytest` are different suites, `-q` is not).
+A run during which the Session was frozen is not recorded.
+
+**Estimate and the three states** (`SuiteSnapshot`, `src/lib/suite/model.ts`):
+- Stream (a reporter wrote): `done/total`, failures as `2✗` and a red segment at the bar's left
+  sized failed / total, the ETA from the rate since testing began. Without a total (jest):
+  `12 done`, the bar following the history if any.
+- History only: bar `min(elapsed / median, 1)` at half opacity, `1m 30s of ~2m 10s` (`about` from
+  one run); past the median `2m 20s · usually ~2m 10s`; past the longest of the ten, text and bar
+  amber, `4m 05s · longer than usual`. The ETA is the median minus elapsed, never negative,
+  rounded to 5 s under a minute and 15 s above.
+- Nothing known: `testing · 1m 30s` with a short segment sliding along the bar; `building · 20 s`
+  for a two-phase runner still compiling.
+- Finished: the result holds 5 s (`48/48 · 2 failed`, `12/12 · failed` from a wrapper's exit
+  status, or `done`), then the stats return. Closing the Tab drops it at once. A background run
+  keeps its bar after the agent has moved on; two runs in one Tab show the newest on the Tab and
+  both in the Panel.
+
+Narrow sidebar: the text shrinks to the count (or elapsed) under 240 px and goes under 200 px;
+the bar stays. Hover: the close button takes the stats slot; the bar stays. Frozen Tab: `frozen ·
+1.2 GB` wins the slot, the bar stays where it was and the clock stops. The Agent status icon and
+Unread are untouched: the spinner still means the agent is working, the bar which suite it waits
+on. `SIDEBAR_TERM_SUITE_LOG=1` in the app's environment prints every `suite` emission to stderr.
 
 ## Tray
 

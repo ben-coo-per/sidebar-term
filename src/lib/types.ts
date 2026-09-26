@@ -145,6 +145,45 @@ export interface ResumeEntry {
   cwd: string | null;
 }
 
+/** Where a Suite is in its life: compiling (cargo, go), running tests, or just exited (lingers). */
+export type SuitePhase = "building" | "testing" | "done";
+
+/** Where a Suite's numbers come from: a reporter's stream, the duration history, or only the clock. */
+export type SuiteSource = "stream" | "history" | "none";
+
+export type SuiteOutcome = "passed" | "failed";
+
+/** One test suite recognised under a Session. Pushed, all together, on the `suite` event. */
+export interface SuiteSnapshot {
+  /** Stable for the life of the Suite, its lingering `done` state included. */
+  id: number;
+  sessionId: SessionId;
+  /** "vitest", "jest", "mocha", "playwright", "pytest", "cargo", "nextest", "go". */
+  runner: string;
+  phase: SuitePhase;
+  /** When the runner was first seen, epoch ms. */
+  startedAt: number;
+  /** Time run so far, ms, not counting time the Session was frozen. */
+  elapsedMs: number;
+  /** Tests finished so far (stream), else 0. */
+  done: number;
+  /** Tests in the run once the reporter knows (stream), else null. */
+  total: number | null;
+  /** Tests failed so far (stream), else 0. */
+  failed: number;
+  /** Known once a reporter or wrapper reports the end; null for a plain runner exit. */
+  outcome: SuiteOutcome | null;
+  /** Time left, ms: from the stream's rate, else the history's median minus elapsed; null without either. */
+  etaMs: number | null;
+  source: SuiteSource;
+  /** Median of the last runs of this suite (same repo, runner and command), ms. */
+  typicalMs: number | null;
+  /** The longest of those runs, ms: past it the Suite reads as longer than usual. */
+  longestMs: number | null;
+  /** How many earlier runs the estimate rests on. */
+  runs: number;
+}
+
 export const EVENT_SESSION_INFO = "session-info";
 export const EVENT_SESSION_EXIT = "session-exit";
 export const EVENT_ACTIVITY = "activity";
@@ -155,3 +194,5 @@ export const EVENT_MENU_SETTINGS = "menu-settings";
 export const EVENT_CAFFEINATE = "caffeinate";
 /** Memory Guard froze or thawed a Session, or was turned on or off; payload GuardSnapshot. */
 export const EVENT_MEMORY_GUARD = "memory-guard";
+/** Every live (or just finished) Suite, payload SuiteSnapshot[]; sent on change each tick. */
+export const EVENT_SUITE = "suite";
