@@ -77,7 +77,7 @@ loginctl enable-linger "$USER"        # keep it running with no one logged in
 
 It needs Tailscale running on that machine (with Serve available) for `https://<host>.<tailnet>.ts.net/m`;
 without it the server still listens on `127.0.0.1:47611`. To pair a phone:
-`systemctl --user kill -s USR1 sidebar-termd`, then read the code and link in
+`systemctl --user kill --kill-whom=main -s USR1 sidebar-termd`, then read the code and link in
 `journalctl --user -u sidebar-termd -n 3`. Flags (`sidebar-termd --help`): `--data-dir`, `--port`,
 `--web-root`, `--pair`. On a Mac, for a smoke test, `cargo run --bin sidebar-termd -- --web-root build --pair`
 keeps its files in `~/Library/Application Support/com.bencooper.sidebarterm/daemon`, apart from

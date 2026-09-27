@@ -4,7 +4,7 @@
 #   systemctl --user daemon-reload && systemctl --user enable --now sidebar-termd
 #   loginctl enable-linger "$USER"     # keep it running with no one logged in
 #
-# Pair a phone or the Mac: `systemctl --user kill -s USR1 sidebar-termd`, then read the code with
+# Pair a phone or the Mac: `systemctl --user kill --kill-whom=main -s USR1 sidebar-termd`, then read the code with
 # `journalctl --user -u sidebar-termd -n 3`. Logs: `journalctl --user -u sidebar-termd -f`.
 # The daemon keeps its files in $XDG_DATA_HOME/sidebar-term (~/.local/share/sidebar-term) and
 # serves the phone page from the `web/` directory in there (pnpm build's build/); see README.md.

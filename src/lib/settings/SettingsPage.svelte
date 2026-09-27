@@ -318,7 +318,8 @@
     overflow-y: auto;
     padding: 4px 32px 40px;
   }
-  .content > * {
+  /* :global so the sections that are their own components (Remote, Hosts) get the column too. */
+  .content > :global(*) {
     max-width: 560px;
     margin-left: auto;
     margin-right: auto;
