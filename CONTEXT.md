@@ -84,6 +84,21 @@ _Avoid_: Activity monitor (that is Apple's app), stats, usage
 The panel view showing how much of each chosen coding agent's usage limits is spent: one bar per limit window (Claude Code's 5 hours and week, Codex's), with the time until it resets. Which agents it shows is chosen on the Settings page.
 _Avoid_: Quota, credits, stats, Activity (that is CPU and memory)
 
+**Remote**:
+The Mac app serving its Sessions to a phone: while on, a server on 127.0.0.1 that Tailscale Serve publishes to the tailnet, and the phone's page at `/m`. Off by default; turned on in Settings.
+_Avoid_: Mobile app, remote access server, web UI
+
+**Pairing**:
+Letting one phone in: Settings shows a code (as a QR link, or to type); the phone presents it once and gets a token it sends on every connection. A pairing code lasts ten minutes and five wrong tries.
+_Avoid_: Login, sign-in, registration
+
+**Paired phone**:
+A phone that holds a token this Mac accepts; listed in Settings, where it can be removed. Removing it makes its next connection fail, and it must pair again.
+_Avoid_: Device, client (except in code, where it is any connection)
+
+**Attach**:
+A phone opening a Session: it gets the Session's recent output replayed, then the live output, at the Mac's grid size, and its typing goes to the Session's pty. Attaching never resizes the pty; the Mac sees nothing.
+_Avoid_: Connect (that is the phone reaching the Mac at all), open (that is a Tab), mirror
 **Host**:
 A machine running the sidebar-term core, whose Sessions, Tabs and Groups can be shown and driven from a client. The Mac app is its own local Host; a second machine runs the core as a headless daemon (`sidebar-termd`). A client shows each paired Host as a section of the sidebar.
 _Avoid_: Server, remote machine, node, peer

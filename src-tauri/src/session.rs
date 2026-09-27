@@ -23,6 +23,7 @@
 //! never hit.
 
 use crate::model::{ProbeTarget, SessionExit, SessionId, EVENT_SESSION_EXIT};
+use crate::remote::Taps;
 use portable_pty::{
     native_pty_system, Child, CommandBuilder, ExitStatus, MasterPty, PtyPair, PtySize,
 };
@@ -88,16 +89,25 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 // Tauri glue
 // ---------------------------------------------------------------------------------------------
 
-/// Registry of live Sessions. Managed as Tauri state (`app.manage(SessionManager::default())`).
-#[derive(Default)]
+/// Registry of live Sessions. Managed as Tauri state (`app.manage(SessionManager::new(taps))`).
 pub struct SessionManager {
     host: PtyHost,
     /// The webview's key for each Session that has one (its Tab id), for Resume. Keys of Sessions
     /// that have exited are dropped by `keyed_targets`.
     resume_keys: Mutex<HashMap<SessionId, String>>,
+    /// Remote's copy of every Session's output and size, for phones attaching (`remote/tap.rs`).
+    taps: Arc<Taps>,
 }
 
 impl SessionManager {
+    pub fn new(taps: Arc<Taps>) -> Self {
+        Self {
+            host: PtyHost::default(),
+            resume_keys: Mutex::default(),
+            taps,
+        }
+    }
+
     /// Spawn the user's login shell (`$SHELL -l`, fallback `/bin/zsh`) on a new pty of `cols`x`rows`
     /// in `cwd` (fallback `$HOME`). Output bytes go to `on_data` as `InvokeResponseBody::Raw`.
     /// When the shell exits, emit `EVENT_SESSION_EXIT` with `SessionExit` via `app`,
@@ -113,16 +123,21 @@ impl SessionManager {
         on_data: Channel<InvokeResponseBody>,
     ) -> Result<SessionId, String> {
         let spec = SpawnSpec::login_shell(cwd.as_deref(), cols, rows);
+        let taps = self.taps.clone();
+        let taps_on_exit = self.taps.clone();
         let id = self.host.spawn(
             spec,
-            move |bytes| {
+            move |session_id, bytes| {
+                taps.push(session_id, &bytes);
                 // Err only when the webview is gone; nothing useful to do about it here.
                 let _ = on_data.send(InvokeResponseBody::Raw(bytes));
             },
             move |session_id, code| {
+                taps_on_exit.close(session_id);
                 let _ = app.emit(EVENT_SESSION_EXIT, SessionExit { session_id, code });
             },
         )?;
+        self.taps.open(id, cols, rows);
         if let Some(key) = resume_key {
             lock(&self.resume_keys).insert(id, key);
         }
@@ -134,7 +149,9 @@ impl SessionManager {
     }
 
     pub fn resize(&self, id: SessionId, cols: u16, rows: u16) -> Result<(), String> {
-        self.host.resize(id, cols, rows)
+        self.host.resize(id, cols, rows)?;
+        self.taps.resized(id, cols, rows);
+        Ok(())
     }
 
     /// Park the reader thread so the kernel applies back-pressure to the child.
@@ -505,8 +522,8 @@ impl Session {
 }
 
 impl PtyHost {
-    /// Spawn `spec` on a new pty. `on_output` gets the output in order, in chunks of at most
-    /// [`CHUNK_MAX`] bytes, on the Session's reader thread (possibly before this returns).
+    /// Spawn `spec` on a new pty. `on_output(id, bytes)` gets the output in order, in chunks of
+    /// at most [`CHUNK_MAX`] bytes, on the Session's reader thread (possibly before this returns).
     /// `on_exit(id, code)` runs once after the last output, when the child has been reaped and
     /// the Session removed from the registry. `code` is `None` when the child died by a signal.
     pub fn spawn<O, E>(
@@ -516,7 +533,7 @@ impl PtyHost {
         on_exit: E,
     ) -> Result<SessionId, String>
     where
-        O: FnMut(Vec<u8>) + Send + 'static,
+        O: FnMut(SessionId, Vec<u8>) + Send + 'static,
         E: FnOnce(SessionId, Option<i32>) + Send + 'static,
     {
         let size = PtySize {
@@ -742,17 +759,18 @@ fn reader_loop<O, E>(
     mut on_output: O,
     on_exit: E,
 ) where
-    O: FnMut(Vec<u8>),
+    O: FnMut(SessionId, Vec<u8>),
     E: FnOnce(SessionId, Option<i32>),
 {
     let _live = ThreadGuard::enter();
     let fd = src.as_raw_fd();
+    let id = session.id;
     let mut buf = vec![0u8; READ_BUF];
     let mut chunk: Vec<u8> = Vec::with_capacity(CHUNK_MAX);
     let mut flush = |chunk: &mut Vec<u8>| {
         if !chunk.is_empty() {
             // split_off(0) keeps `chunk`'s capacity for the next round.
-            on_output(chunk.split_off(0));
+            on_output(id, chunk.split_off(0));
         }
     };
     let mut last_tick = Instant::now();
@@ -795,7 +813,6 @@ fn reader_loop<O, E>(
     }
 
     let code = session.reap();
-    let id = session.id;
     lock(&registry.sessions).remove(&id);
     // Last references: closes the master and the input queue (which ends the writer thread).
     drop(session);
@@ -865,7 +882,7 @@ mod tests {
             let id = host
                 .spawn(
                     spec,
-                    move |bytes| {
+                    move |_, bytes| {
                         let mut o = lock(&sink.0);
                         o.chunks.push(bytes.len());
                         o.bytes.extend_from_slice(&bytes);
@@ -1214,7 +1231,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         for _ in 0..3 {
             let tx = tx.clone();
-            host.spawn(zsh_spec(), |_| {}, move |id, _| tx.send(id).unwrap())
+            host.spawn(zsh_spec(), |_, _| {}, move |id, _| tx.send(id).unwrap())
                 .unwrap();
         }
         assert_eq!(host.probe_targets().len(), 3);

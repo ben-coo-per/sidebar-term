@@ -11,15 +11,17 @@ mod layout;
 mod model;
 mod monitor;
 mod paths;
+mod remote;
 mod resume;
 mod session;
 mod usage;
 
 use model::{
-    AgentKind, GuardSnapshot, ResumeEntry, SessionId, SessionInfo, EVENT_CAFFEINATE,
-    EVENT_MEMORY_GUARD, EVENT_MENU_SETTINGS,
+    AgentKind, GuardSnapshot, Pairing, RemoteSnapshot, ResumeEntry, SessionId, SessionInfo,
+    EVENT_CAFFEINATE, EVENT_MEMORY_GUARD, EVENT_MENU_SETTINGS,
 };
 use session::SessionManager;
+use std::sync::Arc;
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
@@ -221,6 +223,45 @@ async fn path_open(path: String) -> Result<(), String> {
     paths::open(&path)
 }
 
+/// Where Remote stands, after re-reading Tailscale's state. Async: runs the Tailscale CLI.
+#[tauri::command]
+async fn remote_state(app: AppHandle) -> Result<RemoteSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<remote::Remote>().refresh())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Turn Remote on or off. Async: binds the server and runs the Tailscale CLI.
+#[tauri::command]
+async fn remote_set(app: AppHandle, on: bool) -> Result<RemoteSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<remote::Remote>().set(on))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Start a pairing: the code (and QR link) a phone presents once to be let in.
+#[tauri::command]
+fn remote_pair_begin(remote: State<'_, remote::Remote>) -> Pairing {
+    remote.pair_begin()
+}
+
+#[tauri::command]
+fn remote_pair_cancel(remote: State<'_, remote::Remote>) {
+    remote.pair_cancel()
+}
+
+/// Forget a paired phone.
+#[tauri::command]
+fn remote_revoke(remote: State<'_, remote::Remote>, id: String) {
+    remote.revoke(&id)
+}
+
+/// The sidebar as the phone should show it (opaque to Rust); relayed to every phone.
+#[tauri::command]
+fn remote_sidebar(remote: State<'_, remote::Remote>, sidebar: serde_json::Value) {
+    remote.publish_sidebar(sidebar)
+}
+
 /// Paths of the files on the macOS drag pasteboard, i.e. those of the drop just received.
 #[tauri::command]
 fn drop_paths() -> Vec<String> {
@@ -246,10 +287,11 @@ fn app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let taps = Arc::new(remote::Taps::default());
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .manage(SessionManager::default())
+        .manage(SessionManager::new(taps.clone()))
         .menu(app_menu)
         .on_menu_event(|app, event| {
             if event.id() == MENU_SETTINGS {
@@ -299,7 +341,21 @@ pub fn run() {
                     .state::<resume::Resume>()
                     .record(resume::entries(&targets));
             });
-            app.manage(usage::spawn(handle));
+            app.manage(usage::spawn(handle.clone()));
+            let remote_file = layout::path(&handle, layout::REMOTE)
+                .inspect_err(|e| eprintln!("remote: no app data dir ({e}); pairings not persisted"))
+                .ok();
+            app.manage(remote::Remote::open(handle.clone(), taps, remote_file));
+            app.state::<remote::Remote>().start_if_enabled();
+            // Dev aid: `SIDEBAR_TERM_REMOTE_PAIR=1 pnpm tauri dev` starts a pairing at launch and
+            // prints its code, so a browser can pair without clicking through Settings.
+            if cfg!(debug_assertions) && std::env::var_os("SIDEBAR_TERM_REMOTE_PAIR").is_some() {
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    let pairing = handle.state::<remote::Remote>().pair_begin();
+                    eprintln!("remote: pairing code {} at {}", pairing.code, pairing.url.as_deref().unwrap_or("(no url)"));
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -330,6 +386,12 @@ pub fn run() {
             path_open,
             drop_paths,
             drop_save,
+            remote_state,
+            remote_set,
+            remote_pair_begin,
+            remote_pair_cancel,
+            remote_revoke,
+            remote_sidebar,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

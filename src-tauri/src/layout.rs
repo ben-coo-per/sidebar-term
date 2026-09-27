@@ -9,6 +9,8 @@ pub const LAYOUT: &str = "layout.json";
 pub const SETTINGS: &str = "settings.json";
 /// What each Session was running, for Resume (`resume.rs`).
 pub const RESUME: &str = "resume.json";
+/// Whether Remote is on and the phones paired with it (`remote/`).
+pub const REMOTE: &str = "remote.json";
 /// Processes Memory Guard has frozen, for the next launch to thaw after a crash (`guard.rs`).
 pub const FROZEN: &str = "frozen.json";
 
