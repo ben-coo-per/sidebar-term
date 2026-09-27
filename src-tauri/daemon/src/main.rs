@@ -7,7 +7,7 @@
 //! the app does, and stops on SIGTERM after writing the layout, recording Resume entries and
 //! killing every Session, as the app does on quit. Phones list its Tabs and drive their
 //! Sessions, and create, close, rename and move its Tabs and Groups over the Host protocol.
-//! Process facts on Linux come from `/proc`; Activity on Linux follows with #27.
+//! Process facts and Activity on Linux come from `/proc`.
 //!
 //! Flags: `--data-dir <dir>` (default: see [`default_data_dir`]), `--port <n>` (kept in
 //! `remote.json`), `--web-root <dir>` (the built phone page, `pnpm build`'s `build/`; default
@@ -320,7 +320,7 @@ fn main() {
     }
 
     // The core, wired as the app wires it (src-tauri/src/lib.rs), minus what a headless Host has
-    // no use for yet: Activity and Memory Guard (#27), Usage (app-only), Caffeinate (app-only).
+    // no use for yet: Activity and Memory Guard (not wired in yet), Usage (app-only), Caffeinate (app-only).
     let taps = Arc::new(Taps::default());
     let sessions = Arc::new(SessionManager::new(taps.clone(), host.events.clone()));
     // Resume first: what the last run left running becomes leftover before the Tabs respawn.

@@ -28,8 +28,11 @@
 //! stopped forever. For a crash, what is frozen is kept in `frozen.json`; the next launch thaws it.
 //! Each process is recorded with its start time and only signalled if that still matches, so a
 //! recycled pid is never hit.
+//!
+//! The process list, each process's memory and its start time come from `activity.rs`, which reads
+//! them per OS (`ps` and `proc_pid_rusage` on macOS, `/proc` on Linux); the signals are the same.
 
-use crate::activity::{run_ps, rusage, PsRow};
+use crate::activity::{footprint, processes, start_time, PsRow};
 use crate::store;
 use crate::model::{ActivitySnapshot, FrozenSession, GuardSnapshot, ProbeTarget, SessionId};
 use serde::{Deserialize, Serialize};
@@ -54,7 +57,8 @@ const MIN_MEM: u64 = 128 * 1024 * 1024;
 /// Passes over the process tree when freezing, for children forked while it was being stopped.
 const FREEZE_PASSES: usize = 3;
 
-/// A stopped process: pid and start time (`ri_proc_start_abstime`), to tell a recycled pid.
+/// A stopped process: pid and start time (as `activity::start_time` reads it), to tell a recycled
+/// pid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Proc {
     pid: i32,
@@ -283,11 +287,7 @@ impl Guard {
         if procs.is_empty() {
             return Err("its shell could not be stopped".into());
         }
-        let mem = procs
-            .iter()
-            .filter_map(|p| rusage(p.pid))
-            .map(|(footprint, _)| footprint)
-            .sum();
+        let mem = procs.iter().filter_map(|p| footprint(p.pid)).sum();
         inner.frozen.push(Frozen {
             session_id: id,
             mem,
@@ -427,17 +427,18 @@ fn freeze_tree(root: i32) -> Vec<Proc> {
     let mut stopped: Vec<Proc> = Vec::new();
     let mut tried = HashSet::new();
     for _ in 0..FREEZE_PASSES {
-        let Some(rows) = run_ps() else { break };
+        let Some(rows) = processes() else { break };
         let mut stopped_any = false;
         for pid in descendants(&rows, root) {
             if !tried.insert(pid) {
                 continue;
             }
-            // Only this user's processes have a readable start time, and only they can be stopped.
-            let Some((_, start)) = rusage(pid) else {
+            // Another user's process (a `sudo` job) cannot be stopped: macOS gives it no start
+            // time, Linux refuses the signal.
+            let Some(start) = start_time(pid) else {
                 continue;
             };
-            // SAFETY: plain syscall on a pid just read, of this user.
+            // SAFETY: plain syscall on a pid just read.
             if unsafe { libc::kill(pid, libc::SIGSTOP) } == 0 {
                 stopped.push(Proc { pid, start });
                 stopped_any = true;
@@ -458,7 +459,7 @@ fn freeze_tree(root: i32) -> Vec<Proc> {
 /// SIGCONT `procs` children first, skipping any whose pid now names another process.
 fn thaw_procs(procs: &[Proc]) {
     for p in procs.iter().rev() {
-        if rusage(p.pid).is_some_and(|(_, start)| start == p.start) {
+        if start_time(p.pid) == Some(p.start) {
             // SAFETY: plain syscall; the start time says it is the process we stopped.
             unsafe { libc::kill(p.pid, libc::SIGCONT) };
         }
@@ -628,6 +629,7 @@ mod tests {
     }
 
     /// `ps` state letter of `pid`: `T` when stopped.
+    #[cfg(target_os = "macos")]
     fn state(pid: u32) -> String {
         let out = Command::new("/bin/ps")
             .args(["-o", "stat=", "-p", &pid.to_string()])
@@ -641,8 +643,31 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// `/proc/<pid>/stat` state letter of `pid`: `T` when stopped. A process just sent SIGSTOP
+    /// is woken to take the signal, so it reads `R` for a moment before `T` (macOS's `ps` run
+    /// above takes long enough to hide that): wait out a transient `R`.
+    #[cfg(target_os = "linux")]
+    fn state(pid: u32) -> String {
+        let read = || {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            stat.rsplit(") ")
+                .next()
+                .and_then(|fields| fields.chars().next())
+                .map(String::from)
+                .unwrap_or_default()
+        };
+        for _ in 0..20 {
+            let state = read();
+            if state != "R" {
+                return state;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        read()
+    }
+
     fn children_of(pid: u32) -> Vec<u32> {
-        run_ps()
+        processes()
             .unwrap()
             .iter()
             .filter(|r| r.ppid == pid as i32)
@@ -701,7 +726,7 @@ mod tests {
         assert_eq!(state(sleep), "T");
         thaw_procs(&[Proc {
             pid: sleep as i32,
-            start: rusage(sleep as i32).unwrap().1,
+            start: start_time(sleep as i32).unwrap(),
         }]);
         assert_ne!(state(sleep), "T");
         // SAFETY: our test child.
