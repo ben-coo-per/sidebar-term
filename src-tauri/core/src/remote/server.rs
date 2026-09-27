@@ -12,7 +12,13 @@
 //! - `POST /api/upload`: multipart, `Authorization: Bearer <token>`; the first file part is
 //!   written under `<data dir>/uploads/<stamp>/<name>` and `{path}` comes back, so a file
 //!   dragged onto a remote Tab can be attached by path, as `drop.rs` does on the Mac.
-//!   Both answer CORS preflights for the Mac app's webview, whose page is another origin
+//! - `POST /api/conversation`: multipart, `Authorization: Bearer <token>`; a Claude Code
+//!   conversation handed off to this Host (docs/architecture.md "Handoff"): text fields `cwd`
+//!   (the checkout it resumes from here) and `sessionId`, a `transcript` file part and any
+//!   number of `memory` file parts (their file name is the path under `memory/`). The Host
+//!   places them under its own Claude config dir, `projects/<key of cwd>/`, and never
+//!   anywhere else (`handoff::place`); `{path}` is the transcript's path there.
+//!   All three answer CORS preflights for the Mac app's webview, whose page is another origin
 //!   (`tauri://localhost`; `http://localhost:1420` in dev); no other origin is allowed.
 //! - `GET /ws`: a client's connection. The first text frame must be `{"t":"auth","token"}`
 //!   within five seconds. Then, from the client: `attach` / `detach` `{sessionId}`, `input`
@@ -20,7 +26,9 @@
 //!   `ok {id, result?}` or `error {id, message}`: `resize {sessionId, cols, rows}` (only for
 //!   the one client attached), `tab_new`, `tab_close`, `tab_rename`, `tab_move`,
 //!   `tab_activate`, `group_new`, `group_rename`, `group_move`, `group_delete`,
-//!   `group_set_collapsed` (the layout's, one to one). From the Host: `hello {host, device,
+//!   `group_set_collapsed` (the layout's, one to one), and `path_exists {path}` (whether an
+//!   absolute path exists on this Host, and is a directory: Handoff asks before choosing where
+//!   a Tab lands). From the Host: `hello {host, device,
 //!   layout, sessions}`, `layout {layout}` on change, `session {session}` on each change to a
 //!   Session's facts, `activity {sessions}` while the Host samples, `attached {sessionId, cols,
 //!   rows}` followed by a binary replay, `resized`, `exit {sessionId}`, `error {message}` (no
@@ -31,8 +39,9 @@
 
 use super::tap::{Frame, Taps};
 use super::{HubMsg, Inner, PairError};
+use crate::handoff;
 use crate::layout::TabNew;
-use crate::model::SessionId;
+use crate::model::{ConversationFile, ConversationFiles, PathExists, SessionId};
 use axum::body::Bytes;
 use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::extract::{DefaultBodyLimit, Multipart, State};
@@ -90,6 +99,10 @@ pub fn start(inner: Arc<Inner>, port: u16) -> Result<Handle, String> {
         .route(
             "/api/upload",
             post(upload).layer(DefaultBodyLimit::max(UPLOAD_MAX)),
+        )
+        .route(
+            "/api/conversation",
+            post(conversation).layer(DefaultBodyLimit::max(UPLOAD_MAX)),
         )
         .layer(api_cors());
     let router = Router::new()
@@ -248,6 +261,83 @@ async fn upload(
     }
 }
 
+/// A Claude Code conversation handed off to this Host: placed under this Host's Claude config
+/// dir for the checkout named by `cwd` (`handoff::place`, which refuses anything that would
+/// land elsewhere). Answers `{path}`, the transcript's path here.
+async fn conversation(
+    State(inner): State<Arc<Inner>>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Response {
+    let Some(token) = bearer(&headers) else {
+        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "no token" }))).into_response();
+    };
+    if inner.verify_token(token).is_none() {
+        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unknown token" }))).into_response();
+    }
+    let bad = |status: StatusCode, message: String| {
+        (status, Json(json!({ "error": message }))).into_response()
+    };
+    let mut cwd = None;
+    let mut session_id = None;
+    let mut transcript = None;
+    let mut memory = Vec::new();
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(f)) => f,
+            Ok(None) => break,
+            Err(e) => return bad(StatusCode::BAD_REQUEST, format!("bad upload: {e}")),
+        };
+        let name = field.name().unwrap_or("").to_owned();
+        let file_name = field.file_name().map(str::to_owned);
+        let text = match field.text().await {
+            Ok(t) => t,
+            Err(e) => return bad(StatusCode::BAD_REQUEST, format!("bad upload: {e}")),
+        };
+        match name.as_str() {
+            "cwd" => cwd = Some(text),
+            "sessionId" => session_id = Some(text),
+            "transcript" => transcript = Some(text),
+            "memory" => match file_name {
+                Some(name) if handoff::is_memory_name(&name) => {
+                    memory.push(ConversationFile { name, content: text })
+                }
+                other => {
+                    return bad(StatusCode::BAD_REQUEST, format!("bad memory file name: {other:?}"))
+                }
+            },
+            _ => {}
+        }
+    }
+    let (Some(cwd), Some(session_id), Some(transcript)) = (cwd, session_id, transcript) else {
+        return bad(StatusCode::BAD_REQUEST, "cwd, sessionId and transcript are required".into());
+    };
+    let Some(config_dir) = handoff::config_dir() else {
+        return bad(StatusCode::INTERNAL_SERVER_ERROR, "this Host has no Claude config dir (no HOME)".into());
+    };
+    let files = ConversationFiles { transcript, memory };
+    let placed = tokio::task::spawn_blocking(move || handoff::place(&config_dir, &cwd, &session_id, &files))
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r);
+    match placed {
+        Ok(path) => Json(json!({ "path": path.to_string_lossy() })).into_response(),
+        Err(e) => bad(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+/// Whether `path` exists on this Host, and is a directory. Absolute paths only.
+fn path_exists(path: &str) -> Result<PathExists, String> {
+    let p = Path::new(path);
+    if !p.is_absolute() || path.contains('\0') {
+        return Err(format!("not an absolute path: {path:?}"));
+    }
+    Ok(match std::fs::metadata(p) {
+        Ok(m) => PathExists { exists: true, dir: m.is_dir() },
+        Err(_) => PathExists { exists: false, dir: false },
+    })
+}
+
 async fn ws(State(inner): State<Arc<Inner>>, ws: WebSocketUpgrade) -> Response {
     ws.on_upgrade(move |socket| connection(inner, socket))
 }
@@ -279,6 +369,7 @@ enum ClientMsg {
     GroupMove { id: u64, group_id: String, index: usize },
     GroupDelete { id: u64, group_id: String },
     GroupSetCollapsed { id: u64, group_id: String, collapsed: bool },
+    PathExists { id: u64, path: String },
 }
 
 /// A layout command's outcome: `Ok(result)` becomes `ok {id, result}`.
@@ -347,6 +438,9 @@ async fn run_command(inner: &Arc<Inner>, msg: ClientMsg) -> Option<(u64, Outcome
                     .map(|()| json!(null))
             }),
         ),
+        ClientMsg::PathExists { id, path } => {
+            (id, Box::new(move || path_exists(&path).map(|r| json!(r))))
+        }
         _ => return None,
     };
     let outcome = tokio::task::spawn_blocking(job)
@@ -661,6 +755,8 @@ mod tests {
             serde_json::from_str(r#"{"t":"resize","id":3,"sessionId":4,"cols":100,"rows":30}"#).unwrap();
         assert!(matches!(m, ClientMsg::Resize { id: 3, session_id: 4, cols: 100, rows: 30 }));
         assert!(matches!(serde_json::from_str::<ClientMsg>(r#"{"t":"ping"}"#).unwrap(), ClientMsg::Ping));
+        let m: ClientMsg = serde_json::from_str(r#"{"t":"path_exists","id":5,"path":"/srv"}"#).unwrap();
+        assert!(matches!(m, ClientMsg::PathExists { id: 5, ref path } if path == "/srv"));
         assert!(serde_json::from_str::<ClientMsg>(r#"{"t":"tab_close","tabId":"t"}"#).is_err(), "no id");
         assert!(serde_json::from_str::<ClientMsg>(r#"{"t":"nope"}"#).is_err());
     }
@@ -677,6 +773,17 @@ mod tests {
         assert!(path.starts_with("/data/uploads"));
         assert_eq!(path.file_name().unwrap(), "a.png");
         assert_eq!(path.components().count(), 5, "/data/uploads/<stamp>/a.png");
+    }
+
+    #[test]
+    fn path_exists_answers_for_absolute_paths_only() {
+        let tmp = std::env::temp_dir();
+        let dir = path_exists(tmp.to_str().unwrap()).unwrap();
+        assert!(dir.exists && dir.dir);
+        let missing = path_exists("/nonexistent/sidebar-term/x").unwrap();
+        assert!(!missing.exists && !missing.dir);
+        assert!(path_exists("relative").is_err());
+        assert!(path_exists("").is_err());
     }
 
     #[test]

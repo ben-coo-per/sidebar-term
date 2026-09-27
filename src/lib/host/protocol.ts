@@ -6,7 +6,7 @@
 // status included) whole; a client derives what a row shows from them (src/lib/mobile/rows.ts
 // on the phone, src/lib/sessions.svelte.ts on the Mac).
 
-import type { HostInfo, LayoutSnapshot, SessionId, SessionInfo, ActivitySession, Tab, Group } from "../types";
+import type { HostInfo, LayoutSnapshot, PathExists, SessionId, SessionInfo, ActivitySession, Tab, Group } from "../types";
 
 // --- Messages -----------------------------------------------------------------------------------
 
@@ -25,13 +25,15 @@ export type CommandMessage =
   | { t: "group_rename"; id: CommandId; groupId: string; name: string }
   | { t: "group_move"; id: CommandId; groupId: string; index: number }
   | { t: "group_delete"; id: CommandId; groupId: string }
-  | { t: "group_set_collapsed"; id: CommandId; groupId: string; collapsed: boolean };
+  | { t: "group_set_collapsed"; id: CommandId; groupId: string; collapsed: boolean }
+  /** Whether an absolute path exists on the Host (Handoff asks before choosing where a Tab lands). */
+  | { t: "path_exists"; id: CommandId; path: string };
 
 /** A command as a client hands it to its connection, which puts the `id` on it. */
 export type Command = CommandMessage extends infer M ? (M extends CommandMessage ? Omit<M, "id"> : never) : never;
 
-/** What a command's `ok` carries in `result`: `tab_new` the Tab, `group_new` the Group, else nothing. */
-export type CommandResult = Tab | Group | undefined;
+/** What a command's `ok` carries in `result`: `tab_new` the Tab, `group_new` the Group, `path_exists` its answer, else nothing. */
+export type CommandResult = Tab | Group | PathExists | undefined;
 
 /** Text frames a client sends. */
 export type ClientMessage =
@@ -68,6 +70,15 @@ export const UPLOAD_PATH = "/api/upload";
 export interface UploadResponse {
   path: string;
 }
+
+/**
+ * `POST /api/conversation` (multipart, bearer): a Claude Code conversation handed off to the
+ * Host. Text fields `cwd` (the checkout it resumes from there) and `sessionId`, a `transcript`
+ * file part, and one `memory` file part per memory file (its file name is the path under
+ * `memory/`). The Host places them under its own Claude config dir and answers with the
+ * transcript's path there (`UploadResponse`).
+ */
+export const CONVERSATION_PATH = "/api/conversation";
 
 /** Parse a text frame; null when it is not a message we know. */
 export function parseServerMessage(text: string): ServerMessage | null {

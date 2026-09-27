@@ -110,3 +110,7 @@ _Avoid_: Server, remote machine, node, peer
 **Handoff**:
 Moving a Tab to another Host: its Session is killed here after its Resume entry is recorded, a Tab is created on the Host at the matching checkout, and the entry is rerun there. Code moves by push and checkout, never by copying files.
 _Avoid_: Migrate, transfer, sync
+
+**Checkout root**:
+The directory on a Host under which its repos are checked out, set per Host in Settings: a Tab in repo `x` lands in `<root>/x` there on a Handoff or a New Tab on that Host, unless an override names that repo's checkout elsewhere.
+_Avoid_: Workspace, projects dir, base path

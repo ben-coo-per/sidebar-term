@@ -49,6 +49,9 @@ A Session is spawned by the Host as its Tab is made; the webview *attaches* its 
 | `resume_leftover` | - | `ResumeEntry[]`: what earlier runs left running, not yet resumed or dismissed (see "Resume") |
 | `resume_forget` | `keys: string[]` | - (drop leftover entries: resumed, dismissed, or their Tab is gone) |
 | `settings_load` / `settings_save` | `settings: json` | opaque JSON blob in the app data dir; one section per owner (`hotkeys`, `usage`, `activity`, `memoryGuard`, `sidebar`, `hosts`), merged by `src/lib/settings/store.ts` |
+| `handoff_probe` | `sessionId` | `HandoffProbe \| null`: what moving the Tab to another Host needs (async: runs `git`): fresh `SessionInfo`, the Resume entry, the Claude Code conversation running in it with its files located (`ClaudeConversation`), the checkout's `GitStatus`; null for a Session that is gone (see "Handoff") |
+| `handoff_conversation_read` | `conversation: ClaudeConversation` | `ConversationFiles`: the transcript's text and the memory files, once the transcript has stopped changing (call after the Session is killed) |
+| `handoff_conversation_forget` | `conversation: ClaudeConversation` | - (delete this Mac's copy of the transcript, once the Host has it; only ever a `projects/<key>/<id>.jsonl` file) |
 | `remote_state` | - | `RemoteSnapshot` after re-reading Tailscale's state (async: runs its CLI) |
 | `remote_set` | `on: boolean` | `RemoteSnapshot` (turn Remote on or off; rejects with why the server could not start) |
 | `remote_pair_begin` / `remote_pair_cancel` | - | `Pairing` (a code, its QR link and expiry) / - |
@@ -122,6 +125,10 @@ answers it (see "Host daemon" for the daemon's answer).
   attached clients and the `Scanner` that reads OSC 0 / 2 titles and BELs out of the output as
   it passes (fed by `session.rs`), `auth.rs` paired clients and pairing codes (`remote.json`),
   `tailscale.rs` the Tailscale CLI.
+- `handoff.rs` — what a Host does for Handoff (see "Handoff"): on the Mac, the checkout's git
+  status and the Claude Code conversation's files (`locate`, `read`, `forget`); on the Host
+  taking the Tab, `place` writes them under its own Claude config dir and nowhere else.
+  `detect/resume.rs`'s `claude_conversation` finds the running conversation.
 - `resume.rs` — `Resume`: a thread records every keyed Session's Resume entry to `resume.json`
   each second it changes, and a last time on exit (see "Resume").
 - `store.rs` — atomic JSON read/write of `layout.json`, `settings.json`, `resume.json`,
@@ -167,7 +174,8 @@ answers it (see "Host daemon" for the daemon's answer).
   the window listener that dispatches them.
 - `src/lib/settings/*` — the Settings page (Usage agents, Remote, Hosts, Memory, Hotkeys), shown
   over the Terminal; the settings blob's per-section store (`store.ts`); `HostsSection.svelte`
-  pairs with a Host and lists the paired ones.
+  pairs with a Host, lists the paired ones and sets each one's Checkout root and repo overrides
+  (Handoff).
 - `src/lib/sidebar/*` — sidebar components: Group headers and Tab rows (the same for every
   Host's), `HostHeader.svelte` above each paired Host's Groups, drag-and-drop (never across
   Hosts), the close-Tab flow. `src/routes/+page.svelte` — app shell.
@@ -182,6 +190,9 @@ answers it (see "Host daemon" for the daemon's answer).
   (`memoryGuard.svelte.ts`) and pure rules (`model.ts`).
 - `src/lib/resume/*` — the Resume banner (`ResumeBanner.svelte`), its state and actions
   (`resume.svelte.ts`) and the pure rule for what to type (`model.ts`).
+- `src/lib/handoff/*` — Handoff: the flows for "New Tab on Host" and "Move Tab to Host"
+  (`handoff.svelte.ts`) and the pure rules (`model.ts`: where a Tab lands, what is typed there,
+  what the confirmation says; reuses `src/lib/resume/model.ts`'s rule). See "Handoff".
 - `src/lib/remote/*` — Remote on the Mac: the state mirror (`remote.svelte.ts`); the Settings
   section is `src/lib/settings/RemoteSection.svelte`.
 - `src/lib/host/protocol.ts` — the Host protocol's message types, output framing and reply
@@ -221,6 +232,7 @@ answers it (see "Host daemon" for the daemon's answer).
   the Nth Group (the Tab last active in it, else its first; expands a collapsed Group), Cmd-` /
   Cmd-Shift-` next / previous Tab within the active Tab's Group (wrapping), Cmd-Shift-[ / ] previous
   / next Tab across all Groups, Cmd-Opt-Up/Down move Tab, Cmd-Shift-U mark the active Tab unread,
+  Cmd-Shift-T / Cmd-Shift-M New Tab on / Move Tab to the first online Host ("Handoff"),
   Cmd-B toggle sidebar, Cmd-, Settings
   (also the app menu's "Settings…"; the sidebar has no Settings button).
   These are defaults: every one is a Hotkey the user can rebind on the Settings page
@@ -433,7 +445,12 @@ build, `../build` on disk in dev, so run `pnpm build` first; the daemon: `--web-
 `POST /api/pair {code, name}` pairs a client. `POST /api/upload` (multipart, `Authorization:
 Bearer <token>`) writes the first file part under `<data dir>/uploads/<stamp>/<name>` (the name's
 final component only) and answers `{path}`, so a screenshot dragged onto a remote Tab can be
-attached by path as `drop.rs` does locally; 64 MiB at most. Both answer CORS preflights for the
+attached by path as `drop.rs` does locally; 64 MiB at most. `POST /api/conversation`
+(multipart, bearer) takes a Claude Code conversation handed off to this Host: text fields
+`cwd` (the checkout it resumes from here) and `sessionId`, a `transcript` file part, and one
+`memory` file part per memory file (its file name is its path under `memory/`); it answers
+`{path}`, the transcript's path here, or `{error}` with 400 for anything it refuses (see
+"Handoff"). All three answer CORS preflights for the
 Mac app's webview only (`tauri://localhost`, and `http://localhost:1420` in dev), since its page
 is another origin than the Host; what admits a client is still the code, then the token. `GET
 /ws` is the connection.
@@ -454,8 +471,9 @@ five seconds, or the Host closes with 4408 (4401 for a token it does not know).
 | `tab_close` / `tab_rename` / `tab_move` / `tab_activate` | `id, tabId` (+ `title` / `groupId, index?`) | `ok` |
 | `group_new` | `id, name?, tabId?` | `ok {result: Group}` |
 | `group_rename` / `group_move` / `group_delete` / `group_set_collapsed` | `id, groupId` (+ `name` / `index` / `collapsed`) | `ok` |
+| `path_exists` | `id, path` | `ok {result: {exists, dir}}` for an absolute path on the Host, `error` otherwise (Handoff asks before choosing where a Tab lands) |
 
-The commands are the layout's (the IPC table above), one to one, and take a client-chosen `id`
+The commands are the layout's (the IPC table above), one to one (plus `path_exists`), and take a client-chosen `id`
 (a number) that the reply echoes: `ok {id, result?}` or `error {id, message}`. What they change
 arrives as `layout` like any other change, to every client.
 
@@ -574,8 +592,8 @@ lists the paired Hosts with their connection state and a Remove button, and pair
 its address (`https://dell.tail1234.ts.net`, `http://127.0.0.1:47611`; a pasted pairing link fills
 both fields) and the code its Settings page shows or `sidebar-termd --pair` prints. The Host
 answers with a token; it lands in the `hosts` section of this Mac's `settings.json`
-(`src/lib/host/settings.ts`: `[{id, url, token, name}]`, `id` this client's own, `name` the
-Host's as last heard) and is sent first on every connection. The Host records this Mac as "Mac
+(`src/lib/host/settings.ts`: `[{id, url, token, name, checkoutRoot, repoPaths}]`, `id` this
+client's own, `name` the Host's as last heard, the last two Handoff's repo-to-path map) and is sent first on every connection. The Host records this Mac as "Mac
 app" in its own list of paired clients. Removing a Host closes its connection and drops its
 section; the Host still lists this Mac until it is removed there. A Host that refuses the token
 (4401) stays listed as unpaired until removed and paired again.
@@ -602,7 +620,7 @@ not shift as Hosts connect, and a Host's Group headers show no Hotkey. New Tab a
 (Hotkeys, the footer buttons) go to the Host of the Tab in view; a Group's context menu and a
 Host header's go to theirs. Delete Group refuses a Host's last Group. Dragging a Tab or a Group
 onto another Host's rows shows no drop target and drops nowhere: a Session cannot change
-machines (Handoff, #30); "Move to Group" lists the Tab's Host's Groups only.
+machines, only be handed off ("Handoff"); "Move to Group" lists the Tab's Host's Groups only.
 
 **Terminals** (`src/lib/terminal/manager.ts`). A paired Host's Session gets the same xterm.js
 Terminal as a local one, through the Host's transport: `attach` (the Host replays its recent
@@ -626,6 +644,82 @@ protocol has no freeze), Resume, the Panel's Activity.
 (`src/lib/mock.ts` `hostClient`, chosen by `src/lib/host/connect.ts` for a `mock://` URL): its
 own layout in `localStorage`, a running fake agent, and `offline` typed in one of its Tabs drops
 the connection for a few seconds. Any 8-character code pairs it again after a Remove.
+
+## Handoff
+
+Moving a Tab to another Host (#30, `CONTEXT.md`): its Session is killed here after its Resume
+entry is recorded, a Tab is created on the Host at the matching checkout, and the entry is rerun
+there. Code moves by push and checkout, never by copying files; the one file that moves is a
+Claude Code conversation's transcript (`docs/research/claude-session-portability.md`, #31).
+
+**Actions.** On a local Tab's context menu: "New Tab on Host" and "Move Tab to Host", each a
+submenu of `<Host> · <Group>` for every Group of every online paired Host, so the Group there is
+the user's choice. Hotkeys "New Tab on Host" (`Cmd-Shift-T`) and "Move Tab to Host"
+(`Cmd-Shift-M`), category Hosts: the Tab in view, to the first online paired Host in Settings
+order, in its active Tab's Group. A paired Host's own Tabs offer neither (Handoff starts from
+this Mac).
+
+**Where a Tab lands** (`src/lib/host/settings.ts`, `src/lib/handoff/model.ts`). Each paired Host
+has a repo-to-path map in the `hosts` section, set in Settings > Hosts: a Checkout root (one
+directory; `~` is the Host's home from its `hello`) and per-repo overrides. "Same repo" is the
+repo name of the local Badge; the Host's checkout is the override for it, else `<root>/<repo>`.
+The Mac asks the Host whether that directory exists (`path_exists`). It does: the Tab opens
+there. It does not: the Tab opens at the Checkout root (else the Host's home) and `git clone
+<origin's URL> <path>` is typed, not run. Not in a repo, or no map for the Host: the Host's home.
+
+**Move, in order**, so the Session is never lost by accident (`handoff.svelte.ts`):
+
+1. `handoff_probe`: fresh facts, the Resume entry (`detect/resume.rs`, as the Resume banner
+   would get it), the running Claude Code conversation with its files located in that
+   process's own Claude config dir, and `git status` of the checkout.
+2. `path_exists` on the Host, then the confirmation: where it lands, what reruns, `git switch
+   <branch>` when the Badge has a branch, and, when the checkout has uncommitted changes,
+   unpushed commits or a branch with no upstream, that they stay on this Mac, with a "Type git
+   push first" button that types `git push -u origin HEAD` (not run) into the Tab's shell if it
+   is at its prompt, else into a new local Tab at the same directory, and does not move.
+3. `tab_new` on the Host, in the chosen Group, at the landing. Its `ok` is the point of no
+   return: a failure before it (the Host offline, a refused command) leaves the local Tab as it
+   was, and a dialog says why ("Nothing changed here").
+4. The local Tab is closed (`tab_close`: its Session is killed).
+5. A Claude Code conversation: `handoff_conversation_read` once the transcript has stopped
+   changing (250 ms quiet, 3 s at most), `POST /api/conversation` to the Host with the checkout
+   it resumes from, then, only once the Host has answered with its path,
+   `handoff_conversation_forget` removes the Mac's copy (two copies under two keys that are not
+   the current one make `claude --resume` refuse on purpose). The project's `memory/` goes with
+   it; it stays on the Mac too (other Sessions of the repo read it).
+6. Once the new Tab's shell reports itself (4 s at most), what to type goes in, on a cleared
+   prompt. It is the Resume banner's rule (`resumeLine` in `src/lib/resume/model.ts`) with the
+   cwd mapped from the local Worktree onto the Host's checkout and `git switch <branch> && `
+   before the line: `claude --resume <id>` for a conversation that moved (with the flags Resume
+   keeps), any other command line as recorded. In the clone case everything is one typed line,
+   `git clone … && cd -- <path> && git switch … && <line>`, not run.
+
+**Fallback.** When the conversation could not move (its transcript was not found, the upload
+failed, the Host has no checkout for it), a fresh `claude` is typed instead, with the entry's
+flags and a one-line handoff note as its first prompt ("Handed off from my Mac in `<repo>` on
+`<branch>`. The Claude Code conversation `<id>` stayed there (`<reason>`). Where we left off: "),
+the cursor left inside the quote and no Enter, for the user to finish; a dialog says the
+transcript is still on this Mac.
+
+**On the Host** (`handoff.rs` `place`, behind `/api/conversation`). The transcript goes to
+`<config dir>/projects/<key>/<id>.jsonl`, where the config dir is the daemon's
+`$CLAUDE_CONFIG_DIR`, else `$HOME/.claude`, and the key is Claude Code's for the checkout
+(its canonical path, every character that is not a letter or digit as `-`), so `claude --resume
+<id>` run there finds it first; memory files go to `projects/<key>/memory/<name>`, replacing
+files of the same name. A copy of the same id under another key is removed (one copy per
+config dir). It refuses, with nothing written: a session id that is not uuid-shaped, a relative
+`cwd`, a memory name that is absolute or has `..`, `.` or empty parts, any symbolic link below
+`projects/`, and any path whose parent, canonicalised, is not inside `projects/`. What the Host
+needs on its own: the same Claude Code version as the Mac, its own Claude login, and one "Yes,
+I trust this folder" answer per checkout for an interactive resume.
+
+**Unread.** A Tab moved while in view is shown on the Host at once, as New Tab on Host always
+is. A Tab moved from the background leaves the view where it is and its new Tab on the Host is
+marked Unread, so it is bold until the user goes to it (decision for #30).
+
+**Not moved**: the Worktree, the branch, uncommitted changes, other files (subagent
+transcripts, spilled tool results, checkpoint history), the Tab's custom Title, Codex and Gemini
+conversations (Resume records no entry for them, so nothing is rerun).
 
 ## Window
 

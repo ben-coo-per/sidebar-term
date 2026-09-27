@@ -5,10 +5,11 @@
 // origin it was loaded from) and the Mac app for each paired Host (./hosts.svelte.ts, against
 // the Host's URL). No DOM beyond WebSocket and fetch; the stores own what is shown.
 
-import type { ActivitySession, HostInfo, LayoutSnapshot, SessionId, SessionInfo } from "../types";
+import type { ActivitySession, ConversationFiles, HostInfo, LayoutSnapshot, SessionId, SessionInfo } from "../types";
 import {
   CLOSE_GOING_AWAY,
   CLOSE_UNAUTHORIZED,
+  CONVERSATION_PATH,
   decodeOutputFrame,
   isReply,
   parseServerMessage,
@@ -56,6 +57,11 @@ export interface HostClient {
   command(msg: Command): Promise<CommandResult>;
   /** Upload a file to the Host; resolves with its path there. */
   upload(file: File): Promise<string>;
+  /**
+   * Hand a Claude Code conversation to the Host, to resume from the checkout at `cwd` there;
+   * resolves with the transcript's path on the Host (`POST /api/conversation`).
+   */
+  putConversation(cwd: string, sessionId: string, files: ConversationFiles): Promise<string>;
 }
 
 /** What `POST /api/pair` answers. */
@@ -221,13 +227,27 @@ export class RemoteClient implements HostClient {
   async upload(file: File): Promise<string> {
     const body = new FormData();
     body.append("file", file, file.name);
-    const res = await fetch(`${this.base}${UPLOAD_PATH}`, {
+    return this.post(UPLOAD_PATH, body, "Upload");
+  }
+
+  async putConversation(cwd: string, sessionId: string, files: ConversationFiles): Promise<string> {
+    const body = new FormData();
+    body.append("cwd", cwd);
+    body.append("sessionId", sessionId);
+    body.append("transcript", new Blob([files.transcript], { type: "application/x-ndjson" }), `${sessionId}.jsonl`);
+    for (const f of files.memory) body.append("memory", new Blob([f.content], { type: "text/plain" }), f.name);
+    return this.post(CONVERSATION_PATH, body, "Sending the conversation");
+  }
+
+  /** A multipart POST with the token; resolves with the `path` the Host answers. */
+  private async post(path: string, body: FormData, what: string): Promise<string> {
+    const res = await fetch(`${this.base}${path}`, {
       method: "POST",
       headers: { authorization: `Bearer ${this.token}` },
       body,
     });
     const parsed = (await res.json().catch(() => ({}))) as Partial<UploadResponse> & { error?: string };
-    if (!res.ok || !parsed.path) throw new Error(parsed.error ?? `Upload failed (${res.status}).`);
+    if (!res.ok || !parsed.path) throw new Error(parsed.error ?? `${what} failed (${res.status}).`);
     return parsed.path;
   }
 

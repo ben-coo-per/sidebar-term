@@ -25,6 +25,8 @@
   import { openContextMenu } from "./menu.svelte";
   import type { MenuItem } from "./ContextMenu.svelte";
   import { requestCloseTab } from "./closeTabFlow";
+  import { canHandOff, handoffHosts, moveTabToHost, newTabOnHost } from "../handoff/handoff.svelte";
+  import { hostName } from "../host/hosts.svelte";
 
   let { tab }: { tab: Tab } = $props();
 
@@ -130,8 +132,32 @@
     return { label: "Freeze", action: () => void freezeSession(sessionId), disabled: isActive };
   }
 
+  /**
+   * "New Tab on <Host>" and "Move Tab to <Host>" (Handoff): one entry per Group of each online
+   * paired Host, so the Group there is the user's choice. Local Tabs only; a Session on a paired
+   * Host does not move (a Host's own Tabs use "Move to Group").
+   */
+  function handoffItems(): MenuItem[] {
+    if (!canHandOff(tab)) return [];
+    const targets = handoffHosts().flatMap((h) =>
+      groupsOf(h.id).map((g) => ({ host: h.id, group: g, label: `${hostName(h.id)} · ${g.name}` })),
+    );
+    const none = [{ label: "No Host connected", disabled: true }];
+    return [
+      {
+        label: "New Tab on Host",
+        submenu: targets.length ? targets.map((t) => ({ label: t.label, action: () => void newTabOnHost(tab, t.host, t.group.id) })) : none,
+      },
+      {
+        label: "Move Tab to Host",
+        submenu: targets.length ? targets.map((t) => ({ label: t.label, action: () => void moveTabToHost(tab, t.host, t.group.id) })) : none,
+      },
+    ];
+  }
+
   function menuItems(): MenuItem[] {
-    // A Session cannot change machines: only this Host's Groups (Handoff is #30).
+    // A Session cannot change machines by "Move to Group": only this Host's Groups. Handoff
+    // (below) moves it to another Host by rerunning it there.
     const otherGroups = groupsOf(tab.host).filter((g) => g.id !== tab.groupId);
     return [
       { label: "Rename", action: beginRename },
@@ -145,6 +171,7 @@
           : [{ label: "No other Groups", disabled: true }],
       },
       { label: "New Group from Tab", action: () => void newGroupFromTab(tab.id) },
+      ...handoffItems(),
       freezeItem(),
       { label: "Close", action: () => void requestCloseTab(tab.id), danger: true, separatorBefore: true },
     ];

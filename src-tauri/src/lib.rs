@@ -11,11 +11,14 @@ mod host;
 use host::AppHost;
 use sidebar_term_core::layout::{Layout, TabNew};
 use sidebar_term_core::model::{
-    AgentKind, Group, GuardSnapshot, LayoutSnapshot, Pairing, RemoteSnapshot, ResumeEntry,
-    SessionId, SessionInfo, Tab, EVENT_CAFFEINATE, EVENT_MEMORY_GUARD, EVENT_MENU_SETTINGS,
+    AgentKind, ClaudeConversation, ConversationFiles, Group, GuardSnapshot, HandoffProbe,
+    LayoutSnapshot, Pairing, RemoteSnapshot, ResumeEntry, SessionId, SessionInfo, Tab,
+    EVENT_CAFFEINATE, EVENT_MEMORY_GUARD, EVENT_MENU_SETTINGS,
 };
 use sidebar_term_core::session::SessionManager;
-use sidebar_term_core::{activity, detect, guard, monitor, paths, remote, resume, store, usage};
+use sidebar_term_core::{
+    activity, detect, guard, handoff, monitor, paths, remote, resume, store, usage,
+};
 use std::sync::Arc;
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
@@ -302,6 +305,54 @@ async fn path_open(path: String) -> Result<(), String> {
     tauri_plugin_opener::open_path(path, None::<&str>).map_err(|e| e.to_string())
 }
 
+// --- Handoff: what moving a Tab to another Host needs of this one (docs/architecture.md) ------
+
+/// What Handoff needs to know about a local Session before its Tab moves: fresh facts, its
+/// Resume entry, the Claude Code conversation running in it (files located), and its
+/// checkout's git status. Async: runs `git`. `None` for a Session that is gone.
+#[tauri::command]
+async fn handoff_probe(
+    sessions: State<'_, Sessions>,
+    session_id: SessionId,
+) -> Result<Option<HandoffProbe>, String> {
+    let Some((key, target)) = sessions
+        .keyed_targets()
+        .into_iter()
+        .find(|(_, t)| t.session_id == session_id)
+    else {
+        return Ok(None);
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let info = detect::probe(&target);
+        let entry = detect::resume::entry(&key, &target);
+        let conversation = detect::resume::claude_conversation(&target);
+        let git = match (&info.git, &info.cwd) {
+            (Some(_), Some(cwd)) if !info.remote => handoff::git_status(cwd).ok(),
+            _ => None,
+        };
+        Some(HandoffProbe { info, entry, conversation, git })
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// A conversation's files, once its transcript has stopped changing (call after the Session is
+/// killed): what goes to the Host.
+#[tauri::command]
+async fn handoff_conversation_read(conversation: ClaudeConversation) -> Result<ConversationFiles, String> {
+    tauri::async_runtime::spawn_blocking(move || handoff::read(&conversation))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Delete this Mac's copy of a conversation's transcript, once the Host has it.
+#[tauri::command]
+async fn handoff_conversation_forget(conversation: ClaudeConversation) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || handoff::forget(&conversation))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// Where Remote stands, after re-reading Tailscale's state. Async: runs the Tailscale CLI.
 #[tauri::command]
 async fn remote_state(app: AppHandle) -> Result<RemoteSnapshot, String> {
@@ -487,6 +538,9 @@ pub fn run() {
             settings_save,
             path_resolve,
             path_open,
+            handoff_probe,
+            handoff_conversation_read,
+            handoff_conversation_forget,
             drop_paths,
             drop_save,
             remote_state,

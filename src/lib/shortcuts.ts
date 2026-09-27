@@ -20,6 +20,15 @@ import { requestCloseTab } from "./sidebar/closeTabFlow";
 import { actionFor, comboFromEvent, isMac, isModifierOnly, type ActionId } from "./hotkeys";
 import { hotkeys } from "./hotkeys.svelte";
 import { toggleSettings } from "./settings/visibility.svelte";
+import { canHandOff, defaultHandoffHost, moveTabToHost, newTabOnHost } from "./handoff/handoff.svelte";
+
+/** Handoff Hotkeys: the Tab in view, to the first online paired Host, in its active Tab's Group. */
+function handOff(move: boolean): void {
+  const tab = activeTab();
+  const host = defaultHandoffHost();
+  if (!canHandOff(tab) || !host) return;
+  void (move ? moveTabToHost(tab, host) : newTabOnHost(tab, host));
+}
 
 function moveActiveTab(direction: 1 | -1): void {
   const tab = activeTab();
@@ -76,6 +85,12 @@ function run(action: ActionId): void {
       return;
     case "group.new":
       void newGroup();
+      return;
+    case "host.newTab":
+      handOff(false);
+      return;
+    case "host.moveTab":
+      handOff(true);
       return;
     case "sidebar.toggle":
       toggleSidebarVisible();

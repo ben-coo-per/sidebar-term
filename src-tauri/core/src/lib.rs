@@ -13,6 +13,7 @@
 pub mod activity;
 pub mod detect;
 pub mod guard;
+pub mod handoff;
 pub mod host;
 pub mod layout;
 pub mod model;

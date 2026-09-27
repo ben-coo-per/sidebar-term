@@ -27,7 +27,7 @@
   import RemoteSection from "./RemoteSection.svelte";
   import HostsSection from "./HostsSection.svelte";
 
-  const CATEGORIES: ActionCategory[] = ["Tabs", "Groups", "App"];
+  const CATEGORIES: ActionCategory[] = ["Tabs", "Groups", "Hosts", "App"];
   const byCategory = CATEGORIES.map((category) => ({
     category,
     actions: ACTIONS.filter((a) => a.category === category),
