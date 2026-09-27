@@ -1,21 +1,23 @@
-// The Remote protocol between a phone and the Mac (src-tauri/src/remote/server.rs), and the
-// sidebar snapshot the Mac webview publishes for phones (src/lib/remote/sidebar.ts). Pure:
-// message types and the binary output framing, no sockets.
+// The Remote protocol between a phone and a Host (src-tauri/core/src/remote/server.rs), and the
+// sidebar snapshot the Host builds for phones (src-tauri/core/src/layout/sidebar.rs; `SidebarSnapshot`
+// in model.rs). Pure: message types and the binary output framing, no sockets.
 
 import type { AgentKind, GitInfo, SessionId } from "../types";
 import type { AgentStatus } from "../agentStatus";
 
 // --- The sidebar as a phone shows it ------------------------------------------------------------
 
-/** A Tab as the phone lists it: everything the Mac's TabRow shows, already derived. */
+/** A Tab as the phone lists it: what its row shows, derived by the Host. */
 export interface SidebarTab {
   id: string;
   /** null while the Tab has no Session (its shell failed to spawn): not attachable. */
   sessionId: SessionId | null;
+  /** A rename, else the agent's name, the Foreground process or the cwd (the Host has no OSC title). */
   title: string;
   agent: AgentKind | null;
+  /** Running / needs input / done; null until the Host derives it (#28). */
   status: AgentStatus | null;
-  /** An agent finished while the Tab was in the background on the Mac. */
+  /** An agent finished while the Tab was in the background. Never set by the Host yet. */
   finished: boolean;
   /** The Badge: repo, worktree and branch (the Mac's `GitInfo`, whole, so Badge.svelte renders it). */
   git: GitInfo | null;
@@ -30,7 +32,7 @@ export interface SidebarGroup {
 
 export interface SidebarSnapshot {
   groups: SidebarGroup[];
-  /** The Tab in view on the Mac. */
+  /** The Host's active Tab. */
   activeTabId: string | null;
 }
 

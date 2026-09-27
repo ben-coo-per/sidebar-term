@@ -10,10 +10,9 @@
 //! - `tailscale.rs`: the Tailscale CLI (status, Serve on / off).
 //! - `server.rs`: the axum routes: the page, pairing, the WebSocket.
 //!
-//! The sidebar the phone shows (Groups, Tabs, Titles, Agent status) is the Mac webview's: it
-//! sends a snapshot through `remote_sidebar` whenever it changes, and Remote relays it, opaque,
-//! to every phone (ADR 0001: the core does not know what a Tab is, until #20). A daemon has no
-//! webview, so its phones get no sidebar yet.
+//! The sidebar the phone shows (Groups, Tabs, Titles, Badges) is the Host's own: the layout
+//! (`layout/sidebar.rs`) hands `publish_sidebar` a `SidebarSnapshot` after every change, which
+//! Remote keeps for `hello` and relays to every phone. Agent status stays a client's (#28).
 
 mod auth;
 mod server;
@@ -21,8 +20,11 @@ mod tailscale;
 pub mod tap;
 
 use crate::host::{Assets, Host};
-use crate::layout;
-use crate::model::{Pairing, RemoteDevice, RemoteSnapshot, SessionId, TailscaleState, EVENT_REMOTE};
+use crate::store;
+use crate::model::{
+    Pairing, RemoteDevice, RemoteSnapshot, SessionId, SidebarSnapshot, TailscaleState,
+    EVENT_REMOTE,
+};
 use crate::session::SessionManager;
 use auth::{PairingCode, Store, Verdict};
 use std::path::{Path, PathBuf};
@@ -42,7 +44,7 @@ pub struct Remote {
 /// What the hub pushes to every connected phone.
 #[derive(Clone)]
 pub(crate) enum HubMsg {
-    /// The Mac webview's latest sidebar snapshot.
+    /// The Host's latest sidebar snapshot.
     Sidebar(Arc<serde_json::Value>),
     /// Remote is turning off: every connection closes.
     Shutdown,
@@ -170,10 +172,23 @@ impl Remote {
         }
     }
 
-    /// The Mac webview's sidebar changed: relay it to every phone.
-    pub fn publish_sidebar(&self, sidebar: serde_json::Value) {
-        let value = Arc::new(sidebar);
-        *lock(&self.inner.sidebar) = Some(value.clone());
+    /// The sidebar changed (the layout, or a Session's facts): keep it for the next `hello` and
+    /// relay it to every phone, unless it reads the same as the last one.
+    pub fn publish_sidebar(&self, sidebar: &SidebarSnapshot) {
+        let value = match serde_json::to_value(sidebar) {
+            Ok(v) => Arc::new(v),
+            Err(e) => {
+                eprintln!("remote: the sidebar does not serialize: {e}");
+                return;
+            }
+        };
+        {
+            let mut last = lock(&self.inner.sidebar);
+            if last.as_deref() == Some(&*value) {
+                return;
+            }
+            *last = Some(value.clone());
+        }
         let _ = self.inner.hub.send(HubMsg::Sidebar(value));
     }
 }
@@ -291,7 +306,7 @@ impl Inner {
 
     fn save(&self, store: &Store) {
         if let Some(path) = &self.path {
-            if let Err(e) = layout::write(path, store) {
+            if let Err(e) = store::write(path, store) {
                 eprintln!("remote: writing {} failed: {e}", path.display());
             }
         }

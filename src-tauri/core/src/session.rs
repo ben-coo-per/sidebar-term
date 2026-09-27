@@ -66,6 +66,11 @@ const EXIT_DRAIN_MAX: usize = 1 << 20;
 /// Live pty threads (readers + writers). Lets tests prove nothing leaks.
 static LIVE_THREADS: AtomicUsize = AtomicUsize::new(0);
 
+/// Tests that spawn real ptys (here and in `layout/`) run one at a time so thread / fd accounting
+/// and timings are not disturbed.
+#[cfg(test)]
+pub(crate) static PTY_SERIAL: Mutex<()> = Mutex::new(());
+
 struct ThreadGuard;
 
 impl ThreadGuard {
@@ -99,7 +104,12 @@ pub struct SessionManager {
     taps: Arc<Taps>,
     /// Where `session-exit` goes.
     events: Arc<dyn Events>,
+    /// Told of every exit before the event goes out (the layout drops the Session's Tab).
+    exit_hooks: Arc<Mutex<Vec<ExitHook>>>,
 }
+
+/// Runs on a Session's reader thread once the Session is gone, before `session-exit` is emitted.
+pub type ExitHook = Arc<dyn Fn(SessionId) + Send + Sync>;
 
 impl SessionManager {
     pub fn new(taps: Arc<Taps>, events: Arc<dyn Events>) -> Self {
@@ -108,7 +118,13 @@ impl SessionManager {
             resume_keys: Mutex::default(),
             taps,
             events,
+            exit_hooks: Arc::default(),
         }
+    }
+
+    /// Run `hook` for every Session that exits from now on, before its `session-exit` event.
+    pub fn on_exit(&self, hook: ExitHook) {
+        lock(&self.exit_hooks).push(hook);
     }
 
     /// Spawn the user's login shell (`$SHELL -l`, fallback `/bin/zsh`) on a new pty of `cols`x`rows`
@@ -128,6 +144,7 @@ impl SessionManager {
         let taps = self.taps.clone();
         let taps_on_exit = self.taps.clone();
         let events = self.events.clone();
+        let hooks = self.exit_hooks.clone();
         let id = self.host.spawn(
             spec,
             move |session_id, bytes| {
@@ -136,6 +153,10 @@ impl SessionManager {
             },
             move |session_id, code| {
                 taps_on_exit.close(session_id);
+                let hooks: Vec<ExitHook> = lock(&hooks).clone();
+                for hook in hooks {
+                    hook(session_id);
+                }
                 events.emit(EVENT_SESSION_EXIT, &SessionExit { session_id, code });
             },
         )?;
@@ -842,8 +863,7 @@ mod tests {
 
     const T: Duration = Duration::from_secs(10);
 
-    /// pty tests run one at a time so thread / fd accounting and timings are not disturbed.
-    static SERIAL: Mutex<()> = Mutex::new(());
+    use super::PTY_SERIAL as SERIAL;
 
     #[derive(Default)]
     struct Output {

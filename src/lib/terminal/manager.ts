@@ -4,13 +4,16 @@
 // See docs/research/xterm-webview.md and docs/architecture.md.
 //
 // Lifecycle of one Session's Terminal:
-// - `create` spawns the pty and builds the Terminal off-DOM. It is not opened yet (xterm needs a
-//   visible, sized parent for `open`); output is parsed into its buffer while hidden.
+// - `attach` builds the Terminal off-DOM for a Session the Host already spawned (with its Tab:
+//   at launch, or on `tab_new`) and takes the Session's output from the Host, starting with what
+//   it printed before. The Terminal is not opened yet (xterm needs a visible, sized parent for
+//   `open`); output is parsed into its buffer while hidden.
 // - `mount` moves the Terminal's host element into the container, opens it the first time, puts
 //   the WebGL renderer on it, fits and focuses. Only mounted Terminals hold a WebGL context.
 // - `unmount` releases the WebGL context (the DOM renderer takes over) and detaches the host.
 //   The Terminal, its scrollback and modes live on.
-// - Shell exit or `close` disposes the Terminal and emits `exit` once.
+// - The Session's exit (its shell ended, or its Tab was closed) disposes the Terminal and emits
+//   `exit` once.
 
 import { Terminal, type IDisposable } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -18,15 +21,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import "@xterm/xterm/css/xterm.css";
-import {
-  killSession,
-  onSessionExit,
-  pauseSession,
-  resizeSession,
-  resumeSession,
-  spawnSession,
-  writeSession,
-} from "../ipc";
+import { attachSession, onSessionExit, pauseSession, resizeSession, resumeSession, writeSession } from "../ipc";
 import type { SessionId } from "../types";
 import { FlowController } from "./flow-control";
 import { TERMINAL_BACKGROUND, terminalOptions } from "./theme";
@@ -47,10 +42,13 @@ export interface TerminalEvents {
 
 export interface TerminalManager {
   /**
-   * Spawn a Session (shell on a pty) with a hidden Terminal. Resolves once the pty exists.
-   * `resumeKey` (the Tab id) names the Session in Resume entries.
+   * A hidden Terminal for a Session the Host spawned, fed its output from here on. The Terminal
+   * exists (and can be mounted) as soon as this returns; the output follows. A no-op for a
+   * Session that already has one.
    */
-  create(opts?: { cwd?: string | null; resumeKey?: string | null }): Promise<SessionId>;
+  attach(sessionId: SessionId): void;
+  /** The grid of the last fitted Terminal: what a new Session's pty should be sized to. */
+  grid(): { cols: number; rows: number };
   /** Show this Session's Terminal inside `el` (replacing whatever was shown), fit, and focus. */
   mount(sessionId: SessionId, el: HTMLElement): void;
   /** Detach the Terminal from the DOM; the Session and its scrollback live on. */
@@ -60,8 +58,6 @@ export interface TerminalManager {
   paste(sessionId: SessionId, text: string): void;
   /** Re-fit the mounted Terminal to its container and resize the pty. */
   fit(sessionId: SessionId): void;
-  /** Kill the Session and dispose its Terminal. */
-  close(sessionId: SessionId): Promise<void>;
   on<K extends keyof TerminalEvents>(event: K, cb: TerminalEvents[K]): () => void;
 }
 
@@ -98,8 +94,8 @@ const listeners: { [K in keyof TerminalEvents]: Set<TerminalEvents[K]> } = {
 };
 
 /**
- * Exits for Sessions this module does not know: a shell that died before `create` registered it,
- * or the `session-exit` that follows `close` (already reported). Bounded; ids are never reused.
+ * Exits for Sessions this module does not know: a Session that ended before the layout snapshot
+ * naming it was applied (its Tab is already gone with it). Bounded; ids are never reused.
  */
 const earlyExits = new Map<SessionId, number | null>();
 const EARLY_EXIT_MEMORY = 32;
@@ -204,7 +200,7 @@ void onSessionExit(({ sessionId, code }) => {
  * - Cmd-C: Edit > Copy fires a DOM `copy` event, which xterm fills with its selection. WebKit only
  *   enables the Copy item when the DOM selection is a range or a `beforecopy` handler cancels,
  *   and xterm's selection is not a DOM selection, so the host cancels `beforecopy` whenever the
- *   Terminal has a selection (see `create`).
+ *   Terminal has a selection (see `attach`).
  * - Cmd-V: Edit > Paste fires `paste` on the focused textarea; xterm bracket-wraps it when the
  *   Foreground process enabled bracketed paste and turns newlines into CR.
  * - Cmd-A: the menu's Select All would select the (empty) textarea, so select the buffer here.
@@ -231,7 +227,12 @@ function handleKey(term: Terminal, ev: KeyboardEvent): boolean {
 }
 
 export const terminals: TerminalManager = {
-  async create(opts) {
+  attach(sid) {
+    if (entries.has(sid)) return;
+    if (earlyExits.has(sid)) {
+      earlyExits.delete(sid);
+      return; // ended already; its Tab went with it
+    }
     const { cols, rows } = lastGrid;
     const term = new Terminal({ ...terminalOptions, cols, rows, linkHandler: osc8LinkHandler });
     const fitAddon = new FitAddon();
@@ -251,22 +252,6 @@ export const terminals: TerminalManager = {
     host.addEventListener("beforecopy", (ev) => {
       if (term.hasSelection()) ev.preventDefault();
     });
-
-    let entry: Entry | null = null;
-    const early: Uint8Array[] = [];
-    let sid: SessionId;
-    try {
-      sid = await spawnSession({
-        cwd: opts?.cwd ?? null,
-        resumeKey: opts?.resumeKey ?? null,
-        cols,
-        rows,
-        onData: (bytes) => (entry ? feed(entry, bytes) : early.push(bytes)),
-      });
-    } catch (err) {
-      term.dispose();
-      throw err;
-    }
 
     const e: Entry = {
       id: sid,
@@ -288,8 +273,13 @@ export const terminals: TerminalManager = {
       subs: [],
     };
     entries.set(sid, e);
-    entry = e;
-    for (const bytes of early) feed(e, bytes);
+    // The Session's output, held by the Host since it spawned, then live. A Session that is gone
+    // rejects; its exit event (or the next layout snapshot) disposes the Terminal.
+    void attachSession(sid, (bytes) => {
+      if (entries.get(sid) === e) feed(e, bytes);
+    }).catch(() => {
+      if (entries.get(sid) === e) handleExit(sid, null);
+    });
 
     e.subs.push(
       term.onData((data) => void writeSession(sid, data).catch(() => {})),
@@ -303,14 +293,10 @@ export const terminals: TerminalManager = {
       // After the web-links addon's provider, so a URL wins over a path inside it.
       term.registerLinkProvider(new FileLinkProvider(term, sid)),
     );
+  },
 
-    if (earlyExits.has(sid)) {
-      const code = earlyExits.get(sid) ?? null;
-      earlyExits.delete(sid);
-      // After the caller has the id from this promise.
-      setTimeout(() => handleExit(sid, code), 0);
-    }
-    return sid;
+  grid() {
+    return { ...lastGrid };
   },
 
   mount(sessionId, el) {
@@ -355,14 +341,6 @@ export const terminals: TerminalManager = {
   fit(sessionId) {
     const e = entries.get(sessionId);
     if (e) scheduleFit(e);
-  },
-
-  async close(sessionId) {
-    const e = entries.get(sessionId);
-    if (!e) return;
-    destroy(e);
-    await killSession(sessionId).catch(() => {});
-    emit("exit", sessionId, null);
   },
 
   on(event, cb) {

@@ -88,7 +88,7 @@
       <PlusIcon size={10} />
       Tab
     </button>
-    <button type="button" class="footer-btn" onclick={() => newGroup()} title={withHotkey("New Group", "group.new")}>
+    <button type="button" class="footer-btn" onclick={() => void newGroup()} title={withHotkey("New Group", "group.new")}>
       <PlusIcon size={10} />
       Group
     </button>
