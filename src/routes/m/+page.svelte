@@ -1,4 +1,4 @@
-<!-- The phone's page, served by the Mac app's Remote server at /m (src-tauri/src/remote/).
+<!-- The phone's page, served by a Host's Remote server at /m (src-tauri/core/src/remote/).
      Installs as a home-screen app over HTTPS; its service worker is registered here only. -->
 <script lang="ts">
   import "$lib/theme.css";

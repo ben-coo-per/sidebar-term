@@ -1,8 +1,10 @@
-// What the phone shows: paired or not, connected or not, the sidebar, and which Tab is open.
-// The token lives in localStorage (an installed home-screen page keeps it indefinitely).
+// What the phone shows: paired or not, connected or not, the Host's layout and Session facts
+// (mirrored as the Mac's sidebar mirrors its local Host's), and which Tab is open. The token
+// lives in localStorage (an installed home-screen page keeps it indefinitely).
 
 import { RemoteClient, type ConnectionStatus } from "./client";
-import type { SidebarSnapshot, SidebarTab } from "./protocol";
+import { findRow, groupRows, type Facts, type GroupRows, type TabRow } from "./rows";
+import type { HostInfo, LayoutSnapshot, SessionId } from "../types";
 
 const TOKEN_KEY = "sidebar-term:remote-token";
 const NAME_KEY = "sidebar-term:remote-name";
@@ -12,13 +14,18 @@ export type Phase = "loading" | "pair" | "connected";
 export const mobile = $state<{
   phase: Phase;
   status: ConnectionStatus;
-  /** Why we are offline, when the Mac said. */
+  /** Why we are offline, when the Host said. */
   statusDetail: string | null;
-  /** This phone's name as the Mac knows it. */
+  /** This phone's name as the Host knows it. */
   device: string | null;
-  sidebar: SidebarSnapshot | null;
+  /** The Host we are connected to, from `hello`. */
+  host: HostInfo | null;
+  /** The Host's layout, whole; an older revision than the one shown is ignored. */
+  layout: LayoutSnapshot | null;
+  /** The Host's latest facts about each of its Sessions. */
+  sessions: Facts;
   /** The Tab whose Session is on screen, as it was when opened; null on the list. */
-  openTab: SidebarTab | null;
+  openTab: TabRow | null;
   /** Code from the QR link (`#pair=CODE`), prefilled on the pairing screen. */
   pairCode: string;
   pairError: string | null;
@@ -28,7 +35,9 @@ export const mobile = $state<{
   status: "offline",
   statusDetail: null,
   device: null,
-  sidebar: null,
+  host: null,
+  layout: null,
+  sessions: {},
   openTab: null,
   pairCode: "",
   pairError: null,
@@ -87,6 +96,19 @@ export function initMobile(): () => void {
   };
 }
 
+/** Take a layout snapshot unless an older one arrives after a newer (the two channels do not order). */
+function applyLayout(layout: LayoutSnapshot) {
+  if (mobile.layout && layout.revision < mobile.layout.revision) return;
+  mobile.layout = layout;
+  // Facts of Sessions no Tab points at any more are stale.
+  const live = new Set<SessionId>();
+  for (const tab of Object.values(layout.tabs)) if (tab.sessionId !== null) live.add(tab.sessionId);
+  for (const key of Object.keys(mobile.sessions)) {
+    const id = Number(key) as SessionId;
+    if (!live.has(id)) delete mobile.sessions[id];
+  }
+}
+
 function connect(token: string) {
   client?.close();
   const c = new RemoteClient(RemoteClient.urlFor(location), token);
@@ -96,22 +118,30 @@ function connect(token: string) {
     mobile.status = status;
     mobile.statusDetail = detail;
   });
-  c.on("hello", (device, sidebar) => {
+  c.on("hello", (host, device, layout, sessions) => {
+    mobile.host = host;
     mobile.device = device;
     writeStorage(NAME_KEY, device);
-    if (sidebar) mobile.sidebar = sidebar;
+    // A fresh start on every hello: the Host may have restarted with new Session ids.
+    mobile.layout = null;
+    mobile.sessions = {};
+    for (const s of sessions) mobile.sessions[s.sessionId] = s;
+    applyLayout(layout);
   });
-  c.on("sidebar", (sidebar) => (mobile.sidebar = sidebar));
+  c.on("layout", applyLayout);
+  c.on("session", (session) => {
+    mobile.sessions[session.sessionId] = session;
+  });
   c.on("unauthorized", () => {
     writeStorage(TOKEN_KEY, null);
     client = null;
     mobile.phase = "pair";
-    mobile.pairError = "The Mac no longer knows this phone. Pair it again.";
+    mobile.pairError = "The Host no longer knows this phone. Pair it again.";
   });
   c.connect();
 }
 
-/** Present the pairing code to the Mac; on success, connect. */
+/** Present the pairing code to the Host; on success, connect. */
 export async function pair(code: string, name: string): Promise<void> {
   mobile.pairing = true;
   mobile.pairError = null;
@@ -130,23 +160,25 @@ export async function pair(code: string, name: string): Promise<void> {
     mobile.pairCode = "";
     connect(body.token);
   } catch (e) {
-    mobile.pairError = `Could not reach the Mac: ${e instanceof Error ? e.message : String(e)}`;
+    mobile.pairError = `Could not reach the Host: ${e instanceof Error ? e.message : String(e)}`;
   } finally {
     mobile.pairing = false;
   }
 }
 
-/** Forget the token and go back to pairing (the Mac still lists the phone until revoked there). */
+/** Forget the token and go back to pairing (the Host still lists the phone until revoked there). */
 export function unpair(): void {
   writeStorage(TOKEN_KEY, null);
   client?.close();
   client = null;
   mobile.openTab = null;
-  mobile.sidebar = null;
+  mobile.layout = null;
+  mobile.sessions = {};
+  mobile.host = null;
   mobile.phase = "pair";
 }
 
-export function openTab(tab: SidebarTab): void {
+export function openTab(tab: TabRow): void {
   mobile.openTab = tab;
 }
 
@@ -154,18 +186,14 @@ export function closeTerminal(): void {
   mobile.openTab = null;
 }
 
-/** The open Tab as the sidebar last described it, or as it was when opened once it is gone. */
-export function currentTab(): SidebarTab | null {
-  const opened = mobile.openTab;
-  if (!opened) return null;
-  return findTab(opened.id) ?? opened;
+/** The Groups and their Tabs' rows, as the Host's layout and facts stand. */
+export function rows(): GroupRows[] {
+  return mobile.layout ? groupRows(mobile.layout, mobile.sessions, mobile.host?.home ?? null) : [];
 }
 
-export function findTab(tabId: string): SidebarTab | null {
-  if (!mobile.sidebar) return null;
-  for (const g of mobile.sidebar.groups) {
-    const tab = g.tabs.find((t) => t.id === tabId);
-    if (tab) return tab;
-  }
-  return null;
+/** The open Tab's row as the Host now describes it, or as it was when opened once it is gone. */
+export function currentTab(): TabRow | null {
+  const opened = mobile.openTab;
+  if (!opened) return null;
+  return findRow(mobile.layout, mobile.sessions, mobile.host?.home ?? null, opened.id) ?? opened;
 }

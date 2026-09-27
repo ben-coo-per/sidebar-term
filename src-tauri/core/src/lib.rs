@@ -22,5 +22,6 @@ pub mod paths;
 pub mod remote;
 pub mod resume;
 pub mod session;
+pub mod status;
 pub mod store;
 pub mod usage;

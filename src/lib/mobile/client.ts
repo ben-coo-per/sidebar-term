@@ -1,31 +1,39 @@
-// The phone's connection to the Mac: one WebSocket to /ws, authenticated with the pairing token
+// The phone's connection to a Host: one WebSocket to /ws, authenticated with the pairing token
 // as its first message, reconnecting with backoff when it drops and re-attaching what was
-// attached. Protocol: ./protocol.ts (mirrors src-tauri/src/remote/server.rs). No DOM beyond
-// WebSocket; the store (./store.svelte.ts) owns what is shown.
+// attached. Protocol: src/lib/host/protocol.ts (mirrors src-tauri/core/src/remote/server.rs).
+// No DOM beyond WebSocket and fetch; the store (./store.svelte.ts) owns what is shown.
 
-import type { SessionId } from "../types";
+import type { ActivitySession, HostInfo, LayoutSnapshot, SessionId, SessionInfo } from "../types";
 import {
   CLOSE_GOING_AWAY,
   CLOSE_UNAUTHORIZED,
   decodeOutputFrame,
+  isReply,
   parseServerMessage,
+  Replies,
+  UPLOAD_PATH,
   type ClientMessage,
-  type SidebarSnapshot,
-} from "./protocol";
+  type CommandMessage,
+  type CommandResult,
+  type UploadResponse,
+} from "../host/protocol";
 
 export type ConnectionStatus = "connecting" | "online" | "offline";
 
 export interface ClientEvents {
   /** `detail` says why we are offline, for the banner. */
   status: (status: ConnectionStatus, detail: string | null) => void;
-  hello: (device: string, sidebar: SidebarSnapshot | null) => void;
-  sidebar: (sidebar: SidebarSnapshot) => void;
+  hello: (host: HostInfo, device: string, layout: LayoutSnapshot, sessions: SessionInfo[]) => void;
+  layout: (layout: LayoutSnapshot) => void;
+  session: (session: SessionInfo) => void;
+  activity: (sessions: ActivitySession[]) => void;
   attached: (sessionId: SessionId, cols: number, rows: number) => void;
   resized: (sessionId: SessionId, cols: number, rows: number) => void;
   output: (sessionId: SessionId, bytes: Uint8Array) => void;
   exit: (sessionId: SessionId) => void;
+  /** An error that answers no command: a message the Host could not read, or `input` failed. */
   error: (message: string) => void;
-  /** The Mac no longer knows our token: pair again. */
+  /** The Host no longer knows our token: pair again. */
   unauthorized: () => void;
 }
 
@@ -37,10 +45,13 @@ export class RemoteClient {
   private attempts = 0;
   private retry: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
+  private replies = new Replies();
   private listeners: { [K in keyof ClientEvents]: Set<ClientEvents[K]> } = {
     status: new Set(),
     hello: new Set(),
-    sidebar: new Set(),
+    layout: new Set(),
+    session: new Set(),
+    activity: new Set(),
     attached: new Set(),
     resized: new Set(),
     output: new Set(),
@@ -91,13 +102,14 @@ export class RemoteClient {
     ws.onclose = (ev) => {
       if (this.ws !== ws) return;
       this.ws = null;
+      this.replies.fail("The connection dropped.");
       if (ev.code === CLOSE_UNAUTHORIZED) {
         this.emit("status", "offline", "This phone is no longer paired.");
         this.emit("unauthorized");
         return;
       }
       if (this.closed) return;
-      const detail = ev.code === CLOSE_GOING_AWAY ? "Remote was turned off on the Mac." : null;
+      const detail = ev.code === CLOSE_GOING_AWAY ? "Remote was turned off on the Host." : null;
       this.emit("status", "offline", detail);
       this.scheduleReconnect();
     };
@@ -129,6 +141,7 @@ export class RemoteClient {
     const ws = this.ws;
     this.ws = null;
     ws?.close();
+    this.replies.fail("The connection was closed.");
   }
 
   private send(msg: ClientMessage): boolean {
@@ -137,7 +150,7 @@ export class RemoteClient {
     return true;
   }
 
-  /** Attach to a Session; the Mac replies `attached` then replays its recent output. */
+  /** Attach to a Session; the Host replies `attached` then replays its recent output. */
   attach(sessionId: SessionId): void {
     this.wanted.add(sessionId);
     this.send({ t: "attach", sessionId });
@@ -152,6 +165,32 @@ export class RemoteClient {
     this.send({ t: "input", sessionId, data });
   }
 
+  /**
+   * A layout command (or `resize`), answered by the Host: resolves with the command's result
+   * (`tab_new` the Tab, `group_new` the Group), rejects with the Host's message.
+   */
+  command(msg: Omit<CommandMessage, "id">): Promise<CommandResult> {
+    const { id, reply } = this.replies.open();
+    if (!this.send({ ...msg, id } as CommandMessage)) {
+      this.replies.settle({ t: "error", id, message: "Not connected." });
+    }
+    return reply;
+  }
+
+  /** Upload a file to the Host; resolves with its path there, for attaching by path. */
+  async upload(file: File): Promise<string> {
+    const body = new FormData();
+    body.append("file", file, file.name);
+    const res = await fetch(UPLOAD_PATH, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.token}` },
+      body,
+    });
+    const parsed = (await res.json().catch(() => ({}))) as Partial<UploadResponse> & { error?: string };
+    if (!res.ok || !parsed.path) throw new Error(parsed.error ?? `Upload failed (${res.status}).`);
+    return parsed.path;
+  }
+
   private receive(data: unknown) {
     if (data instanceof ArrayBuffer) {
       const frame = decodeOutputFrame(data);
@@ -161,16 +200,26 @@ export class RemoteClient {
     if (typeof data !== "string") return;
     const msg = parseServerMessage(data);
     if (!msg) return;
+    if (isReply(msg)) {
+      this.replies.settle(msg);
+      return;
+    }
     switch (msg.t) {
       case "hello":
         this.attempts = 0;
         this.emit("status", "online", null);
-        this.emit("hello", msg.device, msg.sidebar);
+        this.emit("hello", msg.host, msg.device, msg.layout, msg.sessions);
         // Back after a drop: pick up where we were.
         for (const id of this.wanted) this.send({ t: "attach", sessionId: id });
         break;
-      case "sidebar":
-        this.emit("sidebar", msg.sidebar);
+      case "layout":
+        this.emit("layout", msg.layout);
+        break;
+      case "session":
+        this.emit("session", msg.session);
+        break;
+      case "activity":
+        this.emit("activity", msg.sessions);
         break;
       case "attached":
         this.emit("attached", msg.sessionId, msg.cols, msg.rows);

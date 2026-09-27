@@ -1,62 +1,62 @@
-<!-- The sidebar as the phone lists it: Groups of Tabs with the Agent status and Badge each row
-     shows on the Mac. Tap a Tab to drive its Session. -->
+<!-- The sidebar as the phone lists it: the Host's Groups of Tabs with the Agent status and
+     Badge each row shows on the Mac, derived here from the Host's layout and Session facts
+     (./rows.ts). Tap a Tab to drive its Session. -->
 <script lang="ts">
   import Badge from "../sidebar/Badge.svelte";
   import RobotIcon from "../sidebar/icons/RobotIcon.svelte";
   import TerminalIcon from "../sidebar/icons/TerminalIcon.svelte";
-  import CheckIcon from "../sidebar/icons/CheckIcon.svelte";
   import SpinnerIcon from "../sidebar/icons/SpinnerIcon.svelte";
   import { AGENT_NAMES } from "../agentStatus";
   import StatusBanner from "./StatusBanner.svelte";
-  import { mobile, openTab, unpair } from "./store.svelte";
-  import type { SidebarTab } from "./protocol";
+  import { mobile, openTab, rows, unpair } from "./store.svelte";
+  import type { TabRow } from "./rows";
 
-  function stateLabel(tab: SidebarTab): string {
+  const groups = $derived(rows());
+
+  function stateLabel(tab: TabRow): string {
     if (tab.agent) {
       const what = tab.status === "running" ? "working" : tab.status === "needs-input" ? "needs input" : "idle";
       return `${AGENT_NAMES[tab.agent]}: ${what}`;
     }
-    return tab.finished ? "Agent finished" : "Terminal session";
+    return "Terminal session";
   }
 
   function confirmUnpair() {
     // A plain confirm is fine on the phone: nothing else is running in this page.
-    if (window.confirm("Forget this Mac? You will need to pair again.")) unpair();
+    if (window.confirm("Forget this Host? You will need to pair again.")) unpair();
   }
 </script>
 
 <main class="list">
   <header>
-    <h1>sidebar-term</h1>
+    <h1>{mobile.host?.name ?? "sidebar-term"}</h1>
     {#if mobile.device}
       <span class="device">{mobile.device}</span>
     {/if}
   </header>
   <StatusBanner />
 
-  {#if !mobile.sidebar}
+  {#if !mobile.layout}
     <p class="empty">
-      {mobile.status === "online" ? "Waiting for the Mac's sidebar…" : "The Mac is not reachable right now."}
+      {mobile.status === "online" ? "Waiting for the Host's layout…" : "The Host is not reachable right now."}
     </p>
   {:else}
-    {#each mobile.sidebar.groups as group (group.id)}
+    {#each groups as group (group.id)}
       <section>
         <h2>{group.name} <span class="count">({group.tabs.length})</span></h2>
         {#each group.tabs as tab (tab.id)}
           <button
             type="button"
             class="tab"
-            class:active={mobile.sidebar.activeTabId === tab.id}
+            class:active={mobile.layout.activeTabId === tab.id}
             disabled={tab.sessionId === null}
             onclick={() => openTab(tab)}
           >
-            <span class="icon {tab.agent ? (tab.status ?? 'done') : tab.finished ? 'finished' : ''}" aria-label={stateLabel(tab)}>
+            <span class="icon {tab.agent ? (tab.status ?? 'done') : ''}" aria-label={stateLabel(tab)}>
               {#if tab.agent && tab.status === "running"}
                 <SpinnerIcon size={18} />
               {:else if tab.agent}
                 <RobotIcon size={18} />
-              {:else if tab.finished}
-                <CheckIcon size={18} />
               {:else}
                 <TerminalIcon size={18} />
               {/if}
@@ -165,9 +165,6 @@
   }
   .icon.needs-input {
     color: var(--status-needs-input);
-  }
-  .icon.finished {
-    color: var(--status-finished);
   }
   .text {
     flex: 1 1 auto;

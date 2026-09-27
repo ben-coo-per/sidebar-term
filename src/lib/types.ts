@@ -22,7 +22,14 @@ export interface GitInfo {
   headShort: string | null;
 }
 
-/** Everything the sidebar knows about a Session. Pushed by Rust on the `session-info` event. */
+/** What an Agent session is doing, derived on the Host (src-tauri/core/src/status.rs). */
+export type AgentStatus = "running" | "needs-input" | "done";
+
+/**
+ * Everything the sidebar knows about a Session: what the Host probes, what it read in the
+ * Session's output (the OSC title, BELs) and the Agent status derived from both. Pushed by Rust
+ * on the `session-info` event; sent whole by a Host over the Host protocol.
+ */
 export interface SessionInfo {
   sessionId: SessionId;
   /** comm of the process describing the Foreground process group, e.g. "zsh", "vim", "claude". */
@@ -34,6 +41,22 @@ export interface SessionInfo {
   /** Foreground is ssh/mosh/docker/kubectl...: cwd and git describe this Mac, show a remote marker. */
   remote: boolean;
   git: GitInfo | null;
+  /** The latest OSC 0/2 title the Session's output set ("" once cleared); null before the first. */
+  title: string | null;
+  /** BELs in the Session's output so far. */
+  bells: number;
+  /** Running / Needs input / Done for an Agent session; null otherwise. */
+  status: AgentStatus | null;
+}
+
+/** A Host as its clients see it (`hello.host` in the Host protocol). */
+export interface HostInfo {
+  /** The machine's hostname. */
+  name: string;
+  /** The core's version. */
+  version: string;
+  /** The Host's home directory, for the `~` in automatic Titles; null when unknown. */
+  home: string | null;
 }
 
 export interface SessionExit {

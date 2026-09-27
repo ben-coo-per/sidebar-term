@@ -24,6 +24,7 @@ import type {
   ActivitySession,
   ActivitySnapshot,
   AgentKind,
+  AgentStatus,
   AgentUsage,
   GitInfo,
   Group,
@@ -56,6 +57,12 @@ interface FakeSession {
   /** The command line of a fake long-running command, while one runs. */
   command: string | null;
   resumeKey: string | null;
+  /** The latest fake OSC title, and the fake agent's status (the Host derives the real one). */
+  title: string | null;
+  bells: number;
+  status: AgentStatus | null;
+  /** The timer that ends a fake agent's "running" spell. */
+  busy: ReturnType<typeof setTimeout> | null;
 }
 
 const HOME = "/Users/you";
@@ -97,7 +104,31 @@ function info(s: FakeSession): SessionInfo {
     cwd: s.remote ? HOME : s.cwd,
     remote: s.remote,
     git: s.remote ? null : gitFor(s.cwd),
+    title: s.title,
+    bells: s.bells,
+    status: s.agent ? s.status : null,
   };
+}
+
+/** A fake OSC title: written to the Terminal, and kept as the Host would read it. */
+function setTitle(s: FakeSession, title: string) {
+  s.title = title;
+  out(s, `\x1b]0;${title}\x07`);
+}
+
+/** The fake agent works for a while, then is done; the status changes go out as the Host's would. */
+function busy(s: FakeSession, ms: number) {
+  if (s.busy) clearTimeout(s.busy);
+  s.status = "running";
+  s.busy = setTimeout(() => {
+    s.busy = null;
+    if (s.agent && s.status === "running") {
+      s.status = "done";
+      if (s.agent === "codex") setTitle(s, "jack");
+      if (s.agent === "gemini") setTitle(s, "◇ Ready (jack)");
+      emit(s);
+    }
+  }, ms);
 }
 
 function emit(s: FakeSession) {
@@ -131,17 +162,29 @@ function run(s: FakeSession, cmd: string) {
       s.agent = null;
       s.remote = false;
       s.command = null;
-      out(s, "\x1b]0;\x07");
+      s.status = null;
+      if (s.busy) clearTimeout(s.busy);
+      s.busy = null;
+      setTitle(s, "");
       emit(s);
     } else if (head) {
       out(s, `(${s.fg} pretends to work on: ${cmd})\r\n`);
-      if (s.agent === "codex") out(s, "\x1b]0;⠋ jack\x07");
-      if (s.agent === "gemini") out(s, "\x1b]0;✦ Working… (jack)\x07");
+      if (s.agent === "codex") setTitle(s, "⠋ jack");
+      if (s.agent === "gemini") setTitle(s, "✦ Working… (jack)");
+      if (s.agent === "claude") setTitle(s, `◐ ${cmd.trim()}`);
       if (head === "ask") {
         out(s, "\x07");
-        if (s.agent === "codex") out(s, "\x1b]0;[ ! ] Action Required\x07");
-        if (s.agent === "gemini") out(s, "\x1b]0;✋ Action Required (jack)\x07");
+        s.bells += 1;
+        if (s.busy) clearTimeout(s.busy);
+        s.busy = null;
+        s.status = "needs-input";
+        if (s.agent === "codex") setTitle(s, "[ ! ] Action Required");
+        if (s.agent === "gemini") setTitle(s, "✋ Action Required (jack)");
+        if (s.agent === "claude") setTitle(s, `✳ ${cmd.trim()}`);
+      } else if (s.agent) {
+        busy(s, 3000);
       }
+      emit(s);
     }
     prompt(s);
     return;
@@ -161,8 +204,9 @@ function run(s: FakeSession, cmd: string) {
     case "gemini":
       s.fg = head;
       s.agent = head;
+      s.status = "done";
       out(s, `\x1b[35m[fake ${head}]\x1b[0m type anything; \`ask\` rings the bell; \`exit\` quits\r\n`);
-      if (head === "gemini") out(s, "\x1b]0;◇ Ready (jack)\x07");
+      if (head === "gemini") setTitle(s, "◇ Ready (jack)");
       emit(s);
       break;
     case "npm":
@@ -207,6 +251,10 @@ function spawn(cwd: string | null, resumeKey: string): SessionId {
     remote: false,
     command: null,
     resumeKey,
+    title: null,
+    bells: 0,
+    status: null,
+    busy: null,
   };
   sessions.set(s.id, s);
   setTimeout(() => {

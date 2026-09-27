@@ -8,10 +8,10 @@ names the ticket; the user may revise it there. Vocabulary: `CONTEXT.md`.
 
 | Side | Owns | Never does |
 |---|---|---|
-| The core (`src-tauri/core`, Rust) | Sessions (ptys, shells), facts about Sessions (Foreground process, Agent session, cwd, git), the layout (Groups, Tabs, order, custom Titles, each Tab's last cwd and Session, the active Tab; `layout.json`), Memory Guard, Resume, the Remote server and the sidebar phones list | Knows nothing about automatic Titles, Agent status or Unread (a client's); never names Tauri |
+| The core (`src-tauri/core`, Rust) | Sessions (ptys, shells), facts about Sessions (Foreground process, Agent session, cwd, git, the OSC title and BELs read in the output, Agent status), the layout (Groups, Tabs, order, custom Titles, each Tab's last cwd and Session, the active Tab; `layout.json`), Memory Guard, Resume, the Remote server and the Host protocol it serves | Knows nothing about automatic Titles or Unread (a client's); never names Tauri |
 | The app (`src-tauri/src`, Rust + Tauri) | The window, the menu, the IPC commands, Caffeinate, file drops; links the core as the local Host | - |
 | `sidebar-termd` (`src-tauri/daemon`, Rust) | The headless Host: links the core, serves it over Remote, runs under systemd | Never needs a display |
-| Webview (`src`) | A mirror of the Host's layout, and what is presentation: sidebar width and visibility, the Panel, automatic Titles, Agent status, Unread, drag-and-drop, the close-Tab confirmation (`settings.json`, section `sidebar`); xterm.js Terminals; all UI | Never shells out or reads the filesystem; never changes the layout except through the Host's commands |
+| Webview (`src`) | A mirror of the Host's layout and Session facts, and what is presentation: sidebar width and visibility, the Panel, automatic Titles, Unread, drag-and-drop, the close-Tab confirmation (`settings.json`, section `sidebar`); xterm.js Terminals; all UI | Never shells out or reads the filesystem; never changes the layout except through the Host's commands; never derives Agent status itself |
 
 A **Tab** points at a **Session** by `SessionId`. Session ids are per app run; the persisted layout
 stores each Tab's last cwd instead and the Host respawns a shell there at launch, with its Tab.
@@ -27,7 +27,7 @@ A Session is spawned by the Host as its Tab is made; the webview *attaches* its 
 | `session_resize` | `sessionId, cols, rows` | - |
 | `session_pause` / `session_resume` | `sessionId` | - (flow control, see `docs/research/pty.md`) |
 | `session_reset` | - | - (called once at webview startup: every Session a previous page's Terminal was attached to is replaced by a fresh one in its Tab, so a reload leaves no orphans, and Activity and Usage reading stop; what the replaced Sessions ran becomes Resume leftover; the app's first page finds nothing attached and keeps what the Host spawned at launch) |
-| `session_info` | `sessionId` | `SessionInfo \| null` (fresh probe) |
+| `session_info` | `sessionId` | `SessionInfo \| null` (a fresh probe, with the Session's title, BELs and Agent status as the monitor would send them) |
 | `layout_get` | - | `LayoutSnapshot`: the whole layout, for the first read; every change after that is a `layout` event |
 | `tab_new` | `groupId?, afterTabId?, cwd?, cols?, rows?` | `Tab`, with its Session, active; defaults: the active Tab's Group, right after it, at its cwd (see "Naming") |
 | `tab_close` | `tabId` | - (the Tab goes at once and its Session is killed, thawed first if frozen; no confirmation: the webview asks, `src/lib/sidebar/closeTabFlow.ts`) |
@@ -57,7 +57,7 @@ A Session is spawned by the Host as its Tab is made; the webview *attaches* its 
 | Event | Payload | When |
 |---|---|---|
 | `layout` | `LayoutSnapshot` | the layout changed: a Tab or Group made, closed, renamed, moved, collapsed or activated, a Tab's Session or last cwd changed. The whole model each time, with a revision |
-| `session-info` | `SessionInfo` | first probe of a Session, then on every change (monitor tick 500 ms) |
+| `session-info` | `SessionInfo` | first probe of a Session, then on every change (monitor tick 500 ms): the Foreground process, agent, cwd, git, and the OSC title, BEL count and Agent status the Host read in its output |
 | `session-exit` | `SessionExit` | the shell exited or was killed (its Tab is already gone from the layout) |
 | `activity` | `ActivitySnapshot` | every 2 s while `activity_watch(true)`; the first right away |
 | `usage` | `UsageSnapshot` | right away on `usage_watch(true, ..)`, then whenever a number changes (checked every 5 s) |
@@ -85,11 +85,12 @@ answers it (see "Host daemon" for the daemon's answer).
   `layout.json`, spawns each Tab's Session at launch (Tab id as Resume key) and on `tab_new`,
   kills it on `tab_close`, drops the Tab when its Session exits, emits `layout` on every change
   (under its lock, so snapshots arrive in order), rewrites the file 500 ms after the last change,
-  takes each Session's facts from the monitor (`observe`: the Tab's last cwd, the sidebar for
-  phones) and hands the webview's Terminal a Session's output (`attach`). `model.rs`: the pure
-  state and every transition, tested without a pty. `file.rs`: the version-2 file, the defensive
-  read, and the one-time move of a version-1 file's presentation fields into `settings.json`.
-  `sidebar.rs`: the `SidebarSnapshot` phones list, with the Title a Host can derive.
+  takes each Session's facts from the monitor (`observe`: the Tab's last cwd; the facts are kept
+  per live Session for clients, `facts` / `fact`), tells its watchers (Remote) of every change
+  to the layout or to a Session's facts, and hands the webview's Terminal a Session's output
+  (`attach`). `model.rs`: the pure state and every transition, tested without a pty. `file.rs`:
+  the version-2 file, the defensive read, and the one-time move of a version-1 file's
+  presentation fields into `settings.json`.
 - `outlet.rs` — where a Session's output goes before a Terminal attaches: held, bounded, handed
   over first on attach under the same lock the reader delivers through.
 - `session.rs` — `SessionManager`: spawn `$SHELL -l` on a `portable-pty` pty, one reader thread
@@ -100,8 +101,12 @@ answers it (see "Host daemon" for the daemon's answer).
   agent classification, remote-hop detection, cwd; `.git` file reading for repo / Worktree / branch.
   `detect/resume.rs`: the Resume entry of a Session's Foreground job (see "Resume"). The libproc
   readers are macOS-only; elsewhere they are stubs that read nothing until #26.
-- `monitor.rs` — thread ticking every 500 ms: probe every target, hand the changed infos to the
-  layout, emit `session-info` for each.
+- `monitor.rs` — thread ticking every 500 ms: probe every target, add what the Host read in the
+  Session's output (`Taps::marks`: the OSC title, BELs) and the Agent status (`status.rs`), hand
+  the changed infos to the layout, emit `session-info` for each.
+- `status.rs` — Agent status: Running / Needs input / Done from the agent kind, the title, when
+  output last arrived and when the last BEL rang (the table in "Agent status"). Pure, the clock
+  passed in; the cases `src/lib/agentStatus.ts` used to test are here.
 - `activity.rs` — `Activity`: thread idle until watched (by the webview, or by Memory Guard), then
   every 2 s runs `/bin/ps` over every process, reads this user's processes' footprints, attributes
   each to a Session by ppid descent from its shell, emits `activity` if the webview watches and
@@ -111,10 +116,12 @@ answers it (see "Host daemon" for the daemon's answer).
   tree; `frozen.json` for thawing after a crash (see "Tray").
 - `usage.rs` — `Usage`: thread idle until watched, then every 5 s reads the chosen agents' usage
   limits and emits `usage` on change (see "Panel"). App-only: the daemon never starts it.
-- `remote/` — Remote (see "Remote"): `mod.rs` the `Remote` state (on/off, pairing, the relay of
-  the layout's sidebar to phones), `server.rs` the axum routes and the WebSocket protocol on the
-  Host's runtime, `tap.rs` each Session's recent output and attached phones (fed by `session.rs`),
-  `auth.rs` paired phones and pairing codes (`remote.json`), `tailscale.rs` the Tailscale CLI.
+- `remote/` — Remote (see "Host protocol"): `mod.rs` the `Remote` state (on/off, pairing, the
+  relay of layout and Session changes to clients, the upload dir), `server.rs` the axum routes
+  and the WebSocket protocol on the Host's runtime, `tap.rs` each Session's recent output,
+  attached clients and the `Scanner` that reads OSC 0 / 2 titles and BELs out of the output as
+  it passes (fed by `session.rs`), `auth.rs` paired clients and pairing codes (`remote.json`),
+  `tailscale.rs` the Tailscale CLI.
 - `resume.rs` — `Resume`: a thread records every keyed Session's Resume entry to `resume.json`
   each second it changes, and a last time on exit (see "Resume").
 - `store.rs` — atomic JSON read/write of `layout.json`, `settings.json`, `resume.json`,
@@ -146,7 +153,8 @@ answers it (see "Host daemon" for the daemon's answer).
   event, older revisions ignored) with the actions that call the `tab_*` / `group_*` commands,
   plus this client's own state: sidebar width and visibility, the Panel, the user's unread marks
   (persisted, debounced, as the `sidebar` settings section: `src/lib/sidebar/settings.ts`).
-- `src/lib/sessions.svelte.ts` — reactive `SessionInfo` per Session plus derived Agent status.
+- `src/lib/sessions.svelte.ts` — reactive `SessionInfo` per Session (the Host's Agent status
+  included) plus this client's markers (finished, highlight) and the automatic Title.
 - `src/lib/hotkeys.ts` — Hotkey actions, defaults and the pure rules for combos;
   `src/lib/hotkeys.svelte.ts` — the live bindings (persisted overrides); `src/lib/shortcuts.ts` —
   the window listener that dispatches them.
@@ -161,9 +169,12 @@ answers it (see "Host daemon" for the daemon's answer).
   (`resume.svelte.ts`) and the pure rule for what to type (`model.ts`).
 - `src/lib/remote/*` — Remote on the Mac: the state mirror (`remote.svelte.ts`); the Settings
   section is `src/lib/settings/RemoteSection.svelte`.
-- `src/lib/mobile/*` + `src/routes/m` — the phone's page: the protocol (`protocol.ts`), the
-  connection (`client.ts`), its state (`store.svelte.ts`), font fitting (`fit.ts`) and the
-  screens (pairing, Tab list, `TerminalScreen` with `KeyBar`). `src/service-worker.ts` caches it.
+- `src/lib/host/protocol.ts` — the Host protocol's message types, output framing and reply
+  correlation (`Replies`), pure and tested; every client of a Host imports from here.
+- `src/lib/mobile/*` + `src/routes/m` — the phone's page: the connection (`client.ts`), its
+  state (`store.svelte.ts`: the Host's layout and Session facts, mirrored), what a row shows
+  (`rows.ts`, pure), font fitting (`fit.ts`) and the screens (pairing, Tab list,
+  `TerminalScreen` with `KeyBar`). `src/service-worker.ts` caches it.
 - `src/lib/panel/*` — the Panel (`Panel.svelte`), its view list (`views.ts`), the Activity view
   (`activity/`: snapshot store, the Tab stats setting, pure sorting / formatting / meter maths,
   components) and the Usage
@@ -207,8 +218,14 @@ answers it (see "Host daemon" for the daemon's answer).
 
 ## Agent status
 
-Derived in the webview from `SessionInfo.agent`, the Terminal's OSC title, BEL and output activity
-(sources: `docs/research/agent-detection.md`).
+Derived on the Host (`core/src/status.rs`) from `SessionInfo.agent`, the Session's OSC 0 / 2
+title, BEL and output activity, which the Host reads out of the Session's output as it passes
+its tap (`remote/tap.rs`, `Scanner`: the same bytes xterm.js parses, so no Terminal is needed;
+sequences split across reads are joined). The monitor puts the title, the BEL count and the
+status in every `SessionInfo`, re-derived each tick so Claude Code's time-based Running window
+expires on its own, and every client shows that status: the Mac webview, a phone, and whatever
+shows a headless Host's Tabs. `src/lib/agentStatus.ts` keeps only the Title rules. The rules
+(sources: `docs/research/agent-detection.md`):
 
 | Status | Codex | Gemini | Claude Code |
 |---|---|---|---|
@@ -220,7 +237,8 @@ Claude Code (2.1.267) prefixes its title with `◐`/`◑` while busy, alternatin
 terminal is focused, frozen on one frame otherwise. It uses `✳` when idle or waiting on a prompt.
 Read from its bundled source. There is no prefix under tmux (always `✳`), with
 `CLAUDE_CODE_DISABLE_TERMINAL_TITLE`, or in older versions. With no prefix we fall back to "output
-within the last ~3 s", which keystroke echo and redraws also trip.
+within the last ~3 s", which keystroke echo and redraws also trip; "when output last arrived"
+moves at most every 250 ms, so a redraw right after a BEL does not cancel Needs input.
 
 The Tab's icon slot shows the status: a spinner while Running, the robot once stopped (amber for
 Needs input). When the agent exits, the Tab stops being an Agent session; if that happens while the
@@ -374,81 +392,119 @@ and never types into one that is not at its prompt: that row stays, marked Busy.
 dropped once its Tab closes or becomes an Agent session (resumed by hand). Other jobs do not
 count, since shell startup files run commands too.
 
-## Remote
+## Host protocol
 
-A Host serving its Sessions to a phone (ADR 0002; vocabulary in `CONTEXT.md`). v1 is
-attach-and-drive: the phone sees the sidebar and drives any Session; it cannot create, close,
-rename or move Tabs yet (the layout is the Host's now; the commands reach the protocol with #28).
-Off by default.
+How a Host serves its Sessions, Tabs and Groups to a client (ADR 0002; vocabulary in
+`CONTEXT.md`): the phone's page today, the Mac app for a remote Host next (#29). Everything a
+client needs to show a Host's sidebar and drive it comes from the Host's core, never from
+another client. Remote is the switch: off by default, on in Settings (the daemon turns it on
+at launch).
 
 **Server** (`src-tauri/core/src/remote/`). `remote_set(true)` binds `127.0.0.1:<port>` (47611 unless
-`remote.json` says otherwise; never a LAN address) and runs axum on Tauri's tokio runtime. It
+`remote.json` says otherwise; never a LAN address) and runs axum on the Host's tokio runtime. It
 then asks Tailscale to publish it: `tailscale serve --bg --https=443 http://127.0.0.1:<port>`,
-which gives `https://<mac>.<tailnet>.ts.net` with a real certificate, reachable only from the
+which gives `https://<host>.<tailnet>.ts.net` with a real certificate, reachable only from the
 tailnet (Funnel is never used). The CLI is looked for in the Tailscale app and Homebrew. Without
 Tailscale the server still listens on localhost and Settings says what is missing. `enabled`
-persists in `remote.json`, so Remote comes back on at launch. Turning off closes every phone
+persists in `remote.json`, so Remote comes back on at launch. Turning off closes every client
 (close code 1001), removes the Serve rule and ends the pairing.
 
 Routes: `/` → `/m`; `/m…` → `index.html` (the SPA routes to `src/routes/m`); other paths are
-built assets through Tauri's asset resolver (embedded in a release build; `../build` on disk in
-dev, so run `pnpm build` first). `POST /api/pair {code, name}` pairs a phone. `GET /ws` is the
-phone's connection: first text frame `{"t":"auth","token"}` within five seconds or close 4401 /
-4408; then from the phone `attach`, `detach` `{sessionId}`, `input` `{sessionId, data}`, `ping`;
-from the Mac `hello {device, sidebar}`, `sidebar`, `attached {sessionId, cols, rows}` followed by
-a binary replay, `resized`, `exit`, `error`, `pong`, and binary output frames (a big-endian u32
-Session id, then the bytes). Types: `src/lib/mobile/protocol.ts`.
+built assets through `host::Assets` (the app: Tauri's asset resolver, embedded in a release
+build, `../build` on disk in dev, so run `pnpm build` first; the daemon: `--web-root`).
+`POST /api/pair {code, name}` pairs a client. `POST /api/upload` (multipart, `Authorization:
+Bearer <token>`) writes the first file part under `<data dir>/uploads/<stamp>/<name>` (the name's
+final component only) and answers `{path}`, so a screenshot dragged onto a remote Tab can be
+attached by path as `drop.rs` does locally; 64 MiB at most. `GET /ws` is the connection.
+
+**Messages** (`src/lib/host/protocol.ts` mirrors `remote/server.rs`). Text frames are JSON
+tagged by `t`, camelCase fields; output is binary. The first text frame must be `auth` within
+five seconds, or the Host closes with 4408 (4401 for a token it does not know).
+
+| From the client | Fields | The Host answers |
+|---|---|---|
+| `auth` | `token` | `hello`, or a close |
+| `attach` | `sessionId` | `attached {sessionId, cols, rows}`, then a binary replay of the Session's recent output; `exit` for a Session that is gone |
+| `detach` | `sessionId` | - |
+| `input` | `sessionId, data` | `error {message}` if the write failed |
+| `ping` | - | `pong` |
+| `resize` | `id, sessionId, cols, rows` | `ok` / `error`: sizes the pty, only for a client attached to the Session with no other client on the socket attached and no Terminal attached in process (the Mac webview's); the phone never sends it |
+| `tab_new` | `id, groupId?, afterTabId?, cwd?, cols?, rows?` | `ok {result: Tab}` |
+| `tab_close` / `tab_rename` / `tab_move` / `tab_activate` | `id, tabId` (+ `title` / `groupId, index?`) | `ok` |
+| `group_new` | `id, name?, tabId?` | `ok {result: Group}` |
+| `group_rename` / `group_move` / `group_delete` / `group_set_collapsed` | `id, groupId` (+ `name` / `index` / `collapsed`) | `ok` |
+
+The commands are the layout's (the IPC table above), one to one, and take a client-chosen `id`
+(a number) that the reply echoes: `ok {id, result?}` or `error {id, message}`. What they change
+arrives as `layout` like any other change, to every client.
+
+| From the Host | Fields | When |
+|---|---|---|
+| `hello` | `host {name, version, home}, device, layout, sessions` | right after `auth`: the whole layout (`LayoutSnapshot`) and every live Session's facts (`SessionInfo[]`); `device` is this client's name as the Host knows it; `home` is for the `~` in automatic Titles |
+| `layout` | `layout` | the layout changed; the whole `LayoutSnapshot`, with its revision (an older one is ignored) |
+| `session` | `session` | a Session's facts changed: `SessionInfo` whole (Foreground process, agent, cwd, git, remote, the OSC title, the BEL count, Agent status) |
+| `activity` | `sessions` | each Session's CPU and memory (`ActivitySession[]`), every sample while the Host samples Activity (the Mac's Panel or Memory Guard on; the daemon does not yet) |
+| `attached` / `resized` | `sessionId, cols, rows` | after `attach`; the pty was resized |
+| `exit` | `sessionId` | an attached Session ended (its Tab left the layout with it) |
+| `ok` / `error` | `id, result?` / `id, message` | a command's reply |
+| `error` | `message` (no `id`) | a message the Host could not read, or `input` failed |
+| `pong` | - | after `ping` |
+| binary frame | a big-endian u32 Session id, then the bytes | the Session's output, live, after the replay |
+
+Close codes: 4401 unknown token, 4408 no auth in time, 4429 the client fell too far behind
+(reconnect and replay), 1001 Remote turned off. `layout` and `session` carry no state of their
+own on the hub: a connection reads the latest from the layout when it relays, so a slow client
+sees the newest, and one that lags past the hub's buffer gets the whole layout and every
+Session's facts again.
 
 **Taps** (`remote/tap.rs`). `session.rs` gives every Session's output to `Taps` as well as to
-the webview's channel: a 256 KiB ring of recent output (trimmed to a line so a replay does not
-start inside an escape sequence), the pty's size (from spawn and every `session_resize`), and
-the phones attached. An attach reads the ring and registers the subscriber under one lock, so
-nothing falls between the replay and the live frames. A phone that falls 512 frames behind is
-dropped and reconnects (close 4429); the connection's 5 s ping notices.
+its outlet: a 256 KiB ring of recent output (trimmed to a line so a replay does not start
+inside an escape sequence), the pty's size (from spawn and every resize), the clients attached,
+and a `Scanner` that reads OSC 0 / 2 titles and BELs out of the bytes as they pass (see "Agent
+status"). An attach reads the ring and registers the subscriber under one lock, so nothing falls
+between the replay and the live frames. A client that falls 512 frames behind is dropped and
+reconnects (close 4429); the connection's 5 s ping notices.
 
-**Access**. Two gates: the tailnet (Tailscale's own device identity and WireGuard), then a
-token. Pairing: `remote_pair_begin` makes an 8-character code (32-symbol alphabet, 40 bits, ten
-minutes, five wrong tries) shown in Settings as a QR code of `<url>#pair=<code>` and as text.
-The phone posts it with its name and gets a 256-bit token; `remote.json` stores its SHA-256.
-Every WebSocket sends the token first; Settings lists paired phones with when each was last seen
-and removes them. Tailscale Serve's `Tailscale-User-Login` header is recorded on the pairing for
-display only: a local process could set it, so it is never what admits a phone. The pairing
-endpoint and the page are reachable without a token by design (the page has no secrets).
-
-**Sidebar for phones** (`core/src/layout/sidebar.rs`). The Host builds what a phone lists, a
-`SidebarSnapshot` (Groups, Tabs with a Title, the agent, Badge facts, the active Tab), from its
-layout and the latest `SessionInfo` of each Session, after every change to either; Remote keeps
-the latest for `hello` and relays each new one to every phone. The Title is what a Host can
-derive without a Terminal: a rename, else the agent's name, the Foreground process when it is
-not the shell, the cwd's basename; Agent status and "finished" stay null until the core reads
-OSC titles and BEL itself (#28). The daemon's phones get the same. `src/lib/remote/remote.svelte.ts`
-mirrors `RemoteSnapshot` for the Settings section (`src/lib/settings/RemoteSection.svelte`:
-switch, Tailscale status, pairing card, paired phones).
+**Access**. Unchanged: two gates, the tailnet (Tailscale's own device identity and WireGuard),
+then a token (`remote/auth.rs`). Pairing: `remote_pair_begin` makes an 8-character code
+(32-symbol alphabet, 40 bits, ten minutes, five wrong tries) shown in Settings as a QR code of
+`<url>#pair=<code>` and as text. The client posts it with its name and gets a 256-bit token;
+`remote.json` stores its SHA-256. Every WebSocket sends the token first, every upload carries it
+as a bearer; Settings lists paired phones with when each was last seen and removes them.
+Tailscale Serve's `Tailscale-User-Login` header is recorded on the pairing for display only: a
+local process could set it, so it is never what admits a client. The pairing endpoint and the
+page are reachable without a token by design (the page has no secrets).
 
 **The phone** (`src/routes/m`, `src/lib/mobile/`). `store.svelte.ts`: paired or not (token in
 `localStorage`), the connection (`client.ts`: one WebSocket, backoff 1–15 s, re-attaches what was
-attached, tries at once when the page returns to the foreground), the sidebar, the open Tab.
-Screens: pairing (code prefilled from the QR link), the Tab list (same icons and Badge as the
-Mac's rows), and `TerminalScreen`: an xterm.js Terminal at the Mac's grid, `t.reset()` before
-each replay, font size chosen so the Mac's columns fit the width (`fit.ts`, from a measured cell;
+attached, tries at once when the page returns to the foreground, pairs each command with its
+reply), the Host's layout and Session facts mirrored as the Mac's webview mirrors its local
+Host's, the open Tab. What a row shows is derived from those (`rows.ts`): the Title as the Mac
+derives it (a rename, else the agent's name, the OSC title of a running program, the Foreground
+process, the cwd's basename with `~` for the Host's home), the agent and its status from the
+Host, the Badge. Unread is per client and the phone keeps none. Screens: pairing (code prefilled
+from the QR link), the Tab list (same icons and Badge as the Mac's rows, the Host's name as its
+title), and `TerminalScreen`: an xterm.js Terminal at the Host's grid, `t.reset()` before each
+replay, font size chosen so the Host's columns fit the width (`fit.ts`, from a measured cell;
 below 6 px the grid scrolls sideways), the screen sized to the visual viewport so the key bar
 (Esc, Tab, Shift-Tab, a one-shot Ctrl, arrows, ^C, Return; DECCKM-aware arrows) sits above the
 keyboard. The phone never resizes the pty. `service-worker.ts` caches the page and assets
 (registered only on `/m` over HTTPS; the Mac's webview never has it) and `manifest.webmanifest`
 makes "Add to Home Screen" a full-screen app with its own icon; an installed page keeps its
-storage, so the pairing lasts.
+storage, so the pairing lasts. The phone sends no layout command yet (UI: #16).
 
 **Dev loop**. `pnpm build` (the server serves `../build`), then `pnpm tauri dev`; open
 `http://127.0.0.1:<port>/m` in a browser. `SIDEBAR_TERM_REMOTE_PAIR=1 pnpm tauri dev` (debug
 builds) starts a pairing at launch and prints its code and link, so a browser can pair without
-clicking through Settings.
+clicking through Settings. Against the daemon: `sidebar-termd --data-dir <tmp> --port <n>
+--web-root build --pair` prints the link.
 
 ## Host daemon
 
 `sidebar-termd` (`src-tauri/daemon/`) is the core with no window: a Host on a machine with no
 display (ADR 0002; the Dell of #24), or a second Host on a Mac for a smoke test. It links the same
 `sidebar_term_core` as the app and answers `core/src/host.rs` itself: events go on a broadcast
-bus (which the log reads now, and the Remote server will from #28), the data dir is
+bus (which the log reads; Remote hears of changes from the layout directly), the data dir is
 `$XDG_DATA_HOME/sidebar-term` (`~/.local/share/sidebar-term`), the phone page's assets are read
 from a directory, and the Remote server runs on the daemon's own tokio runtime. On a Mac the
 default data dir is the app's app-data dir with `daemon/` appended
@@ -459,7 +515,8 @@ one Mac never read each other's `remote.json`, `resume.json` or `layout.json`.
 layout (its own `layout.json`: a Session is spawned for every Tab at its last cwd, or one Tab in
 one Group on a fresh install, exactly as the app does), the monitor, loads `remote.json`, and
 turns Remote on exactly as `remote_set(true)` does in the app: binds `127.0.0.1:<port>` and asks
-Tailscale Serve to publish it. Phones get its sidebar in `hello` and on every change. `--port`
+Tailscale Serve to publish it. Clients get its layout and every Session's facts (Agent status
+included) in `hello` and on every change, and drive it with the same commands as the app. `--port`
 changes the port and keeps it in `remote.json`; `--web-root` names the built phone page (`pnpm
 build`'s `build/`; default `<data dir>/web`, and without it `/m` is 404 while pairing and `/ws`
 still work); `--pair` starts a pairing at launch and prints its code and link; SIGUSR1 starts
@@ -471,8 +528,8 @@ started, because a Host has no use for them yet: Activity and Memory Guard (#27 
 Linux reading), Usage and Caffeinate (app-only).
 
 Nothing attaches to its Sessions' outlets, so each holds its last 256 KiB of output for good
-(phones replay the tap instead). A client can drive its Sessions now, and create, close, rename
-or move its Tabs once the protocol carries the layout commands (#28).
+(clients replay the tap instead). A client can drive its Sessions, create, close, rename and
+move its Tabs and Groups, size a pty it alone shows, and upload files to it ("Host protocol").
 
 **Linux.** `cargo build --release --bin sidebar-termd` builds only the core and the daemon (no
 Tauri). The macOS-only reading in `detect/process.rs` and `activity.rs` is behind

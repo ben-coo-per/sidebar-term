@@ -16,7 +16,7 @@ pub enum AgentKind {
 }
 
 /// Repo / Worktree / branch facts for a Session's cwd. Drives the Badge.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitInfo {
     /// Display name of the repo: basename of the main worktree's directory.
@@ -35,8 +35,20 @@ pub struct GitInfo {
     pub head_short: Option<String>,
 }
 
-/// Everything the sidebar knows about a Session, recomputed by the monitor.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+/// What an Agent session is doing: Running, Needs input or Done (`status.rs`, from the
+/// Session's OSC title, BEL and output; docs/architecture.md "Agent status").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentStatus {
+    Running,
+    NeedsInput,
+    Done,
+}
+
+/// Everything the sidebar knows about a Session: what the monitor probes (the Foreground
+/// process, the agent, cwd, git) and what the Host read in its output (`remote/tap.rs`: the OSC
+/// title, BELs) with the Agent status derived from both. Recomputed every monitor tick.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionInfo {
     pub session_id: SessionId,
@@ -54,6 +66,16 @@ pub struct SessionInfo {
     /// and the UI shows a remote marker instead of a Badge.
     pub remote: bool,
     pub git: Option<GitInfo>,
+    /// The latest OSC 0 / 2 title the Session's output set (`""` once cleared); `None` before
+    /// the first one.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// BELs (0x07) in the Session's output so far. A client that wants to ring one compares.
+    #[serde(default)]
+    pub bells: u32,
+    /// Running / Needs input / Done for an Agent session; `None` otherwise.
+    #[serde(default)]
+    pub status: Option<AgentStatus>,
 }
 
 impl SessionInfo {
@@ -67,6 +89,9 @@ impl SessionInfo {
             cwd: None,
             remote: false,
             git: None,
+            title: None,
+            bells: 0,
+            status: None,
         }
     }
 }
@@ -260,39 +285,16 @@ pub struct LayoutSnapshot {
     pub active_tab_id: Option<String>,
 }
 
-/// A Tab as a phone lists it: what its row shows, already derived by the Host (`layout/sidebar.rs`).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+/// The Host as its clients see it: `hello.host` in the Host protocol (`src/lib/host/protocol.ts`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SidebarTab {
-    pub id: String,
-    /// `None` while the Tab has no Session: not attachable.
-    pub session_id: Option<SessionId>,
-    pub title: String,
-    pub agent: Option<AgentKind>,
-    /// Running / needs input / done. The Host derives none yet (that needs the Session's OSC
-    /// titles and BEL, #28); a client with a Terminal derives its own.
-    pub status: Option<String>,
-    /// An agent finished while the Tab was in the background. Per client; never set by the Host.
-    pub finished: bool,
-    pub git: Option<GitInfo>,
-    pub remote: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SidebarGroup {
-    pub id: String,
+pub struct HostInfo {
+    /// The machine's hostname.
     pub name: String,
-    pub tabs: Vec<SidebarTab>,
-}
-
-/// The sidebar as phones show it: the layout joined with each Session's facts. Sent as the
-/// Remote protocol's `sidebar` message (`src/lib/mobile/protocol.ts`).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SidebarSnapshot {
-    pub groups: Vec<SidebarGroup>,
-    pub active_tab_id: Option<String>,
+    /// The core's version.
+    pub version: String,
+    /// The Host's home directory, for the `~` in automatic Titles; `None` when unknown.
+    pub home: Option<String>,
 }
 
 /// What Tailscale says about this Mac, read from its CLI (`remote/tailscale.rs`).

@@ -4,26 +4,23 @@
 //!
 //! - `model.rs` is the pure state and its transitions, tested without a pty.
 //! - `file.rs` is `layout.json` (version 2) and the migration of the webview's version 1.
-//! - `sidebar.rs` joins the layout with each Session's facts into what phones list.
 //!
 //! [`Layout`] wraps the model in a lock and adds the side effects: a Tab's Session is spawned as
 //! the Tab is made (at launch for every persisted Tab, or on `tab_new`) and killed as it is
 //! closed, with its Tab id as the Resume key; a Session that exits on its own takes its Tab with
 //! it. Every change emits one `layout` event carrying the whole snapshot (under the model's lock,
 //! so snapshots arrive in order; each carries a revision for clients that cannot rely on that),
-//! rewrites `layout.json` after a 500 ms quiet period, and hands `watch`ers the sidebar for
-//! phones. Session facts (`SessionInfo`) reach it through `observe`, from the monitor.
+//! rewrites `layout.json` after a 500 ms quiet period, and tells `watch`ers (Remote, which
+//! serves the Host protocol). Session facts (`SessionInfo`) reach it through `observe`, from
+//! the monitor, and are kept per live Session for clients that arrive later (`facts`).
 //!
 //! Output before a client attaches is held in an `outlet::Outlet` per Session (`attach`).
 
 pub mod file;
 pub mod model;
-pub mod sidebar;
 
 use crate::host::{Events, OutputSink, Paths};
-use crate::model::{
-    Group, LayoutSnapshot, SessionId, SessionInfo, SidebarSnapshot, Tab, EVENT_LAYOUT,
-};
+use crate::model::{Group, LayoutSnapshot, SessionId, SessionInfo, Tab, EVENT_LAYOUT};
 use crate::outlet::{Outlet, Outlets};
 use crate::session::SessionManager;
 use model::{new_id, Model};
@@ -55,8 +52,18 @@ pub struct TabNew {
 
 /// Runs before a Session is killed (the app thaws it if Memory Guard froze it).
 pub type BeforeKill = Box<dyn Fn(SessionId) + Send + Sync>;
-/// Told the sidebar for phones after every change (Remote relays it).
-pub type Watcher = Box<dyn Fn(&SidebarSnapshot) + Send + Sync>;
+
+/// What a watcher is told: the layout changed, or a Session's facts did. Both are read back
+/// from the `Layout` (`snapshot`, `fact`), so a watcher that is slow sees the latest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Update {
+    Layout,
+    Session(SessionId),
+}
+
+/// Told of every change, under the model's lock, so updates arrive in order (Remote relays them
+/// to its clients).
+pub type Watcher = Box<dyn Fn(Update) + Send + Sync>;
 
 pub struct Layout {
     inner: Arc<Inner>,
@@ -71,7 +78,6 @@ struct Inner {
     saver: Mutex<Option<mpsc::Sender<()>>>,
     before_kill: BeforeKill,
     watchers: Mutex<Vec<Watcher>>,
-    home: Option<String>,
 }
 
 struct State {
@@ -123,7 +129,6 @@ impl Layout {
                 saver: Mutex::new(None),
                 before_kill,
                 watchers: Mutex::new(Vec::new()),
-                home: std::env::var("HOME").ok(),
             }),
         });
 
@@ -167,10 +172,9 @@ impl Layout {
         layout
     }
 
-    /// Told the sidebar for phones after every change, and right away.
+    /// Told of every change from now on (under the lock, in order).
     pub fn watch(&self, watcher: Watcher) {
-        let s = lock(&self.inner.state);
-        watcher(&self.inner.sidebar_locked(&s));
+        let _s = lock(&self.inner.state);
         lock(&self.inner.watchers).push(watcher);
     }
 
@@ -179,13 +183,27 @@ impl Layout {
         s.model.snapshot(s.revision)
     }
 
-    /// The sidebar as phones list it, now.
-    pub fn sidebar(&self) -> SidebarSnapshot {
-        self.inner.sidebar_locked(&lock(&self.inner.state))
+    /// The latest facts about every live Session, by Session id.
+    pub fn facts(&self) -> Vec<SessionInfo> {
+        let s = lock(&self.inner.state);
+        let mut facts: Vec<SessionInfo> = s.facts.values().cloned().collect();
+        facts.sort_by_key(|i| i.session_id);
+        facts
     }
 
-    /// The monitor's word on Sessions that changed: keeps each Tab's last cwd and the facts the
-    /// sidebar shows.
+    /// The latest facts about Session `id`; `None` for one the monitor has not seen, or that is gone.
+    pub fn fact(&self, id: SessionId) -> Option<SessionInfo> {
+        lock(&self.inner.state).facts.get(&id).cloned()
+    }
+
+    /// Whether a client with a Terminal has attached to Session `id` in process (the Mac webview),
+    /// so a client on the socket is not the only one showing it.
+    pub fn is_attached(&self, id: SessionId) -> bool {
+        self.inner.outlets.get(id).is_some_and(|o| o.was_attached())
+    }
+
+    /// The monitor's word on Sessions that changed: keeps each Tab's last cwd and the facts
+    /// clients are shown, and tells the watchers.
     pub fn observe(&self, infos: &[SessionInfo]) {
         let mut s = lock(&self.inner.state);
         let mut layout_changed = false;
@@ -202,8 +220,9 @@ impl Layout {
         }
         if layout_changed {
             self.inner.changed(&mut s);
-        } else {
-            self.inner.notify(&s);
+        }
+        for info in infos {
+            self.inner.notify(Update::Session(info.session_id));
         }
     }
 
@@ -431,23 +450,15 @@ impl Inner {
         s.revision += 1;
         self.events
             .emit(EVENT_LAYOUT, &s.model.snapshot(s.revision));
-        self.notify(s);
+        self.notify(Update::Layout);
         self.schedule_save();
     }
 
-    fn notify(&self, s: &State) {
-        let watchers = lock(&self.watchers);
-        if watchers.is_empty() {
-            return;
+    /// Called with the state lock held, so watchers hear of changes in order.
+    fn notify(&self, update: Update) {
+        for w in lock(&self.watchers).iter() {
+            w(update);
         }
-        let sidebar = self.sidebar_locked(s);
-        for w in watchers.iter() {
-            w(&sidebar);
-        }
-    }
-
-    fn sidebar_locked(&self, s: &State) -> SidebarSnapshot {
-        sidebar::build(&s.model, &s.facts, self.home.as_deref())
     }
 
     fn save_now(&self) {
@@ -563,12 +574,12 @@ mod tests {
             serde_json::from_slice(&std::fs::read(dir.path().join(crate::store::LAYOUT)).unwrap()).unwrap();
         assert_eq!(on_disk["version"], 2);
 
-        // Phones see the sidebar right away, and after every change.
-        let seen: Arc<Mutex<Vec<SidebarSnapshot>>> = Arc::default();
+        // Watchers (Remote) hear of every change, layout and facts alike.
+        let seen: Arc<Mutex<Vec<Update>>> = Arc::default();
         let for_watch = seen.clone();
-        layout.watch(Box::new(move |s| lock(&for_watch).push(s.clone())));
-        assert_eq!(lock(&seen).len(), 1);
-        assert_eq!(lock(&seen)[0].groups[0].tabs[0].session_id, Some(sid));
+        layout.watch(Box::new(move |u| lock(&for_watch).push(u)));
+        assert!(lock(&seen).is_empty());
+        assert!(layout.facts().is_empty(), "the monitor has not spoken yet");
 
         // A Terminal attaches: what the shell printed so far comes first, then the live output.
         let out: Arc<Mutex<Vec<u8>>> = Arc::default();
@@ -597,19 +608,26 @@ mod tests {
         assert_eq!(snap.active_tab_id, Some(second.id.clone()));
         assert_eq!(recorder.named(EVENT_LAYOUT).len(), events_before + 1);
         assert_eq!(recorder.named(EVENT_LAYOUT).last().unwrap()["revision"], snap.revision);
-        assert_eq!(lock(&seen).last().unwrap().groups[0].tabs.len(), 2);
+        assert_eq!(*lock(&seen), [Update::Layout]);
+        assert!(layout.is_attached(sid) && !layout.is_attached(sid2));
 
-        // The monitor's facts keep the Tab's last cwd (and reach the sidebar).
+        // The monitor's facts keep the Tab's last cwd, are kept for late clients, and are
+        // announced after the layout change they caused.
         let mut info = SessionInfo::empty(sid2);
         info.cwd = Some("/tmp/elsewhere".into());
-        layout.observe(&[info]);
+        layout.observe(&[info.clone()]);
         assert_eq!(layout.snapshot().tabs[&second.id].last_cwd.as_deref(), Some("/tmp/elsewhere"));
-        assert_eq!(lock(&seen).last().unwrap().groups[0].tabs[1].title, "elsewhere");
+        assert_eq!(&lock(&seen)[1..], [Update::Layout, Update::Session(sid2)]);
+        assert_eq!(layout.fact(sid2), Some(info.clone()));
+        assert_eq!(layout.facts(), [info]);
+        assert_eq!(layout.fact(sid), None);
 
-        // Closing a Tab: gone at once, its Session killed (after the hook) and its exit ignored.
+        // Closing a Tab: gone at once, its Session killed (after the hook), its facts dropped
+        // and its exit ignored.
         layout.tab_close(&second.id).unwrap();
         assert_eq!(layout.snapshot().tabs.len(), 1);
         assert_eq!(*lock(&killed), [sid2]);
+        assert!(layout.facts().is_empty());
         assert!(
             wait_until(T, || recorder
                 .named(EVENT_SESSION_EXIT)

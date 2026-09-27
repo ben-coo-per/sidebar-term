@@ -85,8 +85,12 @@ The panel view showing how much of each chosen coding agent's usage limits is sp
 _Avoid_: Quota, credits, stats, Activity (that is CPU and memory)
 
 **Remote**:
-The Mac app serving its Sessions to a phone: while on, a server on 127.0.0.1 that Tailscale Serve publishes to the tailnet, and the phone's page at `/m`. Off by default; turned on in Settings.
+A Host serving its Sessions, Tabs and Groups to clients: while on, a server on 127.0.0.1 that Tailscale Serve publishes to the tailnet, speaking the Host protocol, and the phone's page at `/m`. Off by default on the Mac; turned on in Settings. Always on in the daemon.
 _Avoid_: Mobile app, remote access server, web UI
+
+**Host protocol**:
+The messages between a Host and a client over Remote's WebSocket: the Host's layout and each Session's facts (Agent status included), output and input, the Tab and Group commands with their replies, plus a file upload. The phone speaks it today; the Mac app will, for a remote Host.
+_Avoid_: Remote protocol, API, wire format
 
 **Pairing**:
 Letting one phone in: Settings shows a code (as a QR link, or to type); the phone presents it once and gets a token it sends on every connection. A pairing code lasts ten minutes and five wrong tries.

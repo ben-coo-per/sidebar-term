@@ -12,10 +12,10 @@
   import KeyBar from "./KeyBar.svelte";
   import StatusBanner from "./StatusBanner.svelte";
   import { fontSizeGuess, fontSizeToFit } from "./fit";
-  import type { SidebarTab } from "./protocol";
+  import type { TabRow } from "./rows";
   import { closeTerminal, remoteClient } from "./store.svelte";
 
-  let { tab }: { tab: SidebarTab } = $props();
+  let { tab }: { tab: TabRow } = $props();
 
   let screen: HTMLDivElement;
   let scroller: HTMLDivElement;
