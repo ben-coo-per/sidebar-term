@@ -1,7 +1,9 @@
-// The phone's connection to a Host: one WebSocket to /ws, authenticated with the pairing token
-// as its first message, reconnecting with backoff when it drops and re-attaching what was
-// attached. Protocol: src/lib/host/protocol.ts (mirrors src-tauri/core/src/remote/server.rs).
-// No DOM beyond WebSocket and fetch; the store (./store.svelte.ts) owns what is shown.
+// A client's connection to a Host: one WebSocket to the Host's `/ws`, authenticated with the
+// pairing token as its first message, reconnecting with backoff when it drops and re-attaching
+// what was attached. Protocol: ./protocol.ts (mirrors src-tauri/core/src/remote/server.rs).
+// Both clients of a Host use it: the phone's page (src/lib/mobile/store.svelte.ts, against the
+// origin it was loaded from) and the Mac app for each paired Host (./hosts.svelte.ts, against
+// the Host's URL). No DOM beyond WebSocket and fetch; the stores own what is shown.
 
 import type { ActivitySession, HostInfo, LayoutSnapshot, SessionId, SessionInfo } from "../types";
 import {
@@ -13,20 +15,23 @@ import {
   Replies,
   UPLOAD_PATH,
   type ClientMessage,
+  type Command,
   type CommandMessage,
   type CommandResult,
   type UploadResponse,
-} from "../host/protocol";
+} from "./protocol";
+import { webSocketUrl } from "./settings";
 
 export type ConnectionStatus = "connecting" | "online" | "offline";
 
 export interface ClientEvents {
-  /** `detail` says why we are offline, for the banner. */
+  /** `detail` says why we are offline, when the Host said. */
   status: (status: ConnectionStatus, detail: string | null) => void;
   hello: (host: HostInfo, device: string, layout: LayoutSnapshot, sessions: SessionInfo[]) => void;
   layout: (layout: LayoutSnapshot) => void;
   session: (session: SessionInfo) => void;
   activity: (sessions: ActivitySession[]) => void;
+  /** Attached; a replay of the Session's recent output follows, at this grid. */
   attached: (sessionId: SessionId, cols: number, rows: number) => void;
   resized: (sessionId: SessionId, cols: number, rows: number) => void;
   output: (sessionId: SessionId, bytes: Uint8Array) => void;
@@ -37,9 +42,47 @@ export interface ClientEvents {
   unauthorized: () => void;
 }
 
+/** What a store needs of a connection; `RemoteClient` is the real one, src/lib/mock.ts fakes one. */
+export interface HostClient {
+  on<K extends keyof ClientEvents>(event: K, cb: ClientEvents[K]): () => void;
+  connect(): void;
+  /** Try now instead of waiting out the backoff. */
+  reconnectNow(): void;
+  close(): void;
+  attach(sessionId: SessionId): void;
+  detach(sessionId: SessionId): void;
+  input(sessionId: SessionId, data: string): void;
+  /** A layout command or `resize`: resolves with the reply's result, rejects with the Host's message. */
+  command(msg: Command): Promise<CommandResult>;
+  /** Upload a file to the Host; resolves with its path there. */
+  upload(file: File): Promise<string>;
+}
+
+/** What `POST /api/pair` answers. */
+export interface Paired {
+  token: string;
+  /** This client's name as the Host recorded it. */
+  device: string;
+}
+
+/**
+ * Present a pairing code to the Host at `base` (`https://dell.tail1234.ts.net`) with this
+ * client's name; resolves with the token to connect with, rejects with the Host's reason.
+ */
+export async function pairWithHost(base: string, code: string, name: string): Promise<Paired> {
+  const res = await fetch(`${base}/api/pair`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code, name }),
+  });
+  const body = (await res.json().catch(() => ({}))) as Partial<Paired> & { error?: string };
+  if (!res.ok || !body.token) throw new Error(body.error ?? `Pairing failed (${res.status}).`);
+  return { token: body.token, device: body.device ?? name };
+}
+
 const BACKOFF_MS = [1000, 2000, 4000, 8000, 15000];
 
-export class RemoteClient {
+export class RemoteClient implements HostClient {
   private ws: WebSocket | null = null;
   private wanted = new Set<SessionId>();
   private attempts = 0;
@@ -60,15 +103,11 @@ export class RemoteClient {
     unauthorized: new Set(),
   };
 
+  /** `base` is the Host's origin: `https://dell.tail1234.ts.net`, or `location.origin` on the phone. */
   constructor(
-    private readonly url: string,
+    private readonly base: string,
     private readonly token: string,
   ) {}
-
-  /** The WebSocket URL for the page we were loaded from. */
-  static urlFor(location: { protocol: string; host: string }): string {
-    return `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
-  }
 
   on<K extends keyof ClientEvents>(event: K, cb: ClientEvents[K]): () => void {
     this.listeners[event].add(cb);
@@ -80,7 +119,7 @@ export class RemoteClient {
       try {
         (cb as (...a: Parameters<ClientEvents[K]>) => void)(...args);
       } catch (err) {
-        console.error(`[remote] "${event}" listener threw`, err);
+        console.error(`[host] "${event}" listener threw`, err);
       }
     }
   }
@@ -92,7 +131,14 @@ export class RemoteClient {
       this.retry = null;
     }
     this.emit("status", "connecting", null);
-    const ws = new WebSocket(this.url);
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(webSocketUrl(this.base));
+    } catch (e) {
+      // A URL the browser refuses outright (a bad scheme): nothing will ever connect.
+      this.emit("status", "offline", e instanceof Error ? e.message : String(e));
+      return;
+    }
     ws.binaryType = "arraybuffer";
     this.ws = ws;
     ws.onopen = () => {
@@ -104,7 +150,7 @@ export class RemoteClient {
       this.ws = null;
       this.replies.fail("The connection dropped.");
       if (ev.code === CLOSE_UNAUTHORIZED) {
-        this.emit("status", "offline", "This phone is no longer paired.");
+        this.emit("status", "offline", "No longer paired with this Host.");
         this.emit("unauthorized");
         return;
       }
@@ -118,7 +164,6 @@ export class RemoteClient {
     };
   }
 
-  /** Try now (the page came back to the foreground) instead of waiting out the backoff. */
   reconnectNow(): void {
     if (this.ws || this.closed) return;
     this.attempts = 0;
@@ -165,11 +210,7 @@ export class RemoteClient {
     this.send({ t: "input", sessionId, data });
   }
 
-  /**
-   * A layout command (or `resize`), answered by the Host: resolves with the command's result
-   * (`tab_new` the Tab, `group_new` the Group), rejects with the Host's message.
-   */
-  command(msg: Omit<CommandMessage, "id">): Promise<CommandResult> {
+  command(msg: Command): Promise<CommandResult> {
     const { id, reply } = this.replies.open();
     if (!this.send({ ...msg, id } as CommandMessage)) {
       this.replies.settle({ t: "error", id, message: "Not connected." });
@@ -177,11 +218,10 @@ export class RemoteClient {
     return reply;
   }
 
-  /** Upload a file to the Host; resolves with its path there, for attaching by path. */
   async upload(file: File): Promise<string> {
     const body = new FormData();
     body.append("file", file, file.name);
-    const res = await fetch(UPLOAD_PATH, {
+    const res = await fetch(`${this.base}${UPLOAD_PATH}`, {
       method: "POST",
       headers: { authorization: `Bearer ${this.token}` },
       body,

@@ -20,3 +20,5 @@ sha2 = "0.10"
 rand = "0.9"
 base64 = "0.22"
 futures-util = "0.3"
+# CORS on the API routes, for the Mac app's webview (its own origins only; see remote/server.rs).
+tower-http = { version = "0.6", features = ["cors"] }

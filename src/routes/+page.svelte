@@ -5,7 +5,8 @@
   import "$lib/theme.css";
   import Sidebar from "$lib/sidebar/Sidebar.svelte";
   import TerminalPane from "$lib/terminal/TerminalPane.svelte";
-  import { activeTab, initLayout, layout } from "$lib/layout.svelte";
+  import { activeTab, initLayout, layout, localSessionId, tabSessionKey } from "$lib/layout.svelte";
+  import { initHosts } from "$lib/host/hosts.svelte";
   import { initShortcuts } from "$lib/shortcuts";
   import { initHotkeys } from "$lib/hotkeys.svelte";
   import { initUsageSettings } from "$lib/panel/usage/settings.svelte";
@@ -23,8 +24,14 @@
   import { untrack } from "svelte";
 
   $effect(() => {
-    // Resume needs the Tabs: it drops entries whose Tab is gone.
-    void initLayout().then(initResume);
+    // Resume needs the Tabs: it drops entries whose Tab is gone. Paired Hosts join once the
+    // local Host's layout is in, so their sections come after its Groups.
+    let stopHosts: (() => void) | null = null;
+    let stopped = false;
+    void initLayout().then(() => {
+      void initResume();
+      if (!stopped) stopHosts = initHosts();
+    });
     void initHotkeys();
     void initUsageSettings();
     void initActivitySettings();
@@ -35,6 +42,8 @@
     const stopMemoryGuard = initMemoryGuard();
     const menuSettings = onMenuSettings(openSettings);
     return () => {
+      stopped = true;
+      stopHosts?.();
       stopShortcuts();
       stopDropGuard();
       stopCaffeinate();
@@ -52,8 +61,9 @@
 
   const active = $derived(activeTab());
 
-  // Memory Guard never freezes the Tab in view, and going to a frozen Tab thaws it.
-  $effect(() => setVisibleSession(active?.sessionId ?? null));
+  // Memory Guard never freezes the Tab in view, and going to a frozen Tab thaws it. It is this
+  // Mac's: a paired Host's Tab in view leaves no local Session in view.
+  $effect(() => setVisibleSession(localSessionId(active)));
 
   // Tabs show their CPU and memory from Activity samples, taken only while something shows them.
   $effect(() => {
@@ -67,7 +77,7 @@
   {/if}
   <section class="main">
     <div class="terminal">
-      <TerminalPane sessionId={active?.sessionId ?? null} />
+      <TerminalPane sessionKey={tabSessionKey(active)} />
     </div>
     <ResumeBanner />
     {#if settingsPage.open}

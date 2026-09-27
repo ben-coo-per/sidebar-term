@@ -1,14 +1,18 @@
-// Reactive per-Session facts: the latest SessionInfo (with the Agent status the Host derived,
-// src-tauri/core/src/status.rs), the Terminal's OSC title for the automatic Title, and this
-// client's own markers (finished, highlight). Also computes the automatic Title (each Tab's
-// `lastCwd` is the Host's to keep). See docs/architecture.md "Agent status" and "Naming".
+// Reactive per-Session facts, for every Host's Sessions: the latest SessionInfo (with the Agent
+// status the Host derived, src-tauri/core/src/status.rs), the Terminal's OSC title for the
+// automatic Title, and this client's own markers (finished, highlight). Also computes the
+// automatic Title (each Tab's `lastCwd` is its Host's to keep). The local Host's facts arrive on
+// the `session-info` event; a paired Host's on its socket (src/lib/host/hosts.svelte.ts), through
+// `applySessionInfo`. Keyed by `SessionKey` (src/lib/host/ids.ts): Session ids are per Host.
+// See docs/architecture.md "Agent status", "Naming" and "Hosts".
 //
 // OWNER: sidebar agent.
 
 import { inTauri, onSessionInfo } from "./ipc";
 import { terminals } from "./terminal/manager";
-import type { AgentStatus, SessionId, SessionInfo } from "./types";
+import type { AgentStatus, SessionInfo } from "./types";
 import { computeAutomaticTitle } from "./agentStatus";
+import { isLocal, LOCAL_HOST, sessionKey, type HostId, type SessionKey } from "./host/ids";
 import { layout, setTabUnread, tabIdForSession, type Tab } from "./layout.svelte";
 
 export interface SessionState {
@@ -26,31 +30,43 @@ export interface SessionState {
   highlight: boolean;
 }
 
-const sessions = $state<Record<SessionId, SessionState>>({});
+const sessions = $state<Record<SessionKey, SessionState>>({});
 
-export function sessionState(sessionId: SessionId | null): SessionState | null {
-  if (sessionId === null) return null;
-  return sessions[sessionId] ?? null;
+export function sessionState(key: SessionKey | null): SessionState | null {
+  if (key === null) return null;
+  return sessions[key] ?? null;
 }
 
-function ensure(id: SessionId): SessionState {
-  let s = sessions[id];
+/** The facts of a Tab's Session, on whichever Host it lives. */
+export function sessionOf(tab: Tab): SessionState | null {
+  return tab.sessionId === null ? null : sessionState(sessionKey(tab.host, tab.sessionId));
+}
+
+function ensure(key: SessionKey): SessionState {
+  let s = sessions[key];
   if (!s) {
     s = { info: null, title: "", status: null, finished: false, highlight: false };
-    sessions[id] = s;
+    sessions[key] = s;
   }
   return s;
 }
 
-function isActiveTabForSession(sessionId: SessionId): boolean {
-  const tabId = tabIdForSession(sessionId);
+function isActiveTabForSession(key: SessionKey): boolean {
+  const tabId = tabIdForSession(key);
   return tabId !== null && tabId === layout.activeTabId;
 }
 
 // --- Wire up Session facts -----------------------------------------------------------------
 
-void onSessionInfo((info) => {
-  const s = ensure(info.sessionId);
+/**
+ * A Host's word on one of its Sessions: the local Host's on every `session-info` event, a paired
+ * Host's on every `session` message (and all of them in `hello`). Sets this client's markers
+ * from the change: an agent that finished, or a status that needs a look, while the Tab was not
+ * in view.
+ */
+export function applySessionInfo(host: HostId, info: SessionInfo): void {
+  const key = sessionKey(host, info.sessionId);
+  const s = ensure(key);
   const previousAgent = s.info?.agent ?? null;
   const prevStatus = s.status;
   s.info = info;
@@ -59,32 +75,34 @@ void onSessionInfo((info) => {
   if (previousAgent && !info.agent) {
     // The agent's last title (Claude Code: conversation text) must not outlive it.
     s.title = "";
-    if (!isActiveTabForSession(info.sessionId)) s.finished = true;
+    if (!isActiveTabForSession(key)) s.finished = true;
   }
-  if (
-    !isActiveTabForSession(info.sessionId) &&
-    (s.status === "done" || s.status === "needs-input") &&
-    s.status !== prevStatus
-  ) {
+  if (!isActiveTabForSession(key) && (s.status === "done" || s.status === "needs-input") && s.status !== prevStatus) {
     s.highlight = true;
   }
+}
+
+/** Forget a Session's facts (it ended, or its Host was removed). */
+export function forgetSession(key: SessionKey): void {
+  delete sessions[key];
+}
+
+void onSessionInfo((info) => applySessionInfo(LOCAL_HOST, info));
+
+terminals.on("title", (key, title) => {
+  ensure(key).title = title;
 });
 
-terminals.on("title", (sessionId, title) => {
-  ensure(sessionId).title = title;
-});
-
-terminals.on("exit", (sessionId) => {
-  delete sessions[sessionId];
+terminals.on("exit", (key) => {
+  forgetSession(key);
 });
 
 // Clear the sticky "finished"/"highlight" markers the moment a Tab is (re)activated.
 $effect.root(() => {
   $effect(() => {
     const tab = layout.activeTabId ? layout.tabs[layout.activeTabId] : null;
-    const sessionId = tab?.sessionId ?? null;
-    if (sessionId === null) return;
-    const s = sessions[sessionId];
+    if (!tab || tab.sessionId === null) return;
+    const s = sessions[sessionKey(tab.host, tab.sessionId)];
     if (s) {
       s.finished = false;
       s.highlight = false;
@@ -96,50 +114,56 @@ $effect.root(() => {
 
 /**
  * Whether a Tab reads as unread: the user marked it, or its agent finished, stopped or asked for
- * input while the Tab was in the background.
+ * input while the Tab was in the background. The same rules on every Host.
  */
 export function tabIsUnread(tab: Tab): boolean {
-  const s = tab.sessionId !== null ? sessions[tab.sessionId] : null;
+  const s = sessionOf(tab);
   return tab.unread || (s?.finished ?? false) || (s?.highlight ?? false);
 }
 
 /** Mark a Tab unread, or read: read also clears its agent's "finished" and highlight markers. */
 export function setTabRead(tab: Tab, read: boolean): void {
   setTabUnread(tab.id, !read);
-  const s = read && tab.sessionId !== null ? sessions[tab.sessionId] : null;
+  const s = read ? sessionOf(tab) : null;
   if (s) {
     s.finished = false;
     s.highlight = false;
   }
 }
 
-// --- Home directory, for the `~` special case in the automatic Title -----------------------
+// --- Home directories, for the `~` special case in the automatic Title ---------------------
 
-let homeDir: string | null = null;
+/** Each Host's home: this Mac's read at startup, a paired Host's from its `hello`. */
+const homes = new Map<HostId, string | null>();
+
 async function initHome(): Promise<void> {
   if (inTauri) {
     try {
       const { homeDir: getHomeDir } = await import("@tauri-apps/api/path");
-      homeDir = await getHomeDir();
+      homes.set(LOCAL_HOST, await getHomeDir());
     } catch {
-      homeDir = null;
+      homes.set(LOCAL_HOST, null);
     }
   } else {
-    homeDir = "/Users/you"; // matches src/lib/mock.ts HOME
+    homes.set(LOCAL_HOST, "/Users/you"); // matches src/lib/mock.ts HOME
   }
 }
 void initHome();
 
+export function setHostHome(host: HostId, home: string | null): void {
+  if (!isLocal(host)) homes.set(host, home);
+}
+
 /** The Title shown on a Tab: a user rename if set, else the automatic Title. */
 export function tabTitle(tab: Tab): string {
   if (tab.customTitle) return tab.customTitle;
-  const s = tab.sessionId !== null ? sessions[tab.sessionId] : null;
+  const s = sessionOf(tab);
   return computeAutomaticTitle({
     agent: s?.info?.agent ?? null,
     oscTitle: s?.title ?? null,
     foreground: s?.info?.foreground ?? null,
     shellIsForeground: s?.info?.shellIsForeground ?? true,
     cwd: s?.info?.cwd ?? tab.lastCwd,
-    home: homeDir,
+    home: homes.get(tab.host) ?? null,
   });
 }

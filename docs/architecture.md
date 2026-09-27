@@ -11,7 +11,7 @@ names the ticket; the user may revise it there. Vocabulary: `CONTEXT.md`.
 | The core (`src-tauri/core`, Rust) | Sessions (ptys, shells), facts about Sessions (Foreground process, Agent session, cwd, git, the OSC title and BELs read in the output, Agent status), the layout (Groups, Tabs, order, custom Titles, each Tab's last cwd and Session, the active Tab; `layout.json`), Memory Guard, Resume, the Remote server and the Host protocol it serves | Knows nothing about automatic Titles or Unread (a client's); never names Tauri |
 | The app (`src-tauri/src`, Rust + Tauri) | The window, the menu, the IPC commands, Caffeinate, file drops; links the core as the local Host | - |
 | `sidebar-termd` (`src-tauri/daemon`, Rust) | The headless Host: links the core, serves it over Remote, runs under systemd | Never needs a display |
-| Webview (`src`) | A mirror of the Host's layout and Session facts, and what is presentation: sidebar width and visibility, the Panel, automatic Titles, Unread, drag-and-drop, the close-Tab confirmation (`settings.json`, section `sidebar`); xterm.js Terminals; all UI | Never shells out or reads the filesystem; never changes the layout except through the Host's commands; never derives Agent status itself |
+| Webview (`src`) | A mirror of every Host's layout and Session facts (the local Host's in process, each paired Host's over the Host protocol), and what is presentation: the Tab in view, sidebar width and visibility, the Panel, automatic Titles, Unread, drag-and-drop, the close-Tab confirmation (`settings.json`, section `sidebar`), which Hosts it is paired with (section `hosts`); xterm.js Terminals; all UI | Never shells out or reads the filesystem; never changes a layout except through its Host's commands; never derives Agent status itself |
 
 A **Tab** points at a **Session** by `SessionId`. Session ids are per app run; the persisted layout
 stores each Tab's last cwd instead and the Host respawns a shell there at launch, with its Tab.
@@ -48,7 +48,7 @@ A Session is spawned by the Host as its Tab is made; the webview *attaches* its 
 | `caffeinate_set` | `on: boolean` | `boolean`: whether Caffeinate is on now |
 | `resume_leftover` | - | `ResumeEntry[]`: what earlier runs left running, not yet resumed or dismissed (see "Resume") |
 | `resume_forget` | `keys: string[]` | - (drop leftover entries: resumed, dismissed, or their Tab is gone) |
-| `settings_load` / `settings_save` | `settings: json` | opaque JSON blob in the app data dir; one section per owner (`hotkeys`, `usage`, `activity`, `memoryGuard`, `sidebar`), merged by `src/lib/settings/store.ts` |
+| `settings_load` / `settings_save` | `settings: json` | opaque JSON blob in the app data dir; one section per owner (`hotkeys`, `usage`, `activity`, `memoryGuard`, `sidebar`, `hosts`), merged by `src/lib/settings/store.ts` |
 | `remote_state` | - | `RemoteSnapshot` after re-reading Tailscale's state (async: runs its CLI) |
 | `remote_set` | `on: boolean` | `RemoteSnapshot` (turn Remote on or off; rejects with why the server could not start) |
 | `remote_pair_begin` / `remote_pair_cancel` | - | `Pairing` (a code, its QR link and expiry) / - |
@@ -145,22 +145,37 @@ answers it (see "Host daemon" for the daemon's answer).
 
 ## Webview modules
 
-- `src/lib/terminal/manager.ts` — `terminals`: one xterm.js `Terminal` per Session, attached to
-  the Session's output as the layout names it, mount only the active one, WebGL on the mounted
-  Terminal with DOM fallback, fit, flow control, title/bell events.
-- `src/lib/terminal/TerminalPane.svelte` — shows the active Session's Terminal.
-- `src/lib/layout.svelte.ts` — the mirror of the Host's layout (`layout_get`, then every `layout`
-  event, older revisions ignored) with the actions that call the `tab_*` / `group_*` commands,
-  plus this client's own state: sidebar width and visibility, the Panel, the user's unread marks
-  (persisted, debounced, as the `sidebar` settings section: `src/lib/sidebar/settings.ts`).
-- `src/lib/sessions.svelte.ts` — reactive `SessionInfo` per Session (the Host's Agent status
-  included) plus this client's markers (finished, highlight) and the automatic Title.
+- `src/lib/terminal/manager.ts` — `terminals`: one xterm.js `Terminal` per Session on any Host,
+  keyed by `SessionKey` (`src/lib/host/ids.ts`: Host and Session id), attached to the Session's
+  output through a `SessionTransport` as the layout names it (`localTransport`, IPC, for this
+  Mac's Host; `hostTransport` from `src/lib/host/hosts.svelte.ts` for a paired one), mount only
+  the one in view, WebGL on the mounted Terminal with DOM fallback, fit and resize, flow control,
+  dropped files through the transport, title/bell events.
+- `src/lib/terminal/TerminalPane.svelte` — shows the Session in view's Terminal.
+- `src/lib/layout.svelte.ts` — the mirror of every Host's layout: the local Host's (`layout_get`,
+  then every `layout` event) as `layout.groups`, each paired Host's as a section
+  (`layout.sections`, fed by `src/lib/host/hosts.svelte.ts`), every Host's Tabs in `layout.tabs`
+  (each knows its Host), older revisions ignored per Host; the actions that send the `tab_*` /
+  `group_*` commands to the right Host; plus this client's own state: the Tab in view (on any
+  Host), sidebar width and visibility, the Panel, the user's unread marks (persisted, debounced,
+  as the `sidebar` settings section: `src/lib/sidebar/settings.ts`).
+- `src/lib/sessions.svelte.ts` — reactive `SessionInfo` per Session on any Host (the Host's Agent
+  status included) plus this client's markers (finished, highlight) and the automatic Title
+  (with each Host's home for `~`).
 - `src/lib/hotkeys.ts` — Hotkey actions, defaults and the pure rules for combos;
   `src/lib/hotkeys.svelte.ts` — the live bindings (persisted overrides); `src/lib/shortcuts.ts` —
   the window listener that dispatches them.
-- `src/lib/settings/*` — the Settings page (Usage agents, Memory, Hotkeys), shown over the Terminal; the
-  settings blob's per-section store (`store.ts`).
-- `src/lib/sidebar/*` — sidebar components. `src/routes/+page.svelte` — app shell.
+- `src/lib/settings/*` — the Settings page (Usage agents, Remote, Hosts, Memory, Hotkeys), shown
+  over the Terminal; the settings blob's per-section store (`store.ts`); `HostsSection.svelte`
+  pairs with a Host and lists the paired ones.
+- `src/lib/sidebar/*` — sidebar components: Group headers and Tab rows (the same for every
+  Host's), `HostHeader.svelte` above each paired Host's Groups, drag-and-drop (never across
+  Hosts), the close-Tab flow. `src/routes/+page.svelte` — app shell.
+- `src/lib/host/*` — a Host as a client sees it: `protocol.ts` (below), `client.ts` (the
+  connection, both clients'), `ids.ts` (`HostId`, `SessionKey`), `settings.ts` (the `hosts`
+  section and a Host's URL, pure), `hosts.svelte.ts` (the Mac app's paired Hosts: one connection
+  each, their state, the transport and commands for a Host; see "Hosts"), `connect.ts` (the real
+  connection, or `mock.ts`'s fake Host under `pnpm dev`).
 - `src/lib/tray/*` — the Tray (`Tray.svelte`), its `TrayButton`, Caffeinate (state mirror and
   button) and the Memory Guard button.
 - `src/lib/guard/*` — Memory Guard's state mirror, settings and visible-Session reporting
@@ -171,9 +186,9 @@ answers it (see "Host daemon" for the daemon's answer).
   section is `src/lib/settings/RemoteSection.svelte`.
 - `src/lib/host/protocol.ts` — the Host protocol's message types, output framing and reply
   correlation (`Replies`), pure and tested; every client of a Host imports from here.
-- `src/lib/mobile/*` + `src/routes/m` — the phone's page: the connection (`client.ts`), its
-  state (`store.svelte.ts`: the Host's layout and Session facts, mirrored), what a row shows
-  (`rows.ts`, pure), font fitting (`fit.ts`) and the screens (pairing, Tab list,
+- `src/lib/mobile/*` + `src/routes/m` — the phone's page: its state (`store.svelte.ts`: the
+  connection from `src/lib/host/client.ts`, the Host's layout and Session facts, mirrored), what
+  a row shows (`rows.ts`, pure), font fitting (`fit.ts`) and the screens (pairing, Tab list,
   `TerminalScreen` with `KeyBar`). `src/service-worker.ts` caches it.
 - `src/lib/panel/*` — the Panel (`Panel.svelte`), its view list (`views.ts`), the Activity view
   (`activity/`: snapshot store, the Tab stats setting, pure sorting / formatting / meter maths,
@@ -211,6 +226,9 @@ answers it (see "Host daemon" for the daemon's answer).
   These are defaults: every one is a Hotkey the user can rebind on the Settings page
   (`src/lib/hotkeys.ts` holds the actions and rules; overrides persist in `settings.json` next to
   `layout.json`). A Group header shows its go-to-Group Hotkey and its Tab count as `NAME (2)  ⌘1`.
+  With paired Hosts in the sidebar, next / previous Tab walk every section in order; go-to-Group
+  numbers count the local Host's Groups only, and a Host's Group headers show no Hotkey (see
+  "Hosts").
   Closing a Tab whose Foreground process is not the shell asks for confirmation in an in-app dialog
   (never `window.confirm`). Sidebar width is draggable.
 - **Architecture** (#14): as above; ADR `docs/adr/0002-host-daemon-owns-sessions-and-layout.md`
@@ -415,7 +433,10 @@ build, `../build` on disk in dev, so run `pnpm build` first; the daemon: `--web-
 `POST /api/pair {code, name}` pairs a client. `POST /api/upload` (multipart, `Authorization:
 Bearer <token>`) writes the first file part under `<data dir>/uploads/<stamp>/<name>` (the name's
 final component only) and answers `{path}`, so a screenshot dragged onto a remote Tab can be
-attached by path as `drop.rs` does locally; 64 MiB at most. `GET /ws` is the connection.
+attached by path as `drop.rs` does locally; 64 MiB at most. Both answer CORS preflights for the
+Mac app's webview only (`tauri://localhost`, and `http://localhost:1420` in dev), since its page
+is another origin than the Host; what admits a client is still the code, then the token. `GET
+/ws` is the connection.
 
 **Messages** (`src/lib/host/protocol.ts` mirrors `remote/server.rs`). Text frames are JSON
 tagged by `t`, camelCase fields; output is binary. The first text frame must be `auth` within
@@ -476,9 +497,10 @@ local process could set it, so it is never what admits a client. The pairing end
 page are reachable without a token by design (the page has no secrets).
 
 **The phone** (`src/routes/m`, `src/lib/mobile/`). `store.svelte.ts`: paired or not (token in
-`localStorage`), the connection (`client.ts`: one WebSocket, backoff 1–15 s, re-attaches what was
-attached, tries at once when the page returns to the foreground, pairs each command with its
-reply), the Host's layout and Session facts mirrored as the Mac's webview mirrors its local
+`localStorage`), the connection (`src/lib/host/client.ts`, shared with the Mac app's Hosts: one
+WebSocket to the Host's `/ws`, backoff 1–15 s, re-attaches what was attached, tries at once when
+the page returns to the foreground, pairs each command with its reply, uploads to the Host's
+`/api/upload`), the Host's layout and Session facts mirrored as the Mac's webview mirrors its local
 Host's, the open Tab. What a row shows is derived from those (`rows.ts`): the Title as the Mac
 derives it (a rename, else the agent's name, the OSC title of a running program, the Foreground
 process, the cwd's basename with `~` for the Host's home), the agent and its status from the
@@ -497,7 +519,9 @@ storage, so the pairing lasts. The phone sends no layout command yet (UI: #16).
 `http://127.0.0.1:<port>/m` in a browser. `SIDEBAR_TERM_REMOTE_PAIR=1 pnpm tauri dev` (debug
 builds) starts a pairing at launch and prints its code and link, so a browser can pair without
 clicking through Settings. Against the daemon: `sidebar-termd --data-dir <tmp> --port <n>
---web-root build --pair` prints the link.
+--web-root build --pair` prints the link; the Mac app pairs with it from Settings ("Hosts").
+Under plain `pnpm dev` in a browser the sidebar shows a fake paired Host, "dell" (`mock.ts`,
+URL `mock://dell`; type `offline` in one of its Tabs to see its section grey out and come back).
 
 ## Host daemon
 
@@ -537,6 +561,71 @@ Tauri). The macOS-only reading in `detect/process.rs` and `activity.rs` is behin
 every Session as "shell at its prompt, no cwd, no Badge" and no Activity.
 `packaging/systemd/sidebar-termd.service` runs it under `systemctl --user`; with
 `loginctl enable-linger` it runs with no one logged in (README "Host daemon").
+
+## Hosts
+
+The Mac app as a client of other Hosts (#29, ADR 0002): each paired Host is a section of the
+sidebar, with the Host's Groups and Tabs under it, and any of its Tabs opens as a live Terminal.
+The Mac is its own local Host, reached in process; a paired Host is reached over the Host
+protocol, and nothing about it comes from anywhere but its own core.
+
+**Pairing** (`src/lib/settings/HostsSection.svelte`, `src/lib/host/hosts.svelte.ts`). Settings
+lists the paired Hosts with their connection state and a Remove button, and pairs a new one from
+its address (`https://dell.tail1234.ts.net`, `http://127.0.0.1:47611`; a pasted pairing link fills
+both fields) and the code its Settings page shows or `sidebar-termd --pair` prints. The Host
+answers with a token; it lands in the `hosts` section of this Mac's `settings.json`
+(`src/lib/host/settings.ts`: `[{id, url, token, name}]`, `id` this client's own, `name` the
+Host's as last heard) and is sent first on every connection. The Host records this Mac as "Mac
+app" in its own list of paired clients. Removing a Host closes its connection and drops its
+section; the Host still lists this Mac until it is removed there. A Host that refuses the token
+(4401) stays listed as unpaired until removed and paired again.
+
+**Connection.** One `RemoteClient` (`src/lib/host/client.ts`, the phone's too) per Host, from
+launch, reconnecting with backoff 1–15 s and at once when the window comes back to the
+foreground. `hello` brings the Host's name, home, whole layout and every Session's facts;
+`layout` and `session` keep them current. A Host that is not connected keeps its section, greyed,
+with its last snapshot (its Tabs cannot be driven until it is back; the header says why and a
+click retries). On `hello` after a drop the Host may have restarted: Sessions it no longer has end
+for their Terminals, and every Tab's Session is attached again, with a replay.
+
+**Sidebar** (`src/lib/layout.svelte.ts`). The local Host's Groups come first with no header;
+each paired Host follows, in Settings order, under a `HostHeader` (name, connection dot). Tab
+and Group ids are random per Host, so every Host's Tabs share one map and a Tab knows its Host;
+Sessions are keyed by Host and id (`SessionKey`). The Tab in view is this client's (`activeTabId`,
+on any Host), apart from each Host's own active Tab: going to a Tab tells its Host (`tab_activate`),
+so `tab_new` there lands next to it; a Host's snapshot moves the view only while the view is on
+that Host (after a `tab_new` or a close, the Host's word on what shows next wins), or to a Tab
+this client just made there. Another Host, or another client of the same Host, changing its
+active Tab never pulls the view away. Decisions: next / previous Tab (`Cmd-Shift-[ / ]`) walk
+every section; go-to-Group numbers (`Cmd-1..9`) count the local Host's Groups only, so they do
+not shift as Hosts connect, and a Host's Group headers show no Hotkey. New Tab and New Group
+(Hotkeys, the footer buttons) go to the Host of the Tab in view; a Group's context menu and a
+Host header's go to theirs. Delete Group refuses a Host's last Group. Dragging a Tab or a Group
+onto another Host's rows shows no drop target and drops nowhere: a Session cannot change
+machines (Handoff, #30); "Move to Group" lists the Tab's Host's Groups only.
+
+**Terminals** (`src/lib/terminal/manager.ts`). A paired Host's Session gets the same xterm.js
+Terminal as a local one, through the Host's transport: `attach` (the Host replays its recent
+output at its grid; the Terminal clears first, takes that grid while hidden, and refits when
+shown), `input`, `resize` (the Mac sends it after every fit; the Host honours it only for the
+one client attached, so a phone showing the Session leaves the Mac's request refused, which is
+ignored), WebGL as local. No flow control: the Host's ring and drop-behind rules stand in for
+`session_pause`. Files dropped on a remote Tab's Terminal are uploaded (`POST /api/upload`) and
+their paths on the Host pasted, shell-escaped, as local drops are. Paths printed in a remote
+Terminal are not links (they name files on the Host).
+
+**Tab rows.** Identical to local, from the forwarded `SessionInfo`: icon, Agent status, Badge,
+the automatic Title (with the Host's home for `~`), Unread by the same rules (its agent finished,
+stopped or asked for input while the Tab was not in view; the user's marks persist by Tab id),
+CPU and memory from the Host's `activity` messages while it samples (the daemon does not until
+#27). Closing asks the same confirmation, from the forwarded Foreground process (the local Host
+is re-probed on the spot). Not on a paired Host's Tabs: Freeze (Memory Guard is this Mac's; the
+protocol has no freeze), Resume, the Panel's Activity.
+
+**Mock.** `pnpm dev` in a browser fakes one paired Host, "dell", behind a fake connection
+(`src/lib/mock.ts` `hostClient`, chosen by `src/lib/host/connect.ts` for a `mock://` URL): its
+own layout in `localStorage`, a running fake agent, and `offline` typed in one of its Tabs drops
+the connection for a few seconds. Any 8-character code pairs it again after a Remove.
 
 ## Window
 

@@ -2,7 +2,7 @@
 // (mirrored as the Mac's sidebar mirrors its local Host's), and which Tab is open. The token
 // lives in localStorage (an installed home-screen page keeps it indefinitely).
 
-import { RemoteClient, type ConnectionStatus } from "./client";
+import { pairWithHost, RemoteClient, type ConnectionStatus } from "../host/client";
 import { findRow, groupRows, type Facts, type GroupRows, type TabRow } from "./rows";
 import type { HostInfo, LayoutSnapshot, SessionId } from "../types";
 
@@ -111,7 +111,7 @@ function applyLayout(layout: LayoutSnapshot) {
 
 function connect(token: string) {
   client?.close();
-  const c = new RemoteClient(RemoteClient.urlFor(location), token);
+  const c = new RemoteClient(location.origin, token);
   client = c;
   mobile.phase = "connected";
   c.on("status", (status, detail) => {
@@ -146,21 +146,12 @@ export async function pair(code: string, name: string): Promise<void> {
   mobile.pairing = true;
   mobile.pairError = null;
   try {
-    const res = await fetch("/api/pair", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ code, name }),
-    });
-    const body = (await res.json().catch(() => ({}))) as { token?: string; error?: string };
-    if (!res.ok || !body.token) {
-      mobile.pairError = body.error ?? `Pairing failed (${res.status}).`;
-      return;
-    }
-    writeStorage(TOKEN_KEY, body.token);
+    const paired = await pairWithHost(location.origin, code, name);
+    writeStorage(TOKEN_KEY, paired.token);
     mobile.pairCode = "";
-    connect(body.token);
+    connect(paired.token);
   } catch (e) {
-    mobile.pairError = `Could not reach the Host: ${e instanceof Error ? e.message : String(e)}`;
+    mobile.pairError = e instanceof TypeError ? `Could not reach the Host: ${e.message}` : e instanceof Error ? e.message : String(e);
   } finally {
     mobile.pairing = false;
   }
