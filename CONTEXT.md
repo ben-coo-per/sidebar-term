@@ -84,6 +84,25 @@ _Avoid_: Activity monitor (that is Apple's app), stats, usage
 The panel view showing how much of each chosen coding agent's usage limits is spent: one bar per limit window (Claude Code's 5 hours and week, Codex's), with the time until it resets. Which agents it shows is chosen on the Settings page.
 _Avoid_: Quota, credits, stats, Activity (that is CPU and memory)
 
+**Remote**:
+A Host serving its Sessions, Tabs and Groups to clients: while on, a server on 127.0.0.1 that Tailscale Serve publishes to the tailnet, speaking the Host protocol, and the phone's page at `/m`. Off by default on the Mac; turned on in Settings. Always on in the daemon.
+_Avoid_: Mobile app, remote access server, web UI
+
+**Host protocol**:
+The messages between a Host and a client over Remote's WebSocket: the Host's layout and each Session's facts (Agent status included), output and input, the Tab and Group commands with their replies, plus a file upload. The phone speaks it today; the Mac app will, for a remote Host.
+_Avoid_: Remote protocol, API, wire format
+
+**Pairing**:
+Letting one phone in: Settings shows a code (as a QR link, or to type); the phone presents it once and gets a token it sends on every connection. A pairing code lasts ten minutes and five wrong tries.
+_Avoid_: Login, sign-in, registration
+
+**Paired phone**:
+A phone that holds a token this Mac accepts; listed in Settings, where it can be removed. Removing it makes its next connection fail, and it must pair again.
+_Avoid_: Device, client (except in code, where it is any connection)
+
+**Attach**:
+A client's Terminal taking a Session's output: what the Session printed before, then the live output, with its typing going to the Session's pty. A phone attaches over Remote at the Host's grid size and never resizes the pty; the Mac webview attaches in-process to the local Host's Sessions (which the Host spawns with their Tabs) and sizes them.
+_Avoid_: Connect (that is the phone reaching the Mac at all), open (that is a Tab), mirror
 **Host**:
 A machine running the sidebar-term core, whose Sessions, Tabs and Groups can be shown and driven from a client. The Mac app is its own local Host; a second machine runs the core as a headless daemon (`sidebar-termd`). A client shows each paired Host as a section of the sidebar.
 _Avoid_: Server, remote machine, node, peer
@@ -91,3 +110,7 @@ _Avoid_: Server, remote machine, node, peer
 **Handoff**:
 Moving a Tab to another Host: its Session is killed here after its Resume entry is recorded, a Tab is created on the Host at the matching checkout, and the entry is rerun there. Code moves by push and checkout, never by copying files.
 _Avoid_: Migrate, transfer, sync
+
+**Checkout root**:
+The directory on a Host under which its repos are checked out, set per Host in Settings: a Tab in repo `x` lands in `<root>/x` there on a Handoff or a New Tab on that Host, unless an override names that repo's checkout elsewhere.
+_Avoid_: Workspace, projects dir, base path

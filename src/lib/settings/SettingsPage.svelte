@@ -24,8 +24,10 @@
   import { memoryGuard, setGuardLimit, toggleMemoryGuard } from "../guard/memoryGuard.svelte";
   import { GUARD_LIMITS, THAW_GAP } from "../guard/model";
   import CloseIcon from "../sidebar/icons/CloseIcon.svelte";
+  import RemoteSection from "./RemoteSection.svelte";
+  import HostsSection from "./HostsSection.svelte";
 
-  const CATEGORIES: ActionCategory[] = ["Tabs", "Groups", "App"];
+  const CATEGORIES: ActionCategory[] = ["Tabs", "Groups", "Hosts", "App"];
   const byCategory = CATEGORIES.map((category) => ({
     category,
     actions: ACTIONS.filter((a) => a.category === category),
@@ -169,6 +171,10 @@
         {/each}
       </ul>
     </section>
+
+    <RemoteSection />
+
+    <HostsSection />
 
     <section>
       <div class="section-header">
@@ -335,7 +341,7 @@
     font-size: 20px;
     font-weight: 600;
   }
-  section + section {
+  .content > :global(section + section) {
     margin-top: 32px;
   }
   .section-header {

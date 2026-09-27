@@ -27,10 +27,12 @@ export type ActionId =
   | "tab.markUnread"
   | "group.new"
   | GroupJumpAction
+  | "host.newTab"
+  | "host.moveTab"
   | "sidebar.toggle"
   | "settings.toggle";
 
-export type ActionCategory = "Tabs" | "Groups" | "App";
+export type ActionCategory = "Tabs" | "Groups" | "Hosts" | "App";
 
 export interface ActionDef {
   id: ActionId;
@@ -66,6 +68,9 @@ export const ACTIONS: readonly ActionDef[] = [
     category: "Groups",
     default: cmd(String(i + 1)),
   })),
+  // Handoff: the first paired Host that is online, the Group of its active Tab.
+  { id: "host.newTab", label: "New Tab on Host", category: "Hosts", default: cmd("t", { shift: true }) },
+  { id: "host.moveTab", label: "Move Tab to Host", category: "Hosts", default: cmd("m", { shift: true }) },
   { id: "sidebar.toggle", label: "Toggle Sidebar", category: "App", default: cmd("b") },
   { id: "settings.toggle", label: "Settings", category: "App", default: cmd(",") },
 ];
