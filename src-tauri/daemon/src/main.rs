@@ -6,8 +6,8 @@
 //! at launch, one Tab on a fresh install), the monitor, Resume and the Remote server, exactly as
 //! the app does, and stops on SIGTERM after writing the layout, recording Resume entries and
 //! killing every Session, as the app does on quit. Phones list its Tabs and drive their
-//! Sessions; Tab and Group commands reach it over the protocol with #28, process facts on Linux
-//! with #26 and #27.
+//! Sessions, and create, close, rename and move its Tabs and Groups over the Host protocol.
+//! Process facts on Linux come from `/proc`; Activity on Linux follows with #27.
 //!
 //! Flags: `--data-dir <dir>` (default: see [`default_data_dir`]), `--port <n>` (kept in
 //! `remote.json`), `--web-root <dir>` (the built phone page, `pnpm build`'s `build/`; default

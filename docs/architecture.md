@@ -100,10 +100,12 @@ answers it (see "Host daemon" for the daemon's answer).
   per Session coalescing output into chunks for the Session's `OutputSink` and its tap, write,
   resize, pause/resume, kill, `probe_targets()`, exit hooks (the layout's); `session-exit`
   through `Events`.
-- `detect/` — `probe(&ProbeTarget) -> SessionInfo`: libproc for the Foreground process group,
-  agent classification, remote-hop detection, cwd; `.git` file reading for repo / Worktree / branch.
-  `detect/resume.rs`: the Resume entry of a Session's Foreground job (see "Resume"). The libproc
-  readers are macOS-only; elsewhere they are stubs that read nothing until #26.
+- `detect/` — `probe(&ProbeTarget) -> SessionInfo`: the Foreground process group's members
+  (comm, executable path, argv, cwd) read by `detect/os/`, one backend per OS behind one contract
+  (`os/macos.rs`: libproc and `sysctl`; `os/linux.rs`: `/proc`, for the Host daemon); agent
+  classification and remote-hop detection (`detect/process.rs`, pure); `.git` file reading for
+  repo / Worktree / branch (`detect/git.rs`). `detect/resume.rs`: the Resume entry of a Session's
+  Foreground job (see "Resume").
 - `monitor.rs` — thread ticking every 500 ms: probe every target, add what the Host read in the
   Session's output (`Taps::marks`: the OSC title, BELs) and the Agent status (`status.rs`), hand
   the changed infos to the layout, emit `session-info` for each.
@@ -574,9 +576,9 @@ Nothing attaches to its Sessions' outlets, so each holds its last 256 KiB of out
 move its Tabs and Groups, size a pty it alone shows, and upload files to it ("Host protocol").
 
 **Linux.** `cargo build --release --bin sidebar-termd` builds only the core and the daemon (no
-Tauri). The macOS-only reading in `detect/process.rs` and `activity.rs` is behind
-`cfg(target_os = "macos")` with stubs elsewhere, so until #26 and #27 land a Linux Host reports
-every Session as "shell at its prompt, no cwd, no Badge" and no Activity.
+Tauri). `detect/` reads `/proc` on Linux (`detect/os/linux.rs`). The macOS-only reading in
+`activity.rs` is behind `cfg(target_os = "macos")` with stubs elsewhere, so until #27 lands a
+Linux Host reports no Activity and Memory Guard never freezes there.
 `packaging/systemd/sidebar-termd.service` runs it under `systemctl --user`; with
 `loginctl enable-linger` it runs with no one logged in (README "Host daemon").
 

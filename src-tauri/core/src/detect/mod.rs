@@ -2,6 +2,7 @@
 //! OWNER: detection agent. See docs/research/agent-detection.md and docs/research/cwd-git.md.
 
 pub mod git;
+pub mod os;
 pub mod process;
 pub mod resume;
 #[cfg(test)]
@@ -11,8 +12,9 @@ use crate::model::{AgentKind, ProbeTarget, SessionInfo};
 use std::path::Path;
 
 /// Compute the current `SessionInfo` for one Session. Pure w.r.t. app state: reads only
-/// libproc and the filesystem. Must be fast (target: well under 1 ms per call when the
-/// git dir is cached by the OS) and must never panic.
+/// the OS's process facts (`os`: libproc on macOS, `/proc` on Linux) and the filesystem. Must
+/// be fast (target: well under 1 ms per call when the git dir is cached by the OS) and must
+/// never panic.
 ///
 /// - The Foreground process group is `fg_pgid`; when that is `None`, the shell's pid, or a
 ///   group that can no longer be read (it just exited), the shell is foreground.
@@ -258,10 +260,19 @@ mod tests {
         assert_eq!(info.cwd.as_deref(), Some(tmp.canonical_str()));
 
         // Foreground process of another uid (like `sudo`): its cwd is EPERM, so the shell's
-        // cwd is reported. launchd (pid 1, pgid 1) stands in for a root-owned process.
+        // cwd is reported. launchd / init (pid 1, pgid 1) stands in for a root-owned process,
+        // which needs the tests not to run as root.
+        // SAFETY: plain query.
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("running as root: skipping the other-uid check");
+            return;
+        }
         let info = probe(&target(shell.pid(), Some(1)));
         assert!(!info.shell_is_foreground);
+        #[cfg(target_os = "macos")]
         assert_eq!(info.foreground.as_deref(), Some("launchd"));
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(info.foreground, process::short_info(1).map(|p| p.comm));
         assert_eq!(info.cwd.as_deref(), Some(tmp.canonical_str()));
     }
 
@@ -309,9 +320,10 @@ mod tests {
         std::os::unix::fs::symlink(&exe, bin.join("claude")).unwrap();
         let shell = spawn_in_own_group("/bin/sleep", &["30"], tmp.path());
         let job = spawn_in_own_group(bin.join("claude"), &SLEEPER_ARGS, tmp.path());
-        // The kernel's comm is the resolved file name, not the symlink's.
+        // macOS's comm is the resolved file name, not the symlink's; Linux's is the name exec'd.
+        let comm = if cfg!(target_os = "macos") { "2.1.999" } else { "claude" };
         assert!(wait_until(
-            || process::short_info(job.pid()).is_some_and(|p| p.comm == "2.1.999")
+            || process::short_info(job.pid()).is_some_and(|p| p.comm == comm)
         ));
 
         let t = target(shell.pid(), Some(job.pid()));
@@ -319,9 +331,15 @@ mod tests {
         assert_eq!(info.agent, Some(AgentKind::Claude));
         assert_eq!(info.foreground.as_deref(), Some("claude"));
 
-        // The auto-updater removes old versions while sessions still run them.
+        // The auto-updater removes old versions while sessions still run them: libproc loses
+        // the path, /proc keeps it (minus the kernel's ` (deleted)`).
         std::fs::remove_file(&exe).unwrap();
-        assert_eq!(process::exe_path(job.pid()), None);
+        let path = process::exe_path(job.pid());
+        if cfg!(target_os = "macos") {
+            assert_eq!(path, None);
+        } else {
+            assert_eq!(path.as_deref(), exe.to_str());
+        }
         let info = probe(&t);
         assert_eq!(info.agent, Some(AgentKind::Claude));
         assert_eq!(info.foreground.as_deref(), Some("claude"));
