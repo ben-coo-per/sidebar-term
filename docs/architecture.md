@@ -8,23 +8,35 @@ names the ticket; the user may revise it there. Vocabulary: `CONTEXT.md`.
 
 | Side | Owns | Never does |
 |---|---|---|
-| Rust (`src-tauri/src`) | Sessions (ptys, shells), facts about Sessions (Foreground process, Agent session, cwd, git), layout file I/O | Knows nothing about Tabs, Groups or Titles |
-| Webview (`src`) | The layout model: Groups, Tabs, Titles, order, active Tab; xterm.js Terminals; all UI | Never shells out or reads the filesystem |
+| The core (`src-tauri/core`, Rust) | Sessions (ptys, shells), facts about Sessions (Foreground process, Agent session, cwd, git, the OSC title and BELs read in the output, Agent status), the layout (Groups, Tabs, order, custom Titles, each Tab's last cwd and Session, the active Tab; `layout.json`), Memory Guard, Resume, the Remote server and the Host protocol it serves | Knows nothing about automatic Titles or Unread (a client's); never names Tauri |
+| The app (`src-tauri/src`, Rust + Tauri) | The window, the menu, the IPC commands, Caffeinate, file drops; links the core as the local Host | - |
+| `sidebar-termd` (`src-tauri/daemon`, Rust) | The headless Host: links the core, serves it over Remote, runs under systemd | Never needs a display |
+| Webview (`src`) | A mirror of every Host's layout and Session facts (the local Host's in process, each paired Host's over the Host protocol), and what is presentation: the Tab in view, sidebar width and visibility, the Panel, automatic Titles, Unread, drag-and-drop, the close-Tab confirmation (`settings.json`, section `sidebar`), which Hosts it is paired with (section `hosts`); xterm.js Terminals; all UI | Never shells out or reads the filesystem; never changes a layout except through its Host's commands; never derives Agent status itself |
 
 A **Tab** points at a **Session** by `SessionId`. Session ids are per app run; the persisted layout
-stores each Tab's last cwd instead and respawns a shell there on relaunch.
+stores each Tab's last cwd instead and the Host respawns a shell there at launch, with its Tab.
+A Session is spawned by the Host as its Tab is made; the webview *attaches* its Terminal to it
+(`session_attach`) and gets what the Session printed before, then the live output.
 
 ## IPC (contract: `src-tauri/src/lib.rs` <-> `src/lib/ipc.ts`)
 
 | Command | Args (JS names) | Returns |
 |---|---|---|
-| `session_spawn` | `cwd?, cols, rows, resumeKey?, onData: Channel` | `SessionId`; output bytes stream on `onData` as raw `ArrayBuffer`; `resumeKey` (the Tab id) names the Session in Resume entries |
+| `session_attach` | `sessionId, onData: Channel` | - ; the Session's output streams on `onData` as raw `ArrayBuffer`, starting with what it printed before the Terminal attached; rejects for a Session that is gone |
 | `session_write` | `sessionId, data: string` | - |
 | `session_resize` | `sessionId, cols, rows` | - |
 | `session_pause` / `session_resume` | `sessionId` | - (flow control, see `docs/research/pty.md`) |
-| `session_kill` | `sessionId` | - (thaws it if Memory Guard froze it, then kills it; then `session-exit` fires) |
-| `session_reset` | - | - (thaws every frozen Session, kills every Session and stops Activity and Usage reading; called once at webview startup so a reload leaves no orphans; what the killed Sessions ran becomes Resume leftover) |
-| `session_info` | `sessionId` | `SessionInfo \| null` (fresh probe) |
+| `session_reset` | - | - (called once at webview startup: every Session a previous page's Terminal was attached to is replaced by a fresh one in its Tab, so a reload leaves no orphans, and Activity and Usage reading stop; what the replaced Sessions ran becomes Resume leftover; the app's first page finds nothing attached and keeps what the Host spawned at launch) |
+| `session_info` | `sessionId` | `SessionInfo \| null` (a fresh probe, with the Session's title, BELs and Agent status as the monitor would send them) |
+| `layout_get` | - | `LayoutSnapshot`: the whole layout, for the first read; every change after that is a `layout` event |
+| `tab_new` | `groupId?, afterTabId?, cwd?, cols?, rows?` | `Tab`, with its Session, active; defaults: the active Tab's Group, right after it, at its cwd (see "Naming") |
+| `tab_close` | `tabId` | - (the Tab goes at once and its Session is killed, thawed first if frozen; no confirmation: the webview asks, `src/lib/sidebar/closeTabFlow.ts`) |
+| `tab_rename` | `tabId, title` | - (an empty title restores the automatic Title) |
+| `tab_move` | `tabId, groupId, index?` | - (default: the end of the Group) |
+| `tab_activate` | `tabId` | - |
+| `group_new` | `name?, tabId?` | `Group` (at the end, "New Group" unless named; with `tabId` that Tab moves into it) |
+| `group_rename` / `group_move` / `group_set_collapsed` | `groupId, name` / `groupId, index` / `groupId, collapsed` | - |
+| `group_delete` | `groupId` | - (closes every Tab in it; rejects for the last Group) |
 | `activity_watch` | `on: boolean` | - (start / stop sampling Activity) |
 | `guard_state` | - | `GuardSnapshot`: Memory Guard's state |
 | `guard_set` | `on: boolean, limitPercent: number` | `GuardSnapshot` (turn Memory Guard on or off, set its limit, clamped to 50..95; off thaws every Tab it froze, not those frozen by hand) |
@@ -36,71 +48,161 @@ stores each Tab's last cwd instead and respawns a shell there on relaunch.
 | `caffeinate_set` | `on: boolean` | `boolean`: whether Caffeinate is on now |
 | `resume_leftover` | - | `ResumeEntry[]`: what earlier runs left running, not yet resumed or dismissed (see "Resume") |
 | `resume_forget` | `keys: string[]` | - (drop leftover entries: resumed, dismissed, or their Tab is gone) |
-| `layout_load` / `layout_save` | `layout: json` | opaque JSON blob in the app data dir |
-| `settings_load` / `settings_save` | `settings: json` | opaque JSON blob in the app data dir; one section per owner (`hotkeys`, `usage`, `activity`, `memoryGuard`), merged by `src/lib/settings/store.ts` |
+| `settings_load` / `settings_save` | `settings: json` | opaque JSON blob in the app data dir; one section per owner (`hotkeys`, `usage`, `activity`, `memoryGuard`, `sidebar`, `hosts`), merged by `src/lib/settings/store.ts` |
+| `handoff_probe` | `sessionId` | `HandoffProbe \| null`: what moving the Tab to another Host needs (async: runs `git`): fresh `SessionInfo`, the Resume entry, the Claude Code conversation running in it with its files located (`ClaudeConversation`), the checkout's `GitStatus`; null for a Session that is gone (see "Handoff") |
+| `handoff_conversation_read` | `conversation: ClaudeConversation` | `ConversationFiles`: the transcript's text and the memory files, once the transcript has stopped changing (call after the Session is killed) |
+| `handoff_conversation_forget` | `conversation: ClaudeConversation` | - (delete this Mac's copy of the transcript, once the Host has it; only ever a `projects/<key>/<id>.jsonl` file) |
+| `remote_state` | - | `RemoteSnapshot` after re-reading Tailscale's state (async: runs its CLI) |
+| `remote_set` | `on: boolean` | `RemoteSnapshot` (turn Remote on or off; rejects with why the server could not start) |
+| `remote_pair_begin` / `remote_pair_cancel` | - | `Pairing` (a code, its QR link and expiry) / - |
+| `remote_revoke` | `id: string` | - (forget a paired phone) |
 
 | Event | Payload | When |
 |---|---|---|
-| `session-info` | `SessionInfo` | first probe of a Session, then on every change (monitor tick 500 ms) |
-| `session-exit` | `SessionExit` | the shell exited or was killed |
+| `layout` | `LayoutSnapshot` | the layout changed: a Tab or Group made, closed, renamed, moved, collapsed or activated, a Tab's Session or last cwd changed. The whole model each time, with a revision |
+| `session-info` | `SessionInfo` | first probe of a Session, then on every change (monitor tick 500 ms): the Foreground process, agent, cwd, git, and the OSC title, BEL count and Agent status the Host read in its output |
+| `session-exit` | `SessionExit` | the shell exited or was killed (its Tab is already gone from the layout) |
 | `activity` | `ActivitySnapshot` | every 2 s while `activity_watch(true)`; the first right away |
 | `usage` | `UsageSnapshot` | right away on `usage_watch(true, ..)`, then whenever a number changes (checked every 5 s) |
 | `menu-settings` | - | the app menu's "Settings…" was chosen |
 | `caffeinate` | `false` | Caffeinate's `caffeinate` run ended without being turned off |
+| `remote` | `RemoteSnapshot` | Remote turned on or off, a phone connected, paired or was removed, a pairing began or ended |
 | `memory-guard` | `GuardSnapshot` | Memory Guard froze or thawed a Tab, or was turned on or off |
 
-Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `ipc.ts` routes to
+Types: `src-tauri/core/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `ipc.ts` routes to
 `src/lib/mock.ts`, a fake backend for developing the UI in a browser (`pnpm dev`, then open
 `http://127.0.0.1:1420`). Type `help` in a mock terminal.
 
 ## Rust modules
 
-- `session.rs` — `SessionManager` (Tauri state): spawn `$SHELL -l` on a `portable-pty` pty, one
-  reader thread per Session coalescing output into `InvokeResponseBody::Raw`, write, resize,
-  pause/resume, kill, `probe_targets()`.
+One Cargo workspace in `src-tauri/`: the core library, the app, and the daemon (ADR 0002). The
+core never names Tauri; what it needs from its binary is `core/src/host.rs`, and each binary
+answers it (see "Host daemon" for the daemon's answer).
+
+**The core, `src-tauri/core/src/` (`sidebar_term_core`)**
+
+- `host.rs` — what the core takes from its binary: `Events` (emit a named JSON event), `Paths`
+  (the data dir), `Assets` (the phone page's files), an `OutputSink` per Session, and a tokio
+  runtime handle, bundled as `Host`.
+- `layout/` — the layout, owned by the Host (ADR 0002). `mod.rs`: `Layout`, the owner: loads
+  `layout.json`, spawns each Tab's Session at launch (Tab id as Resume key) and on `tab_new`,
+  kills it on `tab_close`, drops the Tab when its Session exits, emits `layout` on every change
+  (under its lock, so snapshots arrive in order), rewrites the file 500 ms after the last change,
+  takes each Session's facts from the monitor (`observe`: the Tab's last cwd; the facts are kept
+  per live Session for clients, `facts` / `fact`), tells its watchers (Remote) of every change
+  to the layout or to a Session's facts, and hands the webview's Terminal a Session's output
+  (`attach`). `model.rs`: the pure state and every transition, tested without a pty. `file.rs`:
+  the version-2 file, the defensive read, and the one-time move of a version-1 file's
+  presentation fields into `settings.json`.
+- `outlet.rs` — where a Session's output goes before a Terminal attaches: held, bounded, handed
+  over first on attach under the same lock the reader delivers through.
+- `session.rs` — `SessionManager`: spawn `$SHELL -l` on a `portable-pty` pty, one reader thread
+  per Session coalescing output into chunks for the Session's `OutputSink` and its tap, write,
+  resize, pause/resume, kill, `probe_targets()`, exit hooks (the layout's); `session-exit`
+  through `Events`.
 - `detect/` — `probe(&ProbeTarget) -> SessionInfo`: the Foreground process group's members
   (comm, executable path, argv, cwd) read by `detect/os/`, one backend per OS behind one contract
   (`os/macos.rs`: libproc and `sysctl`; `os/linux.rs`: `/proc`, for the Host daemon); agent
   classification and remote-hop detection (`detect/process.rs`, pure); `.git` file reading for
   repo / Worktree / branch (`detect/git.rs`). `detect/resume.rs`: the Resume entry of a Session's
   Foreground job (see "Resume").
-- `monitor.rs` — thread ticking every 500 ms: probe every target, emit `session-info` on change.
-- `activity.rs` — `Activity` (Tauri state): thread idle until watched (by the webview, or by
-  Memory Guard), then every 2 s runs `/bin/ps` over every process, reads this user's processes'
-  footprints, attributes each to a Session by ppid descent from its shell, emits `activity` if the
-  webview watches and hands the sample to Memory Guard if it is on (see "Panel").
-- `guard.rs` — `Guard` (Tauri state): Memory Guard's policy and the SIGSTOP / SIGCONT of a
-  Session's process tree; `frozen.json` for thawing after a crash (see "Tray").
-- `usage.rs` — `Usage` (Tauri state): thread idle until watched, then every 5 s reads the chosen
-  agents' usage limits and emits `usage` on change (see "Panel").
-- `caffeinate.rs` — `Caffeinate` (Tauri state): the background `caffeinate` run behind the Tray's
-  Caffeinate button (see "Tray").
-- `resume.rs` — `Resume` (Tauri state): a thread records every keyed Session's Resume entry to
-  `resume.json` each second it changes, and a last time on exit (see "Resume").
-- `lib.rs` also builds the app menu: Tauri's default plus "Settings…" (no key equivalent: the
-  Settings Hotkey stays the webview's, rebindable).
-- `layout.rs` — atomic JSON read/write of `layout.json`, `settings.json`, `resume.json` and
-  `frozen.json` in the app data dir.
+- `monitor.rs` — thread ticking every 500 ms: probe every target, add what the Host read in the
+  Session's output (`Taps::marks`: the OSC title, BELs) and the Agent status (`status.rs`), hand
+  the changed infos to the layout, emit `session-info` for each.
+- `status.rs` — Agent status: Running / Needs input / Done from the agent kind, the title, when
+  output last arrived and when the last BEL rang (the table in "Agent status"). Pure, the clock
+  passed in; the cases `src/lib/agentStatus.ts` used to test are here.
+- `activity.rs` — `Activity`: thread idle until watched (by the webview, or by Memory Guard), then
+  every 2 s runs `/bin/ps` over every process, reads this user's processes' footprints, attributes
+  each to a Session by ppid descent from its shell, emits `activity` if the webview watches and
+  hands the sample to Memory Guard if it is on (see "Panel"). The `ps` / Mach / sysctl reading is
+  macOS-only; elsewhere it reads nothing until #27.
+- `guard.rs` — `Guard`: Memory Guard's policy and the SIGSTOP / SIGCONT of a Session's process
+  tree; `frozen.json` for thawing after a crash (see "Tray").
+- `usage.rs` — `Usage`: thread idle until watched, then every 5 s reads the chosen agents' usage
+  limits and emits `usage` on change (see "Panel"). App-only: the daemon never starts it.
+- `remote/` — Remote (see "Host protocol"): `mod.rs` the `Remote` state (on/off, pairing, the
+  relay of layout and Session changes to clients, the upload dir), `server.rs` the axum routes
+  and the WebSocket protocol on the Host's runtime, `tap.rs` each Session's recent output,
+  attached clients and the `Scanner` that reads OSC 0 / 2 titles and BELs out of the output as
+  it passes (fed by `session.rs`), `auth.rs` paired clients and pairing codes (`remote.json`),
+  `tailscale.rs` the Tailscale CLI.
+- `handoff.rs` — what a Host does for Handoff (see "Handoff"): on the Mac, the checkout's git
+  status and the Claude Code conversation's files (`locate`, `read`, `forget`); on the Host
+  taking the Tab, `place` writes them under its own Claude config dir and nowhere else.
+  `detect/resume.rs`'s `claude_conversation` finds the running conversation.
+- `resume.rs` — `Resume`: a thread records every keyed Session's Resume entry to `resume.json`
+  each second it changes, and a last time on exit (see "Resume").
+- `store.rs` — atomic JSON read/write of `layout.json`, `settings.json`, `resume.json`,
+  `remote.json` and `frozen.json` in the Host's data dir (`Paths`).
+- `paths.rs` — which paths printed in a Terminal name a file on this Host.
+- `model.rs` — the types every event and command carries; mirrored by `src/lib/types.ts`.
+
+**The app, `src-tauri/src/` (`sidebar_term_lib`, Tauri)**
+
+- `lib.rs` — the IPC commands (the table above), the app menu (Tauri's default plus "Settings…";
+  no key equivalent: the Settings Hotkey stays the webview's, rebindable), and the wiring of the
+  core at startup and exit.
+- `host.rs` — `AppHost`: the core's `Host` with an `AppHandle` behind it (events to the webview,
+  the app-data dir, the bundled assets, Tauri's tokio runtime).
+- `caffeinate.rs` — `Caffeinate`: the background `caffeinate` run behind the Tray's Caffeinate
+  button (see "Tray"). App-only.
+- `drop.rs` — files dropped on a Terminal: the drag pasteboard and the temp-dir save (see
+  "Window"). App-only.
+
+**The daemon, `src-tauri/daemon/src/main.rs` (`sidebar-termd`)**: see "Host daemon".
 
 ## Webview modules
 
-- `src/lib/terminal/manager.ts` — `terminals`: one xterm.js `Terminal` per Session, mount only the
-  active one, WebGL on the mounted Terminal with DOM fallback, fit, flow control, title/bell events.
-- `src/lib/terminal/TerminalPane.svelte` — shows the active Session's Terminal.
-- `src/lib/layout.svelte.ts` — Groups/Tabs model, actions, persistence (debounced `layout_save`).
-- `src/lib/sessions.svelte.ts` — reactive `SessionInfo` per Session plus derived Agent status.
+- `src/lib/terminal/manager.ts` — `terminals`: one xterm.js `Terminal` per Session on any Host,
+  keyed by `SessionKey` (`src/lib/host/ids.ts`: Host and Session id), attached to the Session's
+  output through a `SessionTransport` as the layout names it (`localTransport`, IPC, for this
+  Mac's Host; `hostTransport` from `src/lib/host/hosts.svelte.ts` for a paired one), mount only
+  the one in view, WebGL on the mounted Terminal with DOM fallback, fit and resize, flow control,
+  dropped files through the transport, title/bell events.
+- `src/lib/terminal/TerminalPane.svelte` — shows the Session in view's Terminal.
+- `src/lib/layout.svelte.ts` — the mirror of every Host's layout: the local Host's (`layout_get`,
+  then every `layout` event) as `layout.groups`, each paired Host's as a section
+  (`layout.sections`, fed by `src/lib/host/hosts.svelte.ts`), every Host's Tabs in `layout.tabs`
+  (each knows its Host), older revisions ignored per Host; the actions that send the `tab_*` /
+  `group_*` commands to the right Host; plus this client's own state: the Tab in view (on any
+  Host), sidebar width and visibility, the Panel, the user's unread marks (persisted, debounced,
+  as the `sidebar` settings section: `src/lib/sidebar/settings.ts`).
+- `src/lib/sessions.svelte.ts` — reactive `SessionInfo` per Session on any Host (the Host's Agent
+  status included) plus this client's markers (finished, highlight) and the automatic Title
+  (with each Host's home for `~`).
 - `src/lib/hotkeys.ts` — Hotkey actions, defaults and the pure rules for combos;
   `src/lib/hotkeys.svelte.ts` — the live bindings (persisted overrides); `src/lib/shortcuts.ts` —
   the window listener that dispatches them.
-- `src/lib/settings/*` — the Settings page (Usage agents, Memory, Hotkeys), shown over the Terminal; the
-  settings blob's per-section store (`store.ts`).
-- `src/lib/sidebar/*` — sidebar components. `src/routes/+page.svelte` — app shell.
+- `src/lib/settings/*` — the Settings page (Usage agents, Remote, Hosts, Memory, Hotkeys), shown
+  over the Terminal; the settings blob's per-section store (`store.ts`); `HostsSection.svelte`
+  pairs with a Host, lists the paired ones and sets each one's Checkout root and repo overrides
+  (Handoff).
+- `src/lib/sidebar/*` — sidebar components: Group headers and Tab rows (the same for every
+  Host's), `HostHeader.svelte` above each paired Host's Groups, drag-and-drop (never across
+  Hosts), the close-Tab flow. `src/routes/+page.svelte` — app shell.
+- `src/lib/host/*` — a Host as a client sees it: `protocol.ts` (below), `client.ts` (the
+  connection, both clients'), `ids.ts` (`HostId`, `SessionKey`), `settings.ts` (the `hosts`
+  section and a Host's URL, pure), `hosts.svelte.ts` (the Mac app's paired Hosts: one connection
+  each, their state, the transport and commands for a Host; see "Hosts"), `connect.ts` (the real
+  connection, or `mock.ts`'s fake Host under `pnpm dev`).
 - `src/lib/tray/*` — the Tray (`Tray.svelte`), its `TrayButton`, Caffeinate (state mirror and
   button) and the Memory Guard button.
 - `src/lib/guard/*` — Memory Guard's state mirror, settings and visible-Session reporting
   (`memoryGuard.svelte.ts`) and pure rules (`model.ts`).
 - `src/lib/resume/*` — the Resume banner (`ResumeBanner.svelte`), its state and actions
   (`resume.svelte.ts`) and the pure rule for what to type (`model.ts`).
+- `src/lib/handoff/*` — Handoff: the flows for "New Tab on Host" and "Move Tab to Host"
+  (`handoff.svelte.ts`) and the pure rules (`model.ts`: where a Tab lands, what is typed there,
+  what the confirmation says; reuses `src/lib/resume/model.ts`'s rule). See "Handoff".
+- `src/lib/remote/*` — Remote on the Mac: the state mirror (`remote.svelte.ts`); the Settings
+  section is `src/lib/settings/RemoteSection.svelte`.
+- `src/lib/host/protocol.ts` — the Host protocol's message types, output framing and reply
+  correlation (`Replies`), pure and tested; every client of a Host imports from here.
+- `src/lib/mobile/*` + `src/routes/m` — the phone's page: its state (`store.svelte.ts`: the
+  connection from `src/lib/host/client.ts`, the Host's layout and Session facts, mirrored), what
+  a row shows (`rows.ts`, pure), font fitting (`fit.ts`) and the screens (pairing, Tab list,
+  `TerminalScreen` with `KeyBar`). `src/service-worker.ts` caches it.
 - `src/lib/panel/*` — the Panel (`Panel.svelte`), its view list (`views.ts`), the Activity view
   (`activity/`: snapshot store, the Tab stats setting, pure sorting / formatting / meter maths,
   components) and the Usage
@@ -110,8 +212,10 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
 
 - **Scope** (#7): one window, no split panes, no profiles, no settings UI beyond Usage agents and Hotkeys, no quick
   switcher. Tabs move between Groups by drag-and-drop and by a context menu.
-- **Persistence** (#8): Groups (name, order, collapsed), Tabs (order, custom Title, last cwd, unread mark), the
-  active Tab, sidebar width and the Panel (view, collapsed, height) persist. On relaunch every Tab respawns a shell at its last cwd.
+- **Persistence** (#8): Groups (name, order, collapsed), Tabs (order, custom Title, last cwd) and
+  the active Tab persist in the Host's `layout.json`; the sidebar width, the Panel (view,
+  collapsed, height) and the user's unread marks in the webview's `settings.json` (`sidebar`).
+  On relaunch the Host respawns every Tab's shell at its last cwd.
 - **Naming** (#10): automatic Title priority: agent name ("Claude Code", "Codex", "Gemini") when an
   Agent session; else the OSC title if the Foreground process set one; else the Foreground process
   name when it is not the shell; else the cwd basename (`~` for home). A rename sticks until the
@@ -130,19 +234,30 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
   the Nth Group (the Tab last active in it, else its first; expands a collapsed Group), Cmd-` /
   Cmd-Shift-` next / previous Tab within the active Tab's Group (wrapping), Cmd-Shift-[ / ] previous
   / next Tab across all Groups, Cmd-Opt-Up/Down move Tab, Cmd-Shift-U mark the active Tab unread,
+  Cmd-Shift-T / Cmd-Shift-M New Tab on / Move Tab to the first online Host ("Handoff"),
   Cmd-B toggle sidebar, Cmd-, Settings
   (also the app menu's "Settings…"; the sidebar has no Settings button).
   These are defaults: every one is a Hotkey the user can rebind on the Settings page
   (`src/lib/hotkeys.ts` holds the actions and rules; overrides persist in `settings.json` next to
   `layout.json`). A Group header shows its go-to-Group Hotkey and its Tab count as `NAME (2)  ⌘1`.
+  With paired Hosts in the sidebar, next / previous Tab walk every section in order; go-to-Group
+  numbers count the local Host's Groups only, and a Host's Group headers show no Hotkey (see
+  "Hosts").
   Closing a Tab whose Foreground process is not the shell asks for confirmation in an in-app dialog
   (never `window.confirm`). Sidebar width is draggable.
-- **Architecture** (#14): as above; ADR `docs/adr/0001-rust-owns-sessions-webview-owns-layout.md`.
+- **Architecture** (#14): as above; ADR `docs/adr/0002-host-daemon-owns-sessions-and-layout.md`
+  (0001 is superseded).
 
 ## Agent status
 
-Derived in the webview from `SessionInfo.agent`, the Terminal's OSC title, BEL and output activity
-(sources: `docs/research/agent-detection.md`).
+Derived on the Host (`core/src/status.rs`) from `SessionInfo.agent`, the Session's OSC 0 / 2
+title, BEL and output activity, which the Host reads out of the Session's output as it passes
+its tap (`remote/tap.rs`, `Scanner`: the same bytes xterm.js parses, so no Terminal is needed;
+sequences split across reads are joined). The monitor puts the title, the BEL count and the
+status in every `SessionInfo`, re-derived each tick so Claude Code's time-based Running window
+expires on its own, and every client shows that status: the Mac webview, a phone, and whatever
+shows a headless Host's Tabs. `src/lib/agentStatus.ts` keeps only the Title rules. The rules
+(sources: `docs/research/agent-detection.md`):
 
 | Status | Codex | Gemini | Claude Code |
 |---|---|---|---|
@@ -154,7 +269,8 @@ Claude Code (2.1.267) prefixes its title with `◐`/`◑` while busy, alternatin
 terminal is focused, frozen on one frame otherwise. It uses `✳` when idle or waiting on a prompt.
 Read from its bundled source. There is no prefix under tmux (always `✳`), with
 `CLAUDE_CODE_DISABLE_TERMINAL_TITLE`, or in older versions. With no prefix we fall back to "output
-within the last ~3 s", which keystroke echo and redraws also trip.
+within the last ~3 s", which keystroke echo and redraws also trip; "when output last arrived"
+moves at most every 250 ms, so a redraw right after a BEL does not cancel Needs input.
 
 The Tab's icon slot shows the status: a spinner while Running, the robot once stopped (amber for
 Needs input). When the agent exits, the Tab stops being an Agent session; if that happens while the
@@ -269,8 +385,8 @@ When the app closes with Tabs still running something, the next launch offers to
 in the same Tabs. Every way of closing counts: a crash, Cmd-Q, `pnpm app:install`'s restart, a
 webview reload. A close with every shell at its prompt offers nothing.
 
-**Recording** (Rust, `resume.rs` + `detect/resume.rs`). The webview spawns each Session with its
-Tab id as `resumeKey`. Every second a thread works out each keyed Session's `ResumeEntry` (`kind`,
+**Recording** (Rust, `resume.rs` + `detect/resume.rs`). The layout spawns each Tab's Session with
+the Tab id as its Resume key. Every second a thread works out each keyed Session's `ResumeEntry` (`kind`,
 `line`, `cwd`) from its Foreground process group, and rewrites `resume.json` when the list
 changed. On `RunEvent::Exit` Rust records once more, before killing the shells, then writes no
 more, so the dying shells cannot empty it. A crash leaves the last second's list. Rust, not the
@@ -307,6 +423,305 @@ Code" (every `claude` entry), "Rerun commands" (every `command` entry), per row 
 and never types into one that is not at its prompt: that row stays, marked Busy. An entry is
 dropped once its Tab closes or becomes an Agent session (resumed by hand). Other jobs do not
 count, since shell startup files run commands too.
+
+## Host protocol
+
+How a Host serves its Sessions, Tabs and Groups to a client (ADR 0002; vocabulary in
+`CONTEXT.md`): the phone's page today, the Mac app for a remote Host next (#29). Everything a
+client needs to show a Host's sidebar and drive it comes from the Host's core, never from
+another client. Remote is the switch: off by default, on in Settings (the daemon turns it on
+at launch).
+
+**Server** (`src-tauri/core/src/remote/`). `remote_set(true)` binds `127.0.0.1:<port>` (47611 unless
+`remote.json` says otherwise; never a LAN address) and runs axum on the Host's tokio runtime. It
+then asks Tailscale to publish it: `tailscale serve --bg --https=443 http://127.0.0.1:<port>`,
+which gives `https://<host>.<tailnet>.ts.net` with a real certificate, reachable only from the
+tailnet (Funnel is never used). The CLI is looked for in the Tailscale app and Homebrew. Without
+Tailscale the server still listens on localhost and Settings says what is missing. `enabled`
+persists in `remote.json`, so Remote comes back on at launch. Turning off closes every client
+(close code 1001), removes the Serve rule and ends the pairing.
+
+Routes: `/` → `/m`; `/m…` → `index.html` (the SPA routes to `src/routes/m`); other paths are
+built assets through `host::Assets` (the app: Tauri's asset resolver, embedded in a release
+build, `../build` on disk in dev, so run `pnpm build` first; the daemon: `--web-root`).
+`POST /api/pair {code, name}` pairs a client. `POST /api/upload` (multipart, `Authorization:
+Bearer <token>`) writes the first file part under `<data dir>/uploads/<stamp>/<name>` (the name's
+final component only) and answers `{path}`, so a screenshot dragged onto a remote Tab can be
+attached by path as `drop.rs` does locally; 64 MiB at most. `POST /api/conversation`
+(multipart, bearer) takes a Claude Code conversation handed off to this Host: text fields
+`cwd` (the checkout it resumes from here) and `sessionId`, a `transcript` file part, and one
+`memory` file part per memory file (its file name is its path under `memory/`); it answers
+`{path}`, the transcript's path here, or `{error}` with 400 for anything it refuses (see
+"Handoff"). All three answer CORS preflights for the
+Mac app's webview only (`tauri://localhost`, and `http://localhost:1420` in dev), since its page
+is another origin than the Host; what admits a client is still the code, then the token. `GET
+/ws` is the connection.
+
+**Messages** (`src/lib/host/protocol.ts` mirrors `remote/server.rs`). Text frames are JSON
+tagged by `t`, camelCase fields; output is binary. The first text frame must be `auth` within
+five seconds, or the Host closes with 4408 (4401 for a token it does not know).
+
+| From the client | Fields | The Host answers |
+|---|---|---|
+| `auth` | `token` | `hello`, or a close |
+| `attach` | `sessionId` | `attached {sessionId, cols, rows}`, then a binary replay of the Session's recent output; `exit` for a Session that is gone |
+| `detach` | `sessionId` | - |
+| `input` | `sessionId, data` | `error {message}` if the write failed |
+| `ping` | - | `pong` |
+| `resize` | `id, sessionId, cols, rows` | `ok` / `error`: sizes the pty, only for a client attached to the Session with no other client on the socket attached and no Terminal attached in process (the Mac webview's); the phone never sends it |
+| `tab_new` | `id, groupId?, afterTabId?, cwd?, cols?, rows?` | `ok {result: Tab}` |
+| `tab_close` / `tab_rename` / `tab_move` / `tab_activate` | `id, tabId` (+ `title` / `groupId, index?`) | `ok` |
+| `group_new` | `id, name?, tabId?` | `ok {result: Group}` |
+| `group_rename` / `group_move` / `group_delete` / `group_set_collapsed` | `id, groupId` (+ `name` / `index` / `collapsed`) | `ok` |
+| `path_exists` | `id, path` | `ok {result: {exists, dir}}` for an absolute path on the Host, `error` otherwise (Handoff asks before choosing where a Tab lands) |
+
+The commands are the layout's (the IPC table above), one to one (plus `path_exists`), and take a client-chosen `id`
+(a number) that the reply echoes: `ok {id, result?}` or `error {id, message}`. What they change
+arrives as `layout` like any other change, to every client.
+
+| From the Host | Fields | When |
+|---|---|---|
+| `hello` | `host {name, version, home}, device, layout, sessions` | right after `auth`: the whole layout (`LayoutSnapshot`) and every live Session's facts (`SessionInfo[]`); `device` is this client's name as the Host knows it; `home` is for the `~` in automatic Titles |
+| `layout` | `layout` | the layout changed; the whole `LayoutSnapshot`, with its revision (an older one is ignored) |
+| `session` | `session` | a Session's facts changed: `SessionInfo` whole (Foreground process, agent, cwd, git, remote, the OSC title, the BEL count, Agent status) |
+| `activity` | `sessions` | each Session's CPU and memory (`ActivitySession[]`), every sample while the Host samples Activity (the Mac's Panel or Memory Guard on; the daemon does not yet) |
+| `attached` / `resized` | `sessionId, cols, rows` | after `attach`; the pty was resized |
+| `exit` | `sessionId` | an attached Session ended (its Tab left the layout with it) |
+| `ok` / `error` | `id, result?` / `id, message` | a command's reply |
+| `error` | `message` (no `id`) | a message the Host could not read, or `input` failed |
+| `pong` | - | after `ping` |
+| binary frame | a big-endian u32 Session id, then the bytes | the Session's output, live, after the replay |
+
+Close codes: 4401 unknown token, 4408 no auth in time, 4429 the client fell too far behind
+(reconnect and replay), 1001 Remote turned off. `layout` and `session` carry no state of their
+own on the hub: a connection reads the latest from the layout when it relays, so a slow client
+sees the newest, and one that lags past the hub's buffer gets the whole layout and every
+Session's facts again.
+
+**Taps** (`remote/tap.rs`). `session.rs` gives every Session's output to `Taps` as well as to
+its outlet: a 256 KiB ring of recent output (trimmed to a line so a replay does not start
+inside an escape sequence), the pty's size (from spawn and every resize), the clients attached,
+and a `Scanner` that reads OSC 0 / 2 titles and BELs out of the bytes as they pass (see "Agent
+status"). An attach reads the ring and registers the subscriber under one lock, so nothing falls
+between the replay and the live frames. A client that falls 512 frames behind is dropped and
+reconnects (close 4429); the connection's 5 s ping notices.
+
+**Access**. Unchanged: two gates, the tailnet (Tailscale's own device identity and WireGuard),
+then a token (`remote/auth.rs`). Pairing: `remote_pair_begin` makes an 8-character code
+(32-symbol alphabet, 40 bits, ten minutes, five wrong tries) shown in Settings as a QR code of
+`<url>#pair=<code>` and as text. The client posts it with its name and gets a 256-bit token;
+`remote.json` stores its SHA-256. Every WebSocket sends the token first, every upload carries it
+as a bearer; Settings lists paired phones with when each was last seen and removes them.
+Tailscale Serve's `Tailscale-User-Login` header is recorded on the pairing for display only: a
+local process could set it, so it is never what admits a client. The pairing endpoint and the
+page are reachable without a token by design (the page has no secrets).
+
+**The phone** (`src/routes/m`, `src/lib/mobile/`). `store.svelte.ts`: paired or not (token in
+`localStorage`), the connection (`src/lib/host/client.ts`, shared with the Mac app's Hosts: one
+WebSocket to the Host's `/ws`, backoff 1–15 s, re-attaches what was attached, tries at once when
+the page returns to the foreground, pairs each command with its reply, uploads to the Host's
+`/api/upload`), the Host's layout and Session facts mirrored as the Mac's webview mirrors its local
+Host's, the open Tab. What a row shows is derived from those (`rows.ts`): the Title as the Mac
+derives it (a rename, else the agent's name, the OSC title of a running program, the Foreground
+process, the cwd's basename with `~` for the Host's home), the agent and its status from the
+Host, the Badge. Unread is per client and the phone keeps none. Screens: pairing (code prefilled
+from the QR link), the Tab list (same icons and Badge as the Mac's rows, the Host's name as its
+title), and `TerminalScreen`: an xterm.js Terminal at the Host's grid, `t.reset()` before each
+replay, font size chosen so the Host's columns fit the width (`fit.ts`, from a measured cell;
+below 6 px the grid scrolls sideways), the screen sized to the visual viewport so the key bar
+(Esc, Tab, Shift-Tab, a one-shot Ctrl, arrows, ^C, Return; DECCKM-aware arrows) sits above the
+keyboard. The phone never resizes the pty. `service-worker.ts` caches the page and assets
+(registered only on `/m` over HTTPS; the Mac's webview never has it) and `manifest.webmanifest`
+makes "Add to Home Screen" a full-screen app with its own icon; an installed page keeps its
+storage, so the pairing lasts. The phone sends no layout command yet (UI: #16).
+
+**Dev loop**. `pnpm build` (the server serves `../build`), then `pnpm tauri dev`; open
+`http://127.0.0.1:<port>/m` in a browser. `SIDEBAR_TERM_REMOTE_PAIR=1 pnpm tauri dev` (debug
+builds) starts a pairing at launch and prints its code and link, so a browser can pair without
+clicking through Settings. Against the daemon: `sidebar-termd --data-dir <tmp> --port <n>
+--web-root build --pair` prints the link; the Mac app pairs with it from Settings ("Hosts").
+Under plain `pnpm dev` in a browser the sidebar shows a fake paired Host, "dell" (`mock.ts`,
+URL `mock://dell`; type `offline` in one of its Tabs to see its section grey out and come back).
+
+## Host daemon
+
+`sidebar-termd` (`src-tauri/daemon/`) is the core with no window: a Host on a machine with no
+display (ADR 0002; the Dell of #24), or a second Host on a Mac for a smoke test. It links the same
+`sidebar_term_core` as the app and answers `core/src/host.rs` itself: events go on a broadcast
+bus (which the log reads; Remote hears of changes from the layout directly), the data dir is
+`$XDG_DATA_HOME/sidebar-term` (`~/.local/share/sidebar-term`), the phone page's assets are read
+from a directory, and the Remote server runs on the daemon's own tokio runtime. On a Mac the
+default data dir is the app's app-data dir with `daemon/` appended
+(`~/Library/Application Support/com.bencooper.sidebarterm/daemon`), so a daemon and the app on
+one Mac never read each other's `remote.json`, `resume.json` or `layout.json`.
+
+**What it does at this stage (#25, #20).** At launch it starts the Session core, Resume, the
+layout (its own `layout.json`: a Session is spawned for every Tab at its last cwd, or one Tab in
+one Group on a fresh install, exactly as the app does), the monitor, loads `remote.json`, and
+turns Remote on exactly as `remote_set(true)` does in the app: binds `127.0.0.1:<port>` and asks
+Tailscale Serve to publish it. Clients get its layout and every Session's facts (Agent status
+included) in `hello` and on every change, and drive it with the same commands as the app. `--port`
+changes the port and keeps it in `remote.json`; `--web-root` names the built phone page (`pnpm
+build`'s `build/`; default `<data dir>/web`, and without it `/m` is 404 while pairing and `/ws`
+still work); `--pair` starts a pairing at launch and prints its code and link; SIGUSR1 starts
+one at any time, so on a headless box `systemctl --user kill -s USR1 sidebar-termd` puts a code
+in the journal. It logs to stderr (each layout change in one line). On SIGTERM (or SIGINT) it
+writes the layout, records Resume entries a last time and hangs up every Session, as the app does
+on quit; it does not turn Remote off, so Tailscale's Serve rule stays for the next run. Not
+started, because a Host has no use for them yet: Activity and Memory Guard (#27 brings their
+Linux reading), Usage and Caffeinate (app-only).
+
+Nothing attaches to its Sessions' outlets, so each holds its last 256 KiB of output for good
+(clients replay the tap instead). A client can drive its Sessions, create, close, rename and
+move its Tabs and Groups, size a pty it alone shows, and upload files to it ("Host protocol").
+
+**Linux.** `cargo build --release --bin sidebar-termd` builds only the core and the daemon (no
+Tauri). `detect/` reads `/proc` on Linux (`detect/os/linux.rs`). The macOS-only reading in
+`activity.rs` is behind `cfg(target_os = "macos")` with stubs elsewhere, so until #27 lands a
+Linux Host reports no Activity and Memory Guard never freezes there.
+`packaging/systemd/sidebar-termd.service` runs it under `systemctl --user`; with
+`loginctl enable-linger` it runs with no one logged in (README "Host daemon").
+
+## Hosts
+
+The Mac app as a client of other Hosts (#29, ADR 0002): each paired Host is a section of the
+sidebar, with the Host's Groups and Tabs under it, and any of its Tabs opens as a live Terminal.
+The Mac is its own local Host, reached in process; a paired Host is reached over the Host
+protocol, and nothing about it comes from anywhere but its own core.
+
+**Pairing** (`src/lib/settings/HostsSection.svelte`, `src/lib/host/hosts.svelte.ts`). Settings
+lists the paired Hosts with their connection state and a Remove button, and pairs a new one from
+its address (`https://dell.tail1234.ts.net`, `http://127.0.0.1:47611`; a pasted pairing link fills
+both fields) and the code its Settings page shows or `sidebar-termd --pair` prints. The Host
+answers with a token; it lands in the `hosts` section of this Mac's `settings.json`
+(`src/lib/host/settings.ts`: `[{id, url, token, name, checkoutRoot, repoPaths}]`, `id` this
+client's own, `name` the Host's as last heard, the last two Handoff's repo-to-path map) and is sent first on every connection. The Host records this Mac as "Mac
+app" in its own list of paired clients. Removing a Host closes its connection and drops its
+section; the Host still lists this Mac until it is removed there. A Host that refuses the token
+(4401) stays listed as unpaired until removed and paired again.
+
+**Connection.** One `RemoteClient` (`src/lib/host/client.ts`, the phone's too) per Host, from
+launch, reconnecting with backoff 1–15 s and at once when the window comes back to the
+foreground. `hello` brings the Host's name, home, whole layout and every Session's facts;
+`layout` and `session` keep them current. A Host that is not connected keeps its section, greyed,
+with its last snapshot (its Tabs cannot be driven until it is back; the header says why and a
+click retries). On `hello` after a drop the Host may have restarted: Sessions it no longer has end
+for their Terminals, and every Tab's Session is attached again, with a replay.
+
+**Sidebar** (`src/lib/layout.svelte.ts`). The local Host's Groups come first with no header;
+each paired Host follows, in Settings order, under a `HostHeader` (name, connection dot). Tab
+and Group ids are random per Host, so every Host's Tabs share one map and a Tab knows its Host;
+Sessions are keyed by Host and id (`SessionKey`). The Tab in view is this client's (`activeTabId`,
+on any Host), apart from each Host's own active Tab: going to a Tab tells its Host (`tab_activate`),
+so `tab_new` there lands next to it; a Host's snapshot moves the view only while the view is on
+that Host (after a `tab_new` or a close, the Host's word on what shows next wins), or to a Tab
+this client just made there. Another Host, or another client of the same Host, changing its
+active Tab never pulls the view away. Decisions: next / previous Tab (`Cmd-Shift-[ / ]`) walk
+every section; go-to-Group numbers (`Cmd-1..9`) count the local Host's Groups only, so they do
+not shift as Hosts connect, and a Host's Group headers show no Hotkey. New Tab and New Group
+(Hotkeys, the footer buttons) go to the Host of the Tab in view; a Group's context menu and a
+Host header's go to theirs. Delete Group refuses a Host's last Group. Dragging a Tab or a Group
+onto another Host's rows shows no drop target and drops nowhere: a Session cannot change
+machines, only be handed off ("Handoff"); "Move to Group" lists the Tab's Host's Groups only.
+
+**Terminals** (`src/lib/terminal/manager.ts`). A paired Host's Session gets the same xterm.js
+Terminal as a local one, through the Host's transport: `attach` (the Host replays its recent
+output at its grid; the Terminal clears first, takes that grid while hidden, and refits when
+shown), `input`, `resize` (the Mac sends it after every fit; the Host honours it only for the
+one client attached, so a phone showing the Session leaves the Mac's request refused, which is
+ignored), WebGL as local. No flow control: the Host's ring and drop-behind rules stand in for
+`session_pause`. Files dropped on a remote Tab's Terminal are uploaded (`POST /api/upload`) and
+their paths on the Host pasted, shell-escaped, as local drops are. Paths printed in a remote
+Terminal are not links (they name files on the Host).
+
+**Tab rows.** Identical to local, from the forwarded `SessionInfo`: icon, Agent status, Badge,
+the automatic Title (with the Host's home for `~`), Unread by the same rules (its agent finished,
+stopped or asked for input while the Tab was not in view; the user's marks persist by Tab id),
+CPU and memory from the Host's `activity` messages while it samples (the daemon does not until
+#27). Closing asks the same confirmation, from the forwarded Foreground process (the local Host
+is re-probed on the spot). Not on a paired Host's Tabs: Freeze (Memory Guard is this Mac's; the
+protocol has no freeze), Resume, the Panel's Activity.
+
+**Mock.** `pnpm dev` in a browser fakes one paired Host, "dell", behind a fake connection
+(`src/lib/mock.ts` `hostClient`, chosen by `src/lib/host/connect.ts` for a `mock://` URL): its
+own layout in `localStorage`, a running fake agent, and `offline` typed in one of its Tabs drops
+the connection for a few seconds. Any 8-character code pairs it again after a Remove.
+
+## Handoff
+
+Moving a Tab to another Host (#30, `CONTEXT.md`): its Session is killed here after its Resume
+entry is recorded, a Tab is created on the Host at the matching checkout, and the entry is rerun
+there. Code moves by push and checkout, never by copying files; the one file that moves is a
+Claude Code conversation's transcript (`docs/research/claude-session-portability.md`, #31).
+
+**Actions.** On a local Tab's context menu: "New Tab on Host" and "Move Tab to Host", each a
+submenu of `<Host> · <Group>` for every Group of every online paired Host, so the Group there is
+the user's choice. Hotkeys "New Tab on Host" (`Cmd-Shift-T`) and "Move Tab to Host"
+(`Cmd-Shift-M`), category Hosts: the Tab in view, to the first online paired Host in Settings
+order, in its active Tab's Group. A paired Host's own Tabs offer neither (Handoff starts from
+this Mac).
+
+**Where a Tab lands** (`src/lib/host/settings.ts`, `src/lib/handoff/model.ts`). Each paired Host
+has a repo-to-path map in the `hosts` section, set in Settings > Hosts: a Checkout root (one
+directory; `~` is the Host's home from its `hello`) and per-repo overrides. "Same repo" is the
+repo name of the local Badge; the Host's checkout is the override for it, else `<root>/<repo>`.
+The Mac asks the Host whether that directory exists (`path_exists`). It does: the Tab opens
+there. It does not: the Tab opens at the Checkout root (else the Host's home) and `git clone
+<origin's URL> <path>` is typed, not run. Not in a repo, or no map for the Host: the Host's home.
+
+**Move, in order**, so the Session is never lost by accident (`handoff.svelte.ts`):
+
+1. `handoff_probe`: fresh facts, the Resume entry (`detect/resume.rs`, as the Resume banner
+   would get it), the running Claude Code conversation with its files located in that
+   process's own Claude config dir, and `git status` of the checkout.
+2. `path_exists` on the Host, then the confirmation: where it lands, what reruns, `git switch
+   <branch>` when the Badge has a branch, and, when the checkout has uncommitted changes,
+   unpushed commits or a branch with no upstream, that they stay on this Mac, with a "Type git
+   push first" button that types `git push -u origin HEAD` (not run) into the Tab's shell if it
+   is at its prompt, else into a new local Tab at the same directory, and does not move.
+3. `tab_new` on the Host, in the chosen Group, at the landing. Its `ok` is the point of no
+   return: a failure before it (the Host offline, a refused command) leaves the local Tab as it
+   was, and a dialog says why ("Nothing changed here").
+4. The local Tab is closed (`tab_close`: its Session is killed).
+5. A Claude Code conversation: `handoff_conversation_read` once the transcript has stopped
+   changing (250 ms quiet, 3 s at most), `POST /api/conversation` to the Host with the checkout
+   it resumes from, then, only once the Host has answered with its path,
+   `handoff_conversation_forget` removes the Mac's copy (two copies under two keys that are not
+   the current one make `claude --resume` refuse on purpose). The project's `memory/` goes with
+   it; it stays on the Mac too (other Sessions of the repo read it).
+6. Once the new Tab's shell reports itself (4 s at most), what to type goes in, on a cleared
+   prompt. It is the Resume banner's rule (`resumeLine` in `src/lib/resume/model.ts`) with the
+   cwd mapped from the local Worktree onto the Host's checkout and `git switch <branch> && `
+   before the line: `claude --resume <id>` for a conversation that moved (with the flags Resume
+   keeps), any other command line as recorded. In the clone case everything is one typed line,
+   `git clone … && cd -- <path> && git switch … && <line>`, not run.
+
+**Fallback.** When the conversation could not move (its transcript was not found, the upload
+failed, the Host has no checkout for it), a fresh `claude` is typed instead, with the entry's
+flags and a one-line handoff note as its first prompt ("Handed off from my Mac in `<repo>` on
+`<branch>`. The Claude Code conversation `<id>` stayed there (`<reason>`). Where we left off: "),
+the cursor left inside the quote and no Enter, for the user to finish; a dialog says the
+transcript is still on this Mac.
+
+**On the Host** (`handoff.rs` `place`, behind `/api/conversation`). The transcript goes to
+`<config dir>/projects/<key>/<id>.jsonl`, where the config dir is the daemon's
+`$CLAUDE_CONFIG_DIR`, else `$HOME/.claude`, and the key is Claude Code's for the checkout
+(its canonical path, every character that is not a letter or digit as `-`), so `claude --resume
+<id>` run there finds it first; memory files go to `projects/<key>/memory/<name>`, replacing
+files of the same name. A copy of the same id under another key is removed (one copy per
+config dir). It refuses, with nothing written: a session id that is not uuid-shaped, a relative
+`cwd`, a memory name that is absolute or has `..`, `.` or empty parts, any symbolic link below
+`projects/`, and any path whose parent, canonicalised, is not inside `projects/`. What the Host
+needs on its own: the same Claude Code version as the Mac, its own Claude login, and one "Yes,
+I trust this folder" answer per checkout for an interactive resume.
+
+**Unread.** A Tab moved while in view is shown on the Host at once, as New Tab on Host always
+is. A Tab moved from the background leaves the view where it is and its new Tab on the Host is
+marked Unread, so it is bold until the user goes to it (decision for #30).
+
+**Not moved**: the Worktree, the branch, uncommitted changes, other files (subagent
+transcripts, spilled tool results, checkpoint history), the Tab's custom Title, Codex and Gemini
+conversations (Resume records no entry for them, so nothing is rerun).
 
 ## Window
 

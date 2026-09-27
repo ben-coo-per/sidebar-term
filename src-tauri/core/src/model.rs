@@ -16,7 +16,7 @@ pub enum AgentKind {
 }
 
 /// Repo / Worktree / branch facts for a Session's cwd. Drives the Badge.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitInfo {
     /// Display name of the repo: basename of the main worktree's directory.
@@ -35,8 +35,20 @@ pub struct GitInfo {
     pub head_short: Option<String>,
 }
 
-/// Everything the sidebar knows about a Session, recomputed by the monitor.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+/// What an Agent session is doing: Running, Needs input or Done (`status.rs`, from the
+/// Session's OSC title, BEL and output; docs/architecture.md "Agent status").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentStatus {
+    Running,
+    NeedsInput,
+    Done,
+}
+
+/// Everything the sidebar knows about a Session: what the monitor probes (the Foreground
+/// process, the agent, cwd, git) and what the Host read in its output (`remote/tap.rs`: the OSC
+/// title, BELs) with the Agent status derived from both. Recomputed every monitor tick.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionInfo {
     pub session_id: SessionId,
@@ -54,6 +66,16 @@ pub struct SessionInfo {
     /// and the UI shows a remote marker instead of a Badge.
     pub remote: bool,
     pub git: Option<GitInfo>,
+    /// The latest OSC 0 / 2 title the Session's output set (`""` once cleared); `None` before
+    /// the first one.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// BELs (0x07) in the Session's output so far. A client that wants to ring one compares.
+    #[serde(default)]
+    pub bells: u32,
+    /// Running / Needs input / Done for an Agent session; `None` otherwise.
+    #[serde(default)]
+    pub status: Option<AgentStatus>,
 }
 
 impl SessionInfo {
@@ -67,12 +89,15 @@ impl SessionInfo {
             cwd: None,
             remote: false,
             git: None,
+            title: None,
+            bells: 0,
+            status: None,
         }
     }
 }
 
 /// Payload of the `session-exit` event.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionExit {
     pub session_id: SessionId,
@@ -221,6 +246,188 @@ pub struct ResumeEntry {
     pub cwd: Option<String>,
 }
 
+/// A running Claude Code conversation's files on this Host, for Handoff (`handoff.rs`): where its
+/// transcript is, and the project's auto memory beside it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeConversation {
+    /// The conversation's session id (`claude --resume <id>`).
+    pub id: String,
+    /// The directory the conversation runs in (Claude Code's `cwd`).
+    pub cwd: String,
+    /// The transcript, `<config dir>/projects/<key>/<id>.jsonl`.
+    pub transcript: String,
+    /// The project's `memory/` directory beside the transcript, when there is one.
+    pub memory: Option<String>,
+}
+
+/// One memory file shipped with a conversation: its path relative to `memory/`, and its text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationFile {
+    pub name: String,
+    pub content: String,
+}
+
+/// A conversation's files as they travel to another Host: the transcript's text and the
+/// memory files.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationFiles {
+    pub transcript: String,
+    #[serde(default)]
+    pub memory: Vec<ConversationFile>,
+}
+
+/// What would not move with a Tab: the state of its checkout (`handoff::git_status`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStatus {
+    /// The branch checked out; `None` when detached.
+    pub branch: Option<String>,
+    /// Its upstream (`origin/main`), when it has one.
+    pub upstream: Option<String>,
+    /// Commits on the branch that its upstream lacks; 0 without an upstream.
+    pub ahead: u32,
+    /// Changed or untracked paths (`git status --porcelain` lines).
+    pub changes: u32,
+    /// `origin`'s URL, for a `git clone` typed on the Host; `None` without an `origin`.
+    pub remote_url: Option<String>,
+}
+
+/// What Handoff needs to know about a local Session before moving its Tab (`handoff_probe`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandoffProbe {
+    /// The Session's facts, freshly probed.
+    pub info: SessionInfo,
+    /// What the Session is running, as Resume would record it; `None` at a prompt.
+    pub entry: Option<ResumeEntry>,
+    /// The Claude Code conversation running in it, with its files located; `None` otherwise.
+    pub conversation: Option<ClaudeConversation>,
+    /// The checkout's git status when the Session's cwd is in a repo; `None` otherwise.
+    pub git: Option<GitStatus>,
+}
+
+/// Whether a path exists on a Host (the Host protocol's `path_exists`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PathExists {
+    pub exists: bool,
+    /// True when it exists and is a directory.
+    pub dir: bool,
+}
+
+/// A Group of the sidebar: user-named, user-ordered, holding Tabs in display order (`layout/`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Group {
+    pub id: String,
+    pub name: String,
+    pub collapsed: bool,
+    /// Tab ids, in display order.
+    pub tab_ids: Vec<String>,
+}
+
+/// A Tab of the sidebar: the entry for one Session, in exactly one Group (`layout/`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Tab {
+    pub id: String,
+    pub group_id: String,
+    /// The Session this Tab points at; `None` while it has none (its shell failed to spawn).
+    pub session_id: Option<SessionId>,
+    /// A rename the user typed, which sticks; `None` means "the automatic Title".
+    pub custom_title: Option<String>,
+    /// Last known non-remote cwd, where the Tab's Session respawns at the next launch.
+    pub last_cwd: Option<String>,
+}
+
+/// The whole layout, as the Host holds it. Payload of `layout` and of `layout_get`; every
+/// client mirrors it (ADR 0002).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayoutSnapshot {
+    /// Counts up on every change, so a client can tell a stale snapshot from a newer one.
+    pub revision: u64,
+    /// In sidebar order.
+    pub groups: Vec<Group>,
+    /// Every Tab, by id.
+    pub tabs: std::collections::BTreeMap<String, Tab>,
+    pub active_tab_id: Option<String>,
+}
+
+/// The Host as its clients see it: `hello.host` in the Host protocol (`src/lib/host/protocol.ts`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostInfo {
+    /// The machine's hostname.
+    pub name: String,
+    /// The core's version.
+    pub version: String,
+    /// The Host's home directory, for the `~` in automatic Titles; `None` when unknown.
+    pub home: Option<String>,
+}
+
+/// What Tailscale says about this Mac, read from its CLI (`remote/tailscale.rs`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TailscaleState {
+    /// The Tailscale CLI was found (the app or a Homebrew install).
+    pub installed: bool,
+    /// Tailscale is up and logged in.
+    pub running: bool,
+    /// This Mac's MagicDNS name, `bens-mac.tail1234.ts.net`, once running.
+    pub dns_name: Option<String>,
+    /// Why Serve could not be set up, or the last CLI error, if any.
+    pub error: Option<String>,
+}
+
+/// A phone that paired with Remote: it holds a token this Mac accepts (hashed at rest).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteDevice {
+    pub id: String,
+    /// The name the phone gave itself when pairing.
+    pub name: String,
+    /// Epoch ms.
+    pub created_at: u64,
+    /// Epoch ms of its last connection, if it connected since pairing.
+    pub last_seen_at: Option<u64>,
+    /// The Tailscale login the pairing request came through, when it came through Serve.
+    pub login: Option<String>,
+}
+
+/// A pairing in progress: the code a phone must present, shown as a QR code in Settings.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pairing {
+    pub code: String,
+    /// The page to open on the phone, code included, or null while there is no URL to reach.
+    pub url: Option<String>,
+    /// Epoch ms.
+    pub expires_at: u64,
+}
+
+/// The state of Remote. Payload of `remote_state` and of the `remote` event.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteSnapshot {
+    /// Remote is on: the server listens and Tailscale Serve is asked to publish it.
+    pub on: bool,
+    /// The port the server listens on, on 127.0.0.1 only.
+    pub port: u16,
+    /// The phone's page, `https://<dns name>/m`, once Tailscale Serve publishes the server.
+    pub url: Option<String>,
+    /// Why the server is not listening although Remote is on.
+    pub error: Option<String>,
+    pub tailscale: TailscaleState,
+    /// Phones connected right now.
+    pub clients: u32,
+    pub devices: Vec<RemoteDevice>,
+    pub pairing: Option<Pairing>,
+}
+
 /// Event names. Frontend listens with `listen(EVENT_SESSION_INFO, ...)`.
 pub const EVENT_SESSION_INFO: &str = "session-info";
 pub const EVENT_SESSION_EXIT: &str = "session-exit";
@@ -232,5 +439,10 @@ pub const EVENT_USAGE: &str = "usage";
 pub const EVENT_MENU_SETTINGS: &str = "menu-settings";
 /// Caffeinate turned off on its own (its `caffeinate` run ended); payload `false`.
 pub const EVENT_CAFFEINATE: &str = "caffeinate";
+/// Remote's state changed (turned on or off, a phone connected or paired, a pairing expired).
+pub const EVENT_REMOTE: &str = "remote";
 /// Memory Guard froze or thawed a Session, or was turned on or off; payload `GuardSnapshot`.
 pub const EVENT_MEMORY_GUARD: &str = "memory-guard";
+/// The layout changed (a Tab or Group made, closed, renamed, moved, activated, a Tab's Session
+/// or last cwd changed); payload `LayoutSnapshot`, the whole of it.
+pub const EVENT_LAYOUT: &str = "layout";

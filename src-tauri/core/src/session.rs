@@ -1,13 +1,14 @@
-//! Session lifecycle: spawn a login shell on a pty, stream its output to the webview,
+//! Session lifecycle: spawn a login shell on a pty, stream its output to the Host's sink,
 //! accept input, resize, pause/resume for flow control, and tear down.
 //! OWNER: pty agent. See docs/research/pty.md and docs/architecture.md.
 //!
 //! Layout:
 //! - [`PtyHost`] is the pty core: the registry of live Sessions, their threads, signals and
-//!   reaping. It knows nothing about Tauri; it reports output and exit through closures, so the
-//!   tests at the bottom drive real ptys without an `AppHandle`.
-//! - [`SessionManager`] is the thin Tauri glue: output goes to a `Channel` as
-//!   `InvokeResponseBody::Raw`, exit goes out as the `session-exit` event.
+//!   reaping. It reports output and exit through closures, so the tests at the bottom drive real
+//!   ptys with nothing else set up.
+//! - [`SessionManager`] is the thin glue to the binary (`host`): output goes to the Session's
+//!   [`OutputSink`] (the app: a Tauri channel to the Tab's Terminal; the daemon: nowhere, phones
+//!   read the tap) and to Remote's taps, exit goes out as the `session-exit` event.
 //!
 //! Per Session there are two threads:
 //! - a **reader** that polls a dup of the master, coalesces macOS's ~1 KiB reads into chunks of up
@@ -22,7 +23,10 @@
 //! reaped only under its own `proc` lock, and never signalled once reaped, so a recycled pid is
 //! never hit.
 
-use crate::model::{ProbeTarget, SessionExit, SessionId, EVENT_SESSION_EXIT};
+use crate::host::{Events, OutputSink};
+use crate::model::{ProbeTarget, SessionExit, SessionId, SessionInfo, EVENT_SESSION_EXIT};
+use crate::remote::tap::Marks;
+use crate::remote::Taps;
 use portable_pty::{
     native_pty_system, Child, CommandBuilder, ExitStatus, MasterPty, PtyPair, PtySize,
 };
@@ -38,11 +42,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::ipc::{Channel, InvokeResponseBody};
-use tauri::{AppHandle, Emitter};
 
 /// Largest chunk handed to the output callback (one IPC message).
-const CHUNK_MAX: usize = 64 * 1024;
+pub const CHUNK_MAX: usize = 64 * 1024;
 /// Per-`read()` buffer. macOS returns at most ~1 KiB per read on a pty master anyway.
 const READ_BUF: usize = 16 * 1024;
 /// A read at least this big suggests a burst is in flight, so linger briefly for more.
@@ -65,6 +67,11 @@ const EXIT_DRAIN_MAX: usize = 1 << 20;
 /// Live pty threads (readers + writers). Lets tests prove nothing leaks.
 static LIVE_THREADS: AtomicUsize = AtomicUsize::new(0);
 
+/// Tests that spawn real ptys (here and in `layout/`) run one at a time so thread / fd accounting
+/// and timings are not disturbed.
+#[cfg(test)]
+pub(crate) static PTY_SERIAL: Mutex<()> = Mutex::new(());
+
 struct ThreadGuard;
 
 impl ThreadGuard {
@@ -85,44 +92,76 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Tauri glue
+// Glue to the binary
 // ---------------------------------------------------------------------------------------------
 
-/// Registry of live Sessions. Managed as Tauri state (`app.manage(SessionManager::default())`).
-#[derive(Default)]
+/// Registry of live Sessions: the app manages it as state, the daemon holds it in an `Arc`.
 pub struct SessionManager {
     host: PtyHost,
     /// The webview's key for each Session that has one (its Tab id), for Resume. Keys of Sessions
     /// that have exited are dropped by `keyed_targets`.
     resume_keys: Mutex<HashMap<SessionId, String>>,
+    /// Remote's copy of every Session's output and size, for phones attaching (`remote/tap.rs`).
+    taps: Arc<Taps>,
+    /// Where `session-exit` goes.
+    events: Arc<dyn Events>,
+    /// Told of every exit before the event goes out (the layout drops the Session's Tab).
+    exit_hooks: Arc<Mutex<Vec<ExitHook>>>,
 }
 
+/// Runs on a Session's reader thread once the Session is gone, before `session-exit` is emitted.
+pub type ExitHook = Arc<dyn Fn(SessionId) + Send + Sync>;
+
 impl SessionManager {
+    pub fn new(taps: Arc<Taps>, events: Arc<dyn Events>) -> Self {
+        Self {
+            host: PtyHost::default(),
+            resume_keys: Mutex::default(),
+            taps,
+            events,
+            exit_hooks: Arc::default(),
+        }
+    }
+
+    /// Run `hook` for every Session that exits from now on, before its `session-exit` event.
+    pub fn on_exit(&self, hook: ExitHook) {
+        lock(&self.exit_hooks).push(hook);
+    }
+
     /// Spawn the user's login shell (`$SHELL -l`, fallback `/bin/zsh`) on a new pty of `cols`x`rows`
-    /// in `cwd` (fallback `$HOME`). Output bytes go to `on_data` as `InvokeResponseBody::Raw`.
-    /// When the shell exits, emit `EVENT_SESSION_EXIT` with `SessionExit` via `app`,
-    /// then drop the Session from the registry. `resume_key` is the webview's key for the Session
-    /// in Resume entries (`resume.rs`); a Session without one is never resumed.
+    /// in `cwd` (fallback `$HOME`). Output bytes go to `on_output`, and to the Session's tap. When
+    /// the shell exits, emit `EVENT_SESSION_EXIT` with `SessionExit`, then drop the Session from
+    /// the registry. `resume_key` is the webview's key for the Session in Resume entries
+    /// (`resume.rs`); a Session without one is never resumed.
     pub fn spawn(
         &self,
-        app: AppHandle,
         cwd: Option<String>,
         cols: u16,
         rows: u16,
         resume_key: Option<String>,
-        on_data: Channel<InvokeResponseBody>,
+        mut on_output: OutputSink,
     ) -> Result<SessionId, String> {
         let spec = SpawnSpec::login_shell(cwd.as_deref(), cols, rows);
+        let taps = self.taps.clone();
+        let taps_on_exit = self.taps.clone();
+        let events = self.events.clone();
+        let hooks = self.exit_hooks.clone();
         let id = self.host.spawn(
             spec,
-            move |bytes| {
-                // Err only when the webview is gone; nothing useful to do about it here.
-                let _ = on_data.send(InvokeResponseBody::Raw(bytes));
+            move |session_id, bytes| {
+                taps.push(session_id, &bytes);
+                on_output(bytes);
             },
             move |session_id, code| {
-                let _ = app.emit(EVENT_SESSION_EXIT, SessionExit { session_id, code });
+                taps_on_exit.close(session_id);
+                let hooks: Vec<ExitHook> = lock(&hooks).clone();
+                for hook in hooks {
+                    hook(session_id);
+                }
+                events.emit(EVENT_SESSION_EXIT, &SessionExit { session_id, code });
             },
         )?;
+        self.taps.open(id, cols, rows);
         if let Some(key) = resume_key {
             lock(&self.resume_keys).insert(id, key);
         }
@@ -134,7 +173,9 @@ impl SessionManager {
     }
 
     pub fn resize(&self, id: SessionId, cols: u16, rows: u16) -> Result<(), String> {
-        self.host.resize(id, cols, rows)
+        self.host.resize(id, cols, rows)?;
+        self.taps.resized(id, cols, rows);
+        Ok(())
     }
 
     /// Park the reader thread so the kernel applies back-pressure to the child.
@@ -159,6 +200,19 @@ impl SessionManager {
 
     pub fn probe_target(&self, id: SessionId) -> Option<ProbeTarget> {
         self.host.probe_target(id)
+    }
+
+    /// What the Host read in a live Session's output so far (`remote/tap.rs`).
+    pub fn marks(&self, id: SessionId) -> Option<Marks> {
+        self.taps.marks(id)
+    }
+
+    /// A fresh `SessionInfo` for a live Session: probed now, with its marks and Agent status,
+    /// as the monitor would emit it. `None` for a Session that is gone.
+    pub fn info(&self, id: SessionId) -> Option<SessionInfo> {
+        let mut info = crate::detect::probe(&self.host.probe_target(id)?);
+        crate::status::apply(&mut info, self.marks(id).as_ref(), Instant::now());
+        Some(info)
     }
 
     /// `probe_targets` of the Sessions with a Resume key, with their key.
@@ -312,7 +366,7 @@ fn session_env(
 // pty core
 // ---------------------------------------------------------------------------------------------
 
-/// The pty core: live Sessions, their threads and processes. No Tauri types.
+/// The pty core: live Sessions, their threads and processes. Nothing of the binary's.
 #[derive(Default)]
 pub(crate) struct PtyHost {
     registry: Arc<Registry>,
@@ -505,8 +559,8 @@ impl Session {
 }
 
 impl PtyHost {
-    /// Spawn `spec` on a new pty. `on_output` gets the output in order, in chunks of at most
-    /// [`CHUNK_MAX`] bytes, on the Session's reader thread (possibly before this returns).
+    /// Spawn `spec` on a new pty. `on_output(id, bytes)` gets the output in order, in chunks of
+    /// at most [`CHUNK_MAX`] bytes, on the Session's reader thread (possibly before this returns).
     /// `on_exit(id, code)` runs once after the last output, when the child has been reaped and
     /// the Session removed from the registry. `code` is `None` when the child died by a signal.
     pub fn spawn<O, E>(
@@ -516,7 +570,7 @@ impl PtyHost {
         on_exit: E,
     ) -> Result<SessionId, String>
     where
-        O: FnMut(Vec<u8>) + Send + 'static,
+        O: FnMut(SessionId, Vec<u8>) + Send + 'static,
         E: FnOnce(SessionId, Option<i32>) + Send + 'static,
     {
         let size = PtySize {
@@ -742,17 +796,18 @@ fn reader_loop<O, E>(
     mut on_output: O,
     on_exit: E,
 ) where
-    O: FnMut(Vec<u8>),
+    O: FnMut(SessionId, Vec<u8>),
     E: FnOnce(SessionId, Option<i32>),
 {
     let _live = ThreadGuard::enter();
     let fd = src.as_raw_fd();
+    let id = session.id;
     let mut buf = vec![0u8; READ_BUF];
     let mut chunk: Vec<u8> = Vec::with_capacity(CHUNK_MAX);
     let mut flush = |chunk: &mut Vec<u8>| {
         if !chunk.is_empty() {
             // split_off(0) keeps `chunk`'s capacity for the next round.
-            on_output(chunk.split_off(0));
+            on_output(id, chunk.split_off(0));
         }
     };
     let mut last_tick = Instant::now();
@@ -795,7 +850,6 @@ fn reader_loop<O, E>(
     }
 
     let code = session.reap();
-    let id = session.id;
     lock(&registry.sessions).remove(&id);
     // Last references: closes the master and the input queue (which ends the writer thread).
     drop(session);
@@ -823,8 +877,7 @@ mod tests {
 
     const T: Duration = Duration::from_secs(10);
 
-    /// pty tests run one at a time so thread / fd accounting and timings are not disturbed.
-    static SERIAL: Mutex<()> = Mutex::new(());
+    use super::PTY_SERIAL as SERIAL;
 
     #[derive(Default)]
     struct Output {
@@ -865,7 +918,7 @@ mod tests {
             let id = host
                 .spawn(
                     spec,
-                    move |bytes| {
+                    move |_, bytes| {
                         let mut o = lock(&sink.0);
                         o.chunks.push(bytes.len());
                         o.bytes.extend_from_slice(&bytes);
@@ -1134,6 +1187,50 @@ mod tests {
         );
     }
 
+    /// The glue to the binary: output reaches the Session's sink and its tap, the exit reaches
+    /// the Host's events, and the Resume key follows the Session's life.
+    #[test]
+    fn the_manager_feeds_the_sink_the_tap_and_the_exit_event() {
+        let _serial = lock(&SERIAL);
+        let recorder = Arc::new(crate::host::testing::Recorder::default());
+        let taps = Arc::new(Taps::default());
+        let manager = SessionManager::new(taps.clone(), recorder.clone());
+        let out: Arc<Mutex<Vec<u8>>> = Arc::default();
+        let sink = out.clone();
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let id = manager
+            .spawn(
+                Some(cwd),
+                80,
+                24,
+                Some("tab-1".into()),
+                Box::new(move |bytes| lock(&sink).extend_from_slice(&bytes)),
+            )
+            .expect("spawn");
+        assert_eq!(manager.keyed_targets().len(), 1, "a keyed Session is a Resume target");
+
+        manager.write(id, b"echo SINK_$((6*7))\r").unwrap();
+        let seen = |needle: &str| {
+            String::from_utf8_lossy(&lock(&out)).contains(needle)
+        };
+        assert!(wait_until(T, || seen("SINK_42")), "sink never saw the echo");
+        let (tx, _rx) = Taps::channel();
+        let attached = taps.attach(id, tx).expect("the tap is open while the Session lives");
+        assert!(
+            String::from_utf8_lossy(&attached.scrollback).contains("SINK_42"),
+            "the tap holds the same output"
+        );
+
+        manager.kill(id).unwrap();
+        assert!(
+            wait_until(T, || !recorder.named(EVENT_SESSION_EXIT).is_empty()),
+            "no session-exit event"
+        );
+        assert_eq!(recorder.named(EVENT_SESSION_EXIT)[0]["sessionId"], id);
+        assert!(manager.keyed_targets().is_empty(), "the key goes with the Session");
+        assert!(!taps.has(id), "the tap closes with the Session");
+    }
+
     #[test]
     fn burst_arrives_complete_and_in_order() {
         let p = Pty::zsh();
@@ -1214,7 +1311,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         for _ in 0..3 {
             let tx = tx.clone();
-            host.spawn(zsh_spec(), |_| {}, move |id, _| tx.send(id).unwrap())
+            host.spawn(zsh_spec(), |_, _| {}, move |id, _| tx.send(id).unwrap())
                 .unwrap();
         }
         assert_eq!(host.probe_targets().len(), 3);

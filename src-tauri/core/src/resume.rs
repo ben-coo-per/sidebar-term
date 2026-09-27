@@ -12,7 +12,7 @@
 //!   dismissed. At launch, and when the webview reloads, `running` moves here, each entry
 //!   replacing an older one for the same key.
 
-use crate::layout;
+use crate::store;
 use crate::model::{ProbeTarget, ResumeEntry};
 use serde::{Deserialize, Serialize};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -24,7 +24,7 @@ use std::time::Duration;
 /// Time between checks of what each Session is running.
 const TICK: Duration = Duration::from_secs(1);
 
-/// Resume state (Tauri state), mirrored to `resume.json`.
+/// Resume state (app state, and the daemon's), mirrored to `resume.json`.
 pub struct Resume {
     /// `None` when the app data dir is unavailable: Resume then lasts one run.
     path: Option<PathBuf>,
@@ -108,7 +108,7 @@ impl Resume {
 
     fn save(&self, state: &State) {
         if let Some(path) = &self.path {
-            if let Err(e) = layout::write(path, state) {
+            if let Err(e) = store::write(path, state) {
                 eprintln!("resume: writing {} failed: {e}", path.display());
             }
         }

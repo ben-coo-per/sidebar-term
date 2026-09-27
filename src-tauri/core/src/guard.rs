@@ -30,7 +30,7 @@
 //! recycled pid is never hit.
 
 use crate::activity::{run_ps, rusage, PsRow};
-use crate::layout;
+use crate::store;
 use crate::model::{ActivitySnapshot, FrozenSession, GuardSnapshot, ProbeTarget, SessionId};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -199,7 +199,7 @@ impl Inner {
 
 type OnChange = Box<dyn Fn(GuardSnapshot) + Send + Sync>;
 
-/// Memory Guard (Tauri state). Starts off; the webview turns it on from Settings at startup.
+/// Memory Guard (app state). Starts off; the webview turns it on from Settings at startup.
 pub struct Guard {
     inner: Mutex<Inner>,
     /// `frozen.json`: what is frozen, for the next launch to thaw after a crash.
@@ -392,7 +392,7 @@ impl Guard {
                     _ => Err(e.to_string()),
                 })
             } else {
-                layout::write(path, &procs)
+                store::write(path, &procs)
             };
             if let Err(e) = saved {
                 eprintln!("memory guard: could not save {}: {e}", path.display());
@@ -716,7 +716,7 @@ mod tests {
         let pid = child.0.id() as i32;
         let procs = freeze_tree(pid);
         assert_eq!(state(pid as u32), "T");
-        layout::write(&path, &procs).unwrap();
+        store::write(&path, &procs).unwrap();
 
         let events = Arc::new(StdMutex::new(0));
         let counted = Arc::clone(&events);

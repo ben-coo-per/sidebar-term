@@ -1,10 +1,14 @@
-<!-- A Tab row: Agent/plain icon, Agent status (or a snowflake while Memory Guard has it frozen),
-     Title (inline rename; bold while unread), Badge, the Session's CPU and memory (Settings), close button. -->
+<!-- A Tab row, on any Host: Agent/plain icon, Agent status (or a snowflake while Memory Guard has
+     it frozen), Title (inline rename; bold while unread), Badge, the Session's CPU and memory
+     (Settings), close button. Everything shown comes from the Tab's Host's SessionInfo, so a
+     paired Host's Tab reads exactly as a local one. -->
 <script lang="ts">
   import type { Tab } from "../layout.svelte";
-  import { activateTab, layout, moveTab, newGroupFromTab, renameTab } from "../layout.svelte";
-  import { sessionState, setTabRead, tabIsUnread, tabTitle } from "../sessions.svelte";
+  import { activateTab, groupsOf, layout, moveTab, newGroupFromTab, renameTab } from "../layout.svelte";
+  import { sessionOf, setTabRead, tabIsUnread, tabTitle } from "../sessions.svelte";
   import { AGENT_NAMES } from "../agentStatus";
+  import { isLocal } from "../host/ids";
+  import { hostActivity } from "../host/hosts.svelte";
   import RobotIcon from "./icons/RobotIcon.svelte";
   import TerminalIcon from "./icons/TerminalIcon.svelte";
   import CheckIcon from "./icons/CheckIcon.svelte";
@@ -21,10 +25,13 @@
   import { openContextMenu } from "./menu.svelte";
   import type { MenuItem } from "./ContextMenu.svelte";
   import { requestCloseTab } from "./closeTabFlow";
+  import { canHandOff, handoffHosts, moveTabToHost, newTabOnHost } from "../handoff/handoff.svelte";
+  import { hostName } from "../host/hosts.svelte";
 
   let { tab }: { tab: Tab } = $props();
 
-  const session = $derived(sessionState(tab.sessionId));
+  const local = $derived(isLocal(tab.host));
+  const session = $derived(sessionOf(tab));
   const agent = $derived(session?.info?.agent ?? null);
   const status = $derived(session?.status ?? null);
   const finished = $derived(session?.finished ?? false);
@@ -33,7 +40,8 @@
   const git = $derived(session?.info?.git ?? null);
   const title = $derived(tabTitle(tab));
   const isActive = $derived(layout.activeTabId === tab.id);
-  const frozen = $derived(frozenSession(tab.sessionId));
+  // Memory Guard is this Mac's: a paired Host's Tabs are never frozen from here.
+  const frozen = $derived(local ? frozenSession(tab.sessionId) : undefined);
   const stateLabel = $derived(
     frozen
       ? "frozen"
@@ -45,8 +53,13 @@
             ? "idle"
             : undefined,
   );
+  // This Mac's samples for a local Tab; the Host's `activity` messages for a paired Host's.
   const usage = $derived(
-    activitySettings.tabStats ? activity.snapshot?.sessions.find((s) => s.sessionId === tab.sessionId) : undefined,
+    !activitySettings.tabStats
+      ? undefined
+      : local
+        ? activity.snapshot?.sessions.find((s) => s.sessionId === tab.sessionId)
+        : hostActivity(tab.host, tab.sessionId),
   );
   const stats = $derived(
     frozen ? `frozen · ${formatBytes(usage?.mem ?? frozen.mem)}` : usage ? formatTabStats(usage.cpu, usage.mem) : null,
@@ -111,16 +124,41 @@
     }
   }
 
-  /** Freeze (not the Tab in view: going to a Tab thaws it) or Thaw. */
+  /** Freeze (not the Tab in view: going to a Tab thaws it) or Thaw. Local Tabs only: the Host protocol has no freeze. */
   function freezeItem(): MenuItem {
     const sessionId = tab.sessionId;
-    if (sessionId === null) return { label: "Freeze", disabled: true };
+    if (sessionId === null || !local) return { label: "Freeze", disabled: true };
     if (frozen) return { label: "Thaw", action: () => void thawSession(sessionId) };
     return { label: "Freeze", action: () => void freezeSession(sessionId), disabled: isActive };
   }
 
+  /**
+   * "New Tab on <Host>" and "Move Tab to <Host>" (Handoff): one entry per Group of each online
+   * paired Host, so the Group there is the user's choice. Local Tabs only; a Session on a paired
+   * Host does not move (a Host's own Tabs use "Move to Group").
+   */
+  function handoffItems(): MenuItem[] {
+    if (!canHandOff(tab)) return [];
+    const targets = handoffHosts().flatMap((h) =>
+      groupsOf(h.id).map((g) => ({ host: h.id, group: g, label: `${hostName(h.id)} · ${g.name}` })),
+    );
+    const none = [{ label: "No Host connected", disabled: true }];
+    return [
+      {
+        label: "New Tab on Host",
+        submenu: targets.length ? targets.map((t) => ({ label: t.label, action: () => void newTabOnHost(tab, t.host, t.group.id) })) : none,
+      },
+      {
+        label: "Move Tab to Host",
+        submenu: targets.length ? targets.map((t) => ({ label: t.label, action: () => void moveTabToHost(tab, t.host, t.group.id) })) : none,
+      },
+    ];
+  }
+
   function menuItems(): MenuItem[] {
-    const otherGroups = layout.groups.filter((g) => g.id !== tab.groupId);
+    // A Session cannot change machines by "Move to Group": only this Host's Groups. Handoff
+    // (below) moves it to another Host by rerunning it there.
+    const otherGroups = groupsOf(tab.host).filter((g) => g.id !== tab.groupId);
     return [
       { label: "Rename", action: beginRename },
       tabIsUnread(tab)
@@ -133,6 +171,7 @@
           : [{ label: "No other Groups", disabled: true }],
       },
       { label: "New Group from Tab", action: () => void newGroupFromTab(tab.id) },
+      ...handoffItems(),
       freezeItem(),
       { label: "Close", action: () => void requestCloseTab(tab.id), danger: true, separatorBefore: true },
     ];

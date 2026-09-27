@@ -1,7 +1,8 @@
-<!-- The sidebar: Group headers + Tab rows, resizable, with the Panel beneath them and the shared
-     context menu and confirm dialog mounted once. Runs to the top of the window; its header is the
-     Tauri drag region (see docs/architecture.md "Window") and holds the Tray, right of the traffic
-     lights. -->
+<!-- The sidebar: the local Host's Group headers + Tab rows, then one section per paired Host
+     (its header, then its Groups and Tabs, greyed while the Host is not connected), resizable,
+     with the Panel beneath them and the shared context menu and confirm dialog mounted once.
+     Runs to the top of the window; its header is the Tauri drag region (see
+     docs/architecture.md "Window") and holds the Tray, right of the traffic lights. -->
 <script lang="ts">
   import {
     layout,
@@ -12,9 +13,12 @@
     MAX_SIDEBAR_WIDTH,
     PANEL_MIN_SIDEBAR_WIDTH,
   } from "../layout.svelte";
+  import { hostState } from "../host/hosts.svelte";
+  import { LOCAL_HOST } from "../host/ids";
   import Panel from "../panel/Panel.svelte";
   import Tray from "../tray/Tray.svelte";
   import GroupHeader from "./GroupHeader.svelte";
+  import HostHeader from "./HostHeader.svelte";
   import TabRow from "./TabRow.svelte";
   import ContextMenu from "./ContextMenu.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
@@ -29,7 +33,7 @@
     return key ? `${text} (${key})` : text;
   }
 
-  const totalTabs = $derived(Object.keys(layout.tabs).length);
+  const localTabs = $derived(layout.groups.reduce((n, g) => n + g.tabIds.length, 0));
 
   let resizing = $state(false);
 
@@ -60,25 +64,47 @@
   <div class="groups" role="tree" aria-label="Tabs">
     {#if !layout.ready}
       <!-- Startup: loading the persisted layout and respawning Sessions. -->
-    {:else if totalTabs === 0}
-      <div class="empty-state">
-        <p class="empty-title">No Tabs open</p>
-        <button type="button" class="new-tab-btn" onclick={() => void newTab()}>
-          <PlusIcon size={11} />
-          New Tab
-        </button>
-        <p class="empty-hint">{hotkeyLabel("tab.new")}</p>
-      </div>
     {:else}
-      {#each layout.groups as group (group.id)}
-        <GroupHeader {group} />
-        {#if !group.collapsed}
-          {#each group.tabIds as tabId (tabId)}
-            {#if layout.tabs[tabId]}
-              <TabRow tab={layout.tabs[tabId]} />
+      {#if localTabs === 0}
+        <div class="empty-state" class:compact={layout.sections.length > 0}>
+          <p class="empty-title">No Tabs open</p>
+          <button type="button" class="new-tab-btn" onclick={() => void newTab({ host: LOCAL_HOST })}>
+            <PlusIcon size={11} />
+            New Tab
+          </button>
+          <p class="empty-hint">{hotkeyLabel("tab.new")}</p>
+        </div>
+      {:else}
+        {#each layout.groups as group (group.id)}
+          <GroupHeader {group} />
+          {#if !group.collapsed}
+            {#each group.tabIds as tabId (tabId)}
+              {#if layout.tabs[tabId]}
+                <TabRow tab={layout.tabs[tabId]} />
+              {/if}
+            {/each}
+          {/if}
+        {/each}
+      {/if}
+
+      {#each layout.sections as section (section.host)}
+        {@const state = hostState(section.host)}
+        <div class="host-section" class:offline={!state || state.status !== "online"} role="group">
+          <HostHeader host={section.host} />
+          {#each section.groups as group (group.id)}
+            <GroupHeader {group} />
+            {#if !group.collapsed}
+              {#each group.tabIds as tabId (tabId)}
+                {#if layout.tabs[tabId]}
+                  <TabRow tab={layout.tabs[tabId]} />
+                {/if}
+              {/each}
             {/if}
           {/each}
-        {/if}
+          {#if section.groups.length === 0}
+            <p class="host-empty">{state?.status === "online" ? "No Groups" : "Not connected yet"}</p>
+          {/if}
+        </div>
       {/each}
     {/if}
   </div>
@@ -88,7 +114,7 @@
       <PlusIcon size={10} />
       Tab
     </button>
-    <button type="button" class="footer-btn" onclick={() => newGroup()} title={withHotkey("New Group", "group.new")}>
+    <button type="button" class="footer-btn" onclick={() => void newGroup()} title={withHotkey("New Group", "group.new")}>
       <PlusIcon size={10} />
       Group
     </button>
@@ -156,6 +182,16 @@
     background: var(--scrollbar-thumb);
     border-radius: 4px;
   }
+  /* A Host that is not connected keeps its last snapshot, greyed. */
+  .host-section.offline > :global(:not(.host)) {
+    opacity: 0.45;
+  }
+  .host-empty {
+    margin: 2px 4px 0;
+    padding: 4px 8px 4px 20px;
+    font-size: 11.5px;
+    color: var(--text-tertiary);
+  }
   .footer {
     flex: none;
     display: flex;
@@ -201,6 +237,9 @@
     gap: 8px;
     padding: 48px 16px;
     text-align: center;
+  }
+  .empty-state.compact {
+    padding: 20px 16px 12px;
   }
   .empty-title {
     margin: 0;
