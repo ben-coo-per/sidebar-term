@@ -24,7 +24,7 @@ use std::time::Duration;
 /// Time between checks of what each Session is running.
 const TICK: Duration = Duration::from_secs(1);
 
-/// Resume state (Tauri state), mirrored to `resume.json`.
+/// Resume state (app state, and the daemon's), mirrored to `resume.json`.
 pub struct Resume {
     /// `None` when the app data dir is unavailable: Resume then lasts one run.
     path: Option<PathBuf>,

@@ -5,12 +5,13 @@
 //! "cwd changed" (docs/research/agent-detection.md, docs/research/cwd-git.md).
 
 use crate::detect;
+use crate::host::Events;
 use crate::model::{ProbeTarget, SessionId, SessionInfo, EVENT_SESSION_INFO};
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
 
 /// Time between ticks.
 const TICK: Duration = Duration::from_millis(500);
@@ -22,7 +23,7 @@ const TICK: Duration = Duration::from_millis(500);
 /// The thread never exits: a panic in `targets` skips the tick, a panic in one probe skips
 /// that Session for the tick. (Only with `panic = "unwind"`; the release profile aborts on
 /// panic, so the probe path is written not to panic at all.)
-pub fn spawn<F>(app: AppHandle, targets: F)
+pub fn spawn<F>(events: Arc<dyn Events>, targets: F)
 where
     F: Fn() -> Vec<ProbeTarget> + Send + 'static,
 {
@@ -33,12 +34,7 @@ where
             loop {
                 if let Ok(live) = catch_unwind(AssertUnwindSafe(&targets)) {
                     for info in tracker.tick(&live, detect::probe) {
-                        if let Err(e) = app.emit(EVENT_SESSION_INFO, &info) {
-                            eprintln!(
-                                "session-monitor: emit for session {} failed: {e}",
-                                info.session_id
-                            );
-                        }
+                        events.emit(EVENT_SESSION_INFO, &info);
                     }
                 } else {
                     eprintln!("session-monitor: listing sessions panicked; skipping this tick");

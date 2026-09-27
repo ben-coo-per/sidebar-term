@@ -199,7 +199,7 @@ impl Inner {
 
 type OnChange = Box<dyn Fn(GuardSnapshot) + Send + Sync>;
 
-/// Memory Guard (Tauri state). Starts off; the webview turns it on from Settings at startup.
+/// Memory Guard (app state). Starts off; the webview turns it on from Settings at startup.
 pub struct Guard {
     inner: Mutex<Inner>,
     /// `frozen.json`: what is frozen, for the next launch to thaw after a crash.

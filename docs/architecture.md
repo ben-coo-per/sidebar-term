@@ -8,7 +8,9 @@ names the ticket; the user may revise it there. Vocabulary: `CONTEXT.md`.
 
 | Side | Owns | Never does |
 |---|---|---|
-| Rust (`src-tauri/src`) | Sessions (ptys, shells), facts about Sessions (Foreground process, Agent session, cwd, git), layout file I/O | Knows nothing about Tabs, Groups or Titles |
+| The core (`src-tauri/core`, Rust) | Sessions (ptys, shells), facts about Sessions (Foreground process, Agent session, cwd, git), Memory Guard, Resume, the Remote server, layout file I/O | Knows nothing about Tabs, Groups or Titles (until #20); never names Tauri |
+| The app (`src-tauri/src`, Rust + Tauri) | The window, the menu, the IPC commands, Caffeinate, file drops; links the core as the local Host | - |
+| `sidebar-termd` (`src-tauri/daemon`, Rust) | The headless Host: links the core, serves it over Remote, runs under systemd | Never needs a display |
 | Webview (`src`) | The layout model: Groups, Tabs, Titles, order, active Tab; xterm.js Terminals; all UI | Never shells out or reads the filesystem |
 
 A **Tab** points at a **Session** by `SessionId`. Session ids are per app run; the persisted layout
@@ -52,47 +54,65 @@ stores each Tab's last cwd instead and respawns a shell there on relaunch.
 | `usage` | `UsageSnapshot` | right away on `usage_watch(true, ..)`, then whenever a number changes (checked every 5 s) |
 | `menu-settings` | - | the app menu's "Settings…" was chosen |
 | `caffeinate` | `false` | Caffeinate's `caffeinate` run ended without being turned off |
-| `remote` | `RemoteSnapshot` | Remote turned on or off, a phone connected or paired, a pairing expired |
 | `remote` | `RemoteSnapshot` | Remote turned on or off, a phone connected, paired or was removed, a pairing began or ended |
 | `memory-guard` | `GuardSnapshot` | Memory Guard froze or thawed a Tab, or was turned on or off |
 
-Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `ipc.ts` routes to
+Types: `src-tauri/core/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `ipc.ts` routes to
 `src/lib/mock.ts`, a fake backend for developing the UI in a browser (`pnpm dev`, then open
 `http://127.0.0.1:1420`). Type `help` in a mock terminal.
 
 ## Rust modules
 
-- `session.rs` — `SessionManager` (Tauri state): spawn `$SHELL -l` on a `portable-pty` pty, one
-  reader thread per Session coalescing output into `InvokeResponseBody::Raw`, write, resize,
-  pause/resume, kill, `probe_targets()`.
+One Cargo workspace in `src-tauri/`: the core library, the app, and the daemon (ADR 0002). The
+core never names Tauri; what it needs from its binary is `core/src/host.rs`, and each binary
+answers it (see "Host daemon" for the daemon's answer).
+
+**The core, `src-tauri/core/src/` (`sidebar_term_core`)**
+
+- `host.rs` — what the core takes from its binary: `Events` (emit a named JSON event), `Paths`
+  (the data dir), `Assets` (the phone page's files), an `OutputSink` per Session, and a tokio
+  runtime handle, bundled as `Host`.
+- `session.rs` — `SessionManager`: spawn `$SHELL -l` on a `portable-pty` pty, one reader thread
+  per Session coalescing output into chunks for the Session's `OutputSink` and its tap, write,
+  resize, pause/resume, kill, `probe_targets()`; `session-exit` through `Events`.
 - `detect/` — `probe(&ProbeTarget) -> SessionInfo`: libproc for the Foreground process group,
   agent classification, remote-hop detection, cwd; `.git` file reading for repo / Worktree / branch.
-  `detect/resume.rs`: the Resume entry of a Session's Foreground job (see "Resume").
+  `detect/resume.rs`: the Resume entry of a Session's Foreground job (see "Resume"). The libproc
+  readers are macOS-only; elsewhere they are stubs that read nothing until #26.
 - `monitor.rs` — thread ticking every 500 ms: probe every target, emit `session-info` on change.
-- `activity.rs` — `Activity` (Tauri state): thread idle until watched (by the webview, or by
-  Memory Guard), then every 2 s runs `/bin/ps` over every process, reads this user's processes'
-  footprints, attributes each to a Session by ppid descent from its shell, emits `activity` if the
-  webview watches and hands the sample to Memory Guard if it is on (see "Panel").
-- `guard.rs` — `Guard` (Tauri state): Memory Guard's policy and the SIGSTOP / SIGCONT of a
-  Session's process tree; `frozen.json` for thawing after a crash (see "Tray").
-- `usage.rs` — `Usage` (Tauri state): thread idle until watched, then every 5 s reads the chosen
-  agents' usage limits and emits `usage` on change (see "Panel").
-- `caffeinate.rs` — `Caffeinate` (Tauri state): the background `caffeinate` run behind the Tray's
-  Caffeinate button (see "Tray").
-- `remote/` — `Remote` (Tauri state): the server for phones (`server.rs`, axum on Tauri's tokio),
-  paired phones and pairing codes (`auth.rs`, `remote.json`), the Tailscale CLI (`tailscale.rs`)
-  and each Session's output tap (`tap.rs`, fed by `session.rs`) (see "Remote").
-- `resume.rs` — `Resume` (Tauri state): a thread records every keyed Session's Resume entry to
-  `resume.json` each second it changes, and a last time on exit (see "Resume").
-- `lib.rs` also builds the app menu: Tauri's default plus "Settings…" (no key equivalent: the
-  Settings Hotkey stays the webview's, rebindable).
+- `activity.rs` — `Activity`: thread idle until watched (by the webview, or by Memory Guard), then
+  every 2 s runs `/bin/ps` over every process, reads this user's processes' footprints, attributes
+  each to a Session by ppid descent from its shell, emits `activity` if the webview watches and
+  hands the sample to Memory Guard if it is on (see "Panel"). The `ps` / Mach / sysctl reading is
+  macOS-only; elsewhere it reads nothing until #27.
+- `guard.rs` — `Guard`: Memory Guard's policy and the SIGSTOP / SIGCONT of a Session's process
+  tree; `frozen.json` for thawing after a crash (see "Tray").
+- `usage.rs` — `Usage`: thread idle until watched, then every 5 s reads the chosen agents' usage
+  limits and emits `usage` on change (see "Panel"). App-only: the daemon never starts it.
 - `remote/` — Remote (see "Remote"): `mod.rs` the `Remote` state (on/off, pairing, the relay of
-  the sidebar to phones), `server.rs` the axum routes and the WebSocket protocol, `tap.rs` each
-  Session's recent output and attached phones (fed by `session.rs`), `auth.rs` paired phones and
-  pairing codes (`remote.json`), `tailscale.rs` the Tailscale CLI.
-- `layout.rs` — atomic JSON read/write of `layout.json`, `settings.json`, `resume.json` and `remote.json` in the app data dir.
-- `layout.rs` — atomic JSON read/write of `layout.json`, `settings.json`, `resume.json` and
-  `frozen.json` in the app data dir.
+  the sidebar to phones), `server.rs` the axum routes and the WebSocket protocol on the Host's
+  runtime, `tap.rs` each Session's recent output and attached phones (fed by `session.rs`),
+  `auth.rs` paired phones and pairing codes (`remote.json`), `tailscale.rs` the Tailscale CLI.
+- `resume.rs` — `Resume`: a thread records every keyed Session's Resume entry to `resume.json`
+  each second it changes, and a last time on exit (see "Resume").
+- `layout.rs` — atomic JSON read/write of `layout.json`, `settings.json`, `resume.json`,
+  `remote.json` and `frozen.json` in the Host's data dir (`Paths`).
+- `paths.rs` — which paths printed in a Terminal name a file on this Host.
+- `model.rs` — the types every event and command carries; mirrored by `src/lib/types.ts`.
+
+**The app, `src-tauri/src/` (`sidebar_term_lib`, Tauri)**
+
+- `lib.rs` — the IPC commands (the table above), the app menu (Tauri's default plus "Settings…";
+  no key equivalent: the Settings Hotkey stays the webview's, rebindable), and the wiring of the
+  core at startup and exit.
+- `host.rs` — `AppHost`: the core's `Host` with an `AppHandle` behind it (events to the webview,
+  the app-data dir, the bundled assets, Tauri's tokio runtime).
+- `caffeinate.rs` — `Caffeinate`: the background `caffeinate` run behind the Tray's Caffeinate
+  button (see "Tray"). App-only.
+- `drop.rs` — files dropped on a Terminal: the drag pasteboard and the temp-dir save (see
+  "Window"). App-only.
+
+**The daemon, `src-tauri/daemon/src/main.rs` (`sidebar-termd`)**: see "Host daemon".
 
 ## Webview modules
 
@@ -107,12 +127,6 @@ Types: `src-tauri/src/model.rs` mirrored by `src/lib/types.ts`. Outside Tauri, `
 - `src/lib/settings/*` — the Settings page (Usage agents, Memory, Hotkeys), shown over the Terminal; the
   settings blob's per-section store (`store.ts`).
 - `src/lib/sidebar/*` — sidebar components. `src/routes/+page.svelte` — app shell.
-- `src/lib/tray/*` — the Tray (`Tray.svelte`), its `TrayButton`, and Caffeinate (state mirror and
-  button).
-- `src/lib/remote/*` — Remote on the Mac: the state mirror for Settings (`remote.svelte.ts`), the
-  sidebar publisher, and the pure snapshot builder (`sidebar.ts`); `src/lib/settings/RemoteSection.svelte`.
-- `src/lib/mobile/*` — the phone's page (`src/routes/m`): the protocol (`protocol.ts`), the
-  connection (`client.ts`), its state (`store.svelte.ts`), the screens, and the font-fit maths (`fit.ts`).
 - `src/lib/tray/*` — the Tray (`Tray.svelte`), its `TrayButton`, Caffeinate (state mirror and
   button) and the Memory Guard button.
 - `src/lib/guard/*` — Memory Guard's state mirror, settings and visible-Session reporting
@@ -397,6 +411,42 @@ storage, so the pairing lasts.
 `http://127.0.0.1:<port>/m` in a browser. `SIDEBAR_TERM_REMOTE_PAIR=1 pnpm tauri dev` (debug
 builds) starts a pairing at launch and prints its code and link, so a browser can pair without
 clicking through Settings.
+
+## Host daemon
+
+`sidebar-termd` (`src-tauri/daemon/`) is the core with no window: a Host on a machine with no
+display (ADR 0002; the Dell of #24), or a second Host on a Mac for a smoke test. It links the same
+`sidebar_term_core` as the app and answers `core/src/host.rs` itself: events go on a broadcast
+bus (which the log reads now, and the Remote server will from #28), the data dir is
+`$XDG_DATA_HOME/sidebar-term` (`~/.local/share/sidebar-term`), the phone page's assets are read
+from a directory, and the Remote server runs on the daemon's own tokio runtime. On a Mac the
+default data dir is the app's app-data dir with `daemon/` appended
+(`~/Library/Application Support/com.bencooper.sidebarterm/daemon`), so a daemon and the app on
+one Mac never read each other's `remote.json`, `resume.json` or `layout.json`.
+
+**What it does at this stage (#25).** At launch it starts the Session core, the monitor and
+Resume, loads `remote.json`, and turns Remote on exactly as `remote_set(true)` does in the app:
+binds `127.0.0.1:<port>` and asks Tailscale Serve to publish it. `--port` changes the port and
+keeps it in `remote.json`; `--web-root` names the built phone page (`pnpm build`'s `build/`;
+default `<data dir>/web`, and without it `/m` is 404 while pairing and `/ws` still work);
+`--pair` starts a pairing at launch and prints its code and link; SIGUSR1 starts one at any time,
+so on a headless box `systemctl --user kill -s USR1 sidebar-termd` puts a code in the journal.
+It logs to stderr. On SIGTERM (or SIGINT) it records Resume entries a last time and hangs up every
+Session, as the app does on quit; it does not turn Remote off, so Tailscale's Serve rule stays
+for the next run. Not started, because a Host has no use for them yet: Activity and Memory Guard
+(#27 brings their Linux reading), Usage and Caffeinate (app-only).
+
+Its Sessions are none until a client can create one: Tabs and Groups move into the core with
+#20, and the protocol gains Session and Tab commands with #28. Until then the daemon is tested by
+pairing a browser to it and reading `hello` (see the PR for #25 for the recipe; `hello.sidebar`
+is null, since the sidebar snapshot is the Mac webview's).
+
+**Linux.** `cargo build --release --bin sidebar-termd` builds only the core and the daemon (no
+Tauri). The macOS-only reading in `detect/process.rs` and `activity.rs` is behind
+`cfg(target_os = "macos")` with stubs elsewhere, so until #26 and #27 land a Linux Host reports
+every Session as "shell at its prompt, no cwd, no Badge" and no Activity.
+`packaging/systemd/sidebar-termd.service` runs it under `systemctl --user`; with
+`loginctl enable-linger` it runs with no one logged in (README "Host daemon").
 
 ## Window
 

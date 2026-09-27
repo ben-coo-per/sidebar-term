@@ -1,20 +1,32 @@
 //! libproc-based inspection of the Foreground process group: members, comm, path, argv, cwd.
 //! Classifies coding agents and remote hops. OWNER: detection agent.
 //!
-//! Everything here is macOS-only (libproc lives in libSystem) and never panics: every syscall
-//! failure (process gone, other uid, zombie) reads as `None` / empty.
+//! The reading is macOS-only (libproc lives in libSystem) and never panics: every syscall
+//! failure (process gone, other uid, zombie) reads as `None` / empty. On any other Host the
+//! readers are the stubs at the bottom, which read nothing, until #26 lands a `/proc` backend.
+//! The classification (`classify_agent`, `is_remote`, `needs_argv`) is plain and shared.
+
+// The argv parsers are only the macOS readers' (and the tests') until #26.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 use crate::model::AgentKind;
-use libc::{c_char, c_int, c_void, pid_t};
+#[cfg(target_os = "macos")]
+use libc::{c_char, c_int, c_void};
+use libc::pid_t;
+#[cfg(target_os = "macos")]
 use std::mem::{size_of, MaybeUninit};
+#[cfg(target_os = "macos")]
 use std::ptr;
 
 /// `<sys/proc_info.h>`: `proc_listpids` type selecting the members of one process group.
 /// Not exported by the `libc` crate.
+#[cfg(target_os = "macos")]
 const PROC_PGRP_ONLY: u32 = 2;
 /// `<sys/proc.h>`: `p_stat` of a zombie.
+#[cfg(target_os = "macos")]
 const SZOMB: u32 = 5;
 /// Upper bound on process-group size we bother to list (a pty's foreground group is tiny).
+#[cfg(target_os = "macos")]
 const MAX_MEMBERS: usize = 4096;
 /// Upper bound on argc we parse out of `KERN_PROCARGS2`.
 const MAX_ARGS: usize = 4096;
@@ -31,6 +43,7 @@ pub struct Proc {
 
 /// Pids of every process in process group `pgid`, ascending. Empty when the group does not
 /// exist (or on any error).
+#[cfg(target_os = "macos")]
 pub fn group_members(pgid: pid_t) -> Vec<pid_t> {
     if pgid <= 0 {
         return Vec::new();
@@ -66,6 +79,7 @@ pub fn group_members(pgid: pid_t) -> Vec<pid_t> {
 
 /// `comm` of a live process (`PROC_PIDT_SHORTBSDINFO`). Works across uids. `None` for a
 /// zombie or a vanished pid.
+#[cfg(target_os = "macos")]
 pub fn short_info(pid: pid_t) -> Option<Proc> {
     if pid <= 0 {
         return None;
@@ -98,6 +112,7 @@ pub fn short_info(pid: pid_t) -> Option<Proc> {
 }
 
 /// Resolved executable path (`proc_pidpath`). Works across uids.
+#[cfg(target_os = "macos")]
 pub fn exe_path(pid: pid_t) -> Option<String> {
     if pid <= 0 {
         return None;
@@ -115,6 +130,7 @@ pub fn exe_path(pid: pid_t) -> Option<String> {
 
 /// Current working directory (`PROC_PIDVNODEPATHINFO`), as the kernel's canonical vnode path
 /// (`/private/tmp`, not `/tmp`). `None` for processes of another uid (EPERM, e.g. `sudo`).
+#[cfg(target_os = "macos")]
 pub fn cwd(pid: pid_t) -> Option<String> {
     if pid <= 0 {
         return None;
@@ -143,6 +159,7 @@ pub fn cwd(pid: pid_t) -> Option<String> {
 }
 
 /// Full argv (`sysctl KERN_PROCARGS2`). Same-uid processes only; `None` otherwise.
+#[cfg(target_os = "macos")]
 pub fn argv(pid: pid_t) -> Option<Vec<String>> {
     parse_procargs2(&procargs2(pid)?)
 }
@@ -150,6 +167,7 @@ pub fn argv(pid: pid_t) -> Option<Vec<String>> {
 /// Full argv and the environment the process was exec'd with (`KERN_PROCARGS2`), as
 /// `KEY=value` strings. Same-uid processes only; `None` otherwise. The environment is empty for
 /// Apple's platform binaries (`/bin/sleep`, `/bin/zsh`): the kernel withholds it (verified).
+#[cfg(target_os = "macos")]
 pub fn argv_env(pid: pid_t) -> Option<(Vec<String>, Vec<String>)> {
     let buf = procargs2(pid)?;
     let (argv, rest) = split_procargs2(&buf)?;
@@ -157,6 +175,7 @@ pub fn argv_env(pid: pid_t) -> Option<(Vec<String>, Vec<String>)> {
 }
 
 /// The raw `KERN_PROCARGS2` buffer of `pid`.
+#[cfg(target_os = "macos")]
 fn procargs2(pid: pid_t) -> Option<Vec<u8>> {
     if pid <= 0 {
         return None;
@@ -503,6 +522,7 @@ fn is_ssh_transport<S: AsRef<str>>(argv: &[S]) -> bool {
     false
 }
 
+#[cfg(target_os = "macos")]
 fn c_chars_to_string(buf: &[c_char]) -> String {
     let bytes: Vec<u8> = buf
         .iter()
@@ -519,6 +539,41 @@ fn non_empty(s: String) -> Option<String> {
         Some(s)
     }
 }
+
+/// Until #26 lands a `/proc` backend, a Host that is not a Mac reads nothing about its
+/// processes: every group is empty, every process unknown. `detect::probe` then reports the
+/// shell as foreground, with no cwd and no Badge.
+#[cfg(not(target_os = "macos"))]
+mod stubs {
+    use super::Proc;
+    use libc::pid_t;
+
+    pub fn group_members(_pgid: pid_t) -> Vec<pid_t> {
+        Vec::new()
+    }
+
+    pub fn short_info(_pid: pid_t) -> Option<Proc> {
+        None
+    }
+
+    pub fn exe_path(_pid: pid_t) -> Option<String> {
+        None
+    }
+
+    pub fn cwd(_pid: pid_t) -> Option<String> {
+        None
+    }
+
+    pub fn argv(_pid: pid_t) -> Option<Vec<String>> {
+        None
+    }
+
+    pub fn argv_env(_pid: pid_t) -> Option<(Vec<String>, Vec<String>)> {
+        None
+    }
+}
+#[cfg(not(target_os = "macos"))]
+pub use stubs::*;
 
 #[cfg(test)]
 mod tests {

@@ -1,13 +1,14 @@
-//! Session lifecycle: spawn a login shell on a pty, stream its output to the webview,
+//! Session lifecycle: spawn a login shell on a pty, stream its output to the Host's sink,
 //! accept input, resize, pause/resume for flow control, and tear down.
 //! OWNER: pty agent. See docs/research/pty.md and docs/architecture.md.
 //!
 //! Layout:
 //! - [`PtyHost`] is the pty core: the registry of live Sessions, their threads, signals and
-//!   reaping. It knows nothing about Tauri; it reports output and exit through closures, so the
-//!   tests at the bottom drive real ptys without an `AppHandle`.
-//! - [`SessionManager`] is the thin Tauri glue: output goes to a `Channel` as
-//!   `InvokeResponseBody::Raw`, exit goes out as the `session-exit` event.
+//!   reaping. It reports output and exit through closures, so the tests at the bottom drive real
+//!   ptys with nothing else set up.
+//! - [`SessionManager`] is the thin glue to the binary (`host`): output goes to the Session's
+//!   [`OutputSink`] (the app: a Tauri channel to the Tab's Terminal; the daemon: nowhere, phones
+//!   read the tap) and to Remote's taps, exit goes out as the `session-exit` event.
 //!
 //! Per Session there are two threads:
 //! - a **reader** that polls a dup of the master, coalesces macOS's ~1 KiB reads into chunks of up
@@ -22,6 +23,7 @@
 //! reaped only under its own `proc` lock, and never signalled once reaped, so a recycled pid is
 //! never hit.
 
+use crate::host::{Events, OutputSink};
 use crate::model::{ProbeTarget, SessionExit, SessionId, EVENT_SESSION_EXIT};
 use crate::remote::Taps;
 use portable_pty::{
@@ -39,11 +41,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::ipc::{Channel, InvokeResponseBody};
-use tauri::{AppHandle, Emitter};
 
 /// Largest chunk handed to the output callback (one IPC message).
-const CHUNK_MAX: usize = 64 * 1024;
+pub const CHUNK_MAX: usize = 64 * 1024;
 /// Per-`read()` buffer. macOS returns at most ~1 KiB per read on a pty master anyway.
 const READ_BUF: usize = 16 * 1024;
 /// A read at least this big suggests a burst is in flight, so linger briefly for more.
@@ -86,10 +86,10 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Tauri glue
+// Glue to the binary
 // ---------------------------------------------------------------------------------------------
 
-/// Registry of live Sessions. Managed as Tauri state (`app.manage(SessionManager::new(taps))`).
+/// Registry of live Sessions: the app manages it as state, the daemon holds it in an `Arc`.
 pub struct SessionManager {
     host: PtyHost,
     /// The webview's key for each Session that has one (its Tab id), for Resume. Keys of Sessions
@@ -97,44 +97,46 @@ pub struct SessionManager {
     resume_keys: Mutex<HashMap<SessionId, String>>,
     /// Remote's copy of every Session's output and size, for phones attaching (`remote/tap.rs`).
     taps: Arc<Taps>,
+    /// Where `session-exit` goes.
+    events: Arc<dyn Events>,
 }
 
 impl SessionManager {
-    pub fn new(taps: Arc<Taps>) -> Self {
+    pub fn new(taps: Arc<Taps>, events: Arc<dyn Events>) -> Self {
         Self {
             host: PtyHost::default(),
             resume_keys: Mutex::default(),
             taps,
+            events,
         }
     }
 
     /// Spawn the user's login shell (`$SHELL -l`, fallback `/bin/zsh`) on a new pty of `cols`x`rows`
-    /// in `cwd` (fallback `$HOME`). Output bytes go to `on_data` as `InvokeResponseBody::Raw`.
-    /// When the shell exits, emit `EVENT_SESSION_EXIT` with `SessionExit` via `app`,
-    /// then drop the Session from the registry. `resume_key` is the webview's key for the Session
-    /// in Resume entries (`resume.rs`); a Session without one is never resumed.
+    /// in `cwd` (fallback `$HOME`). Output bytes go to `on_output`, and to the Session's tap. When
+    /// the shell exits, emit `EVENT_SESSION_EXIT` with `SessionExit`, then drop the Session from
+    /// the registry. `resume_key` is the webview's key for the Session in Resume entries
+    /// (`resume.rs`); a Session without one is never resumed.
     pub fn spawn(
         &self,
-        app: AppHandle,
         cwd: Option<String>,
         cols: u16,
         rows: u16,
         resume_key: Option<String>,
-        on_data: Channel<InvokeResponseBody>,
+        mut on_output: OutputSink,
     ) -> Result<SessionId, String> {
         let spec = SpawnSpec::login_shell(cwd.as_deref(), cols, rows);
         let taps = self.taps.clone();
         let taps_on_exit = self.taps.clone();
+        let events = self.events.clone();
         let id = self.host.spawn(
             spec,
             move |session_id, bytes| {
                 taps.push(session_id, &bytes);
-                // Err only when the webview is gone; nothing useful to do about it here.
-                let _ = on_data.send(InvokeResponseBody::Raw(bytes));
+                on_output(bytes);
             },
             move |session_id, code| {
                 taps_on_exit.close(session_id);
-                let _ = app.emit(EVENT_SESSION_EXIT, SessionExit { session_id, code });
+                events.emit(EVENT_SESSION_EXIT, &SessionExit { session_id, code });
             },
         )?;
         self.taps.open(id, cols, rows);
@@ -329,7 +331,7 @@ fn session_env(
 // pty core
 // ---------------------------------------------------------------------------------------------
 
-/// The pty core: live Sessions, their threads and processes. No Tauri types.
+/// The pty core: live Sessions, their threads and processes. Nothing of the binary's.
 #[derive(Default)]
 pub(crate) struct PtyHost {
     registry: Arc<Registry>,
@@ -1149,6 +1151,50 @@ mod tests {
             wait_until(Duration::from_secs(5), || p.target().fg_pgid == Some(shell)),
             "fg pgid never returned to the shell"
         );
+    }
+
+    /// The glue to the binary: output reaches the Session's sink and its tap, the exit reaches
+    /// the Host's events, and the Resume key follows the Session's life.
+    #[test]
+    fn the_manager_feeds_the_sink_the_tap_and_the_exit_event() {
+        let _serial = lock(&SERIAL);
+        let recorder = Arc::new(crate::host::testing::Recorder::default());
+        let taps = Arc::new(Taps::default());
+        let manager = SessionManager::new(taps.clone(), recorder.clone());
+        let out: Arc<Mutex<Vec<u8>>> = Arc::default();
+        let sink = out.clone();
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let id = manager
+            .spawn(
+                Some(cwd),
+                80,
+                24,
+                Some("tab-1".into()),
+                Box::new(move |bytes| lock(&sink).extend_from_slice(&bytes)),
+            )
+            .expect("spawn");
+        assert_eq!(manager.keyed_targets().len(), 1, "a keyed Session is a Resume target");
+
+        manager.write(id, b"echo SINK_$((6*7))\r").unwrap();
+        let seen = |needle: &str| {
+            String::from_utf8_lossy(&lock(&out)).contains(needle)
+        };
+        assert!(wait_until(T, || seen("SINK_42")), "sink never saw the echo");
+        let (tx, _rx) = Taps::channel();
+        let attached = taps.attach(id, tx).expect("the tap is open while the Session lives");
+        assert!(
+            String::from_utf8_lossy(&attached.scrollback).contains("SINK_42"),
+            "the tap holds the same output"
+        );
+
+        manager.kill(id).unwrap();
+        assert!(
+            wait_until(T, || !recorder.named(EVENT_SESSION_EXIT).is_empty()),
+            "no session-exit event"
+        );
+        assert_eq!(recorder.named(EVENT_SESSION_EXIT)[0]["sessionId"], id);
+        assert!(manager.keyed_targets().is_empty(), "the key goes with the Session");
+        assert!(!taps.has(id), "the tap closes with the Session");
     }
 
     #[test]

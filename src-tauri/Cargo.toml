@@ -7,6 +7,13 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+# One core, two binaries (ADR 0002): this package is the Mac app (Tauri); `core/` is the
+# sidebar-term core, plain Rust; `daemon/` is `sidebar-termd`, the headless Host daemon. Tauri is a
+# dependency of this package only, so `cargo build --bin sidebar-termd` never compiles it.
+[workspace]
+members = ["core", "daemon"]
+default-members = [".", "core", "daemon"]
+
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
@@ -18,19 +25,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+sidebar-term-core = { path = "core" }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-clipboard-manager = "2"
-portable-pty = "=0.9.0"
-libc = "0.2"
-axum = { version = "0.8", features = ["ws"] }
-tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "time"] }
-sha2 = "0.10"
-rand = "0.9"
-base64 = "0.22"
-futures-util = "0.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Already in the tree via wry; used to read dropped file paths off the drag pasteboard.
@@ -39,6 +39,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+# Profiles are read from the workspace root only, so these apply to the core and the daemon too.
 [profile.release]
 codegen-units = 1
 lto = true

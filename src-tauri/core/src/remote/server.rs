@@ -1,10 +1,12 @@
-//! The Remote server: axum on Tauri's tokio runtime, bound to 127.0.0.1 only.
+//! The Remote server: axum on the Host's tokio runtime (`host::Host::runtime`: Tauri's in the
+//! app, the daemon's own), bound to 127.0.0.1 only.
 //!
 //! Routes:
 //! - `GET /` redirects to `/m`, the phone's page; `/m` and everything under it serve the app's
 //!   `index.html` (the SvelteKit SPA routes to `src/routes/m`); any other path is a built asset
-//!   (`_app/...`, the manifest, the service worker, icons), read through Tauri's asset resolver
-//!   (embedded in release builds; `../build` on disk in dev, so run `pnpm build` first).
+//!   (`_app/...`, the manifest, the service worker, icons), read through `host::Assets` (the app:
+//!   Tauri's asset resolver, embedded in release builds, `../build` on disk in dev, so run
+//!   `pnpm build` first; the daemon: its `--web-root` directory).
 //! - `POST /api/pair` `{code, name}`: pair a phone; returns its token.
 //! - `GET /ws`: the phone's connection. Protocol (mirrored by `src/lib/mobile/protocol.ts`):
 //!   the first text frame must be `{"t":"auth","token"}` within five seconds. Then, from the
@@ -45,7 +47,7 @@ const CLOSE_GOING_AWAY: u16 = 1001;
 
 /// The running server; `stop` ends it (connections close on the hub's `Shutdown`).
 pub struct Handle {
-    task: tauri::async_runtime::JoinHandle<()>,
+    task: tokio::task::JoinHandle<()>,
 }
 
 impl Handle {
@@ -61,13 +63,14 @@ pub fn start(inner: Arc<Inner>, port: u16) -> Result<Handle, String> {
     listener
         .set_nonblocking(true)
         .map_err(|e| format!("listener: {e}"))?;
+    let runtime = inner.runtime().clone();
     let router = Router::new()
         .route("/", get(root))
         .route("/api/pair", post(pair))
         .route("/ws", get(ws))
         .fallback(get(asset))
         .with_state(inner);
-    let task = tauri::async_runtime::spawn(async move {
+    let task = runtime.spawn(async move {
         let listener = match tokio::net::TcpListener::from_std(listener) {
             Ok(l) => l,
             Err(e) => {
@@ -352,7 +355,7 @@ async fn asset(State(inner): State<Arc<Inner>>, uri: Uri) -> Response {
     let path = uri.path();
     let is_page = path == "/m" || path.starts_with("/m/") || path == "/index.html";
     let file = if is_page { "/index.html" } else { path };
-    let Some(asset) = inner.app().asset_resolver().get(file.to_string()) else {
+    let Some(asset) = inner.assets().asset(file) else {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     };
     let immutable = file.starts_with("/_app/immutable/");
@@ -365,7 +368,7 @@ async fn asset(State(inner): State<Arc<Inner>>, uri: Uri) -> Response {
     let mime = if file.ends_with(".webmanifest") {
         "application/manifest+json"
     } else {
-        asset.mime_type.as_str()
+        asset.mime.as_str()
     };
     (
         [

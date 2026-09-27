@@ -72,7 +72,7 @@ impl SessionInfo {
 }
 
 /// Payload of the `session-exit` event.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionExit {
     pub session_id: SessionId,
@@ -222,7 +222,7 @@ pub struct ResumeEntry {
 }
 
 /// What Tailscale says about this Mac, read from its CLI (`remote/tailscale.rs`).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TailscaleState {
     /// The Tailscale CLI was found (the app or a Homebrew install).
@@ -236,7 +236,7 @@ pub struct TailscaleState {
 }
 
 /// A phone that paired with Remote: it holds a token this Mac accepts (hashed at rest).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteDevice {
     pub id: String,
@@ -251,7 +251,7 @@ pub struct RemoteDevice {
 }
 
 /// A pairing in progress: the code a phone must present, shown as a QR code in Settings.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Pairing {
     pub code: String,
@@ -262,7 +262,7 @@ pub struct Pairing {
 }
 
 /// The state of Remote. Payload of `remote_state` and of the `remote` event.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteSnapshot {
     /// Remote is on: the server listens and Tailscale Serve is asked to publish it.

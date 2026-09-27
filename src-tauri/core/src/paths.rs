@@ -1,5 +1,5 @@
 //! File paths printed in a Terminal. The webview finds text that looks like a path; this checks
-//! which of those name a file or directory on this Mac, and opens one in its default app.
+//! which of those name a file or directory on this Host. Opening one is the app's (`path_open`).
 //!
 //! A relative path is looked up in the Foreground process's cwd, then in the root of the Worktree
 //! that cwd is in (git prints repo-relative paths). A remote Session's paths name files on the far
@@ -45,14 +45,6 @@ pub fn resolve(candidate: &str, bases: &[PathBuf], home: Option<&Path>) -> Optio
         .into_iter()
         .find(|p| p.exists())
         .map(|p| p.to_string_lossy().into_owned())
-}
-
-/// Open an existing file or directory in its default app, as a double-click in Finder does.
-pub fn open(path: &str) -> Result<(), String> {
-    if !Path::new(path).is_absolute() {
-        return Err(format!("not an absolute path: {path}"));
-    }
-    tauri_plugin_opener::open_path(path, None::<&str>).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -109,10 +101,5 @@ mod tests {
         assert_eq!(resolve("~/README.md", &bases, None), None);
         assert_eq!(resolve("missing.md", &bases, None), None);
         assert_eq!(resolve("", &bases, None), None);
-    }
-
-    #[test]
-    fn opens_only_absolute_paths() {
-        assert!(open("README.md").is_err());
     }
 }
