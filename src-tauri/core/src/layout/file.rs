@@ -1,22 +1,24 @@
 //! `layout.json`: the persisted layout, and the defensive read of whatever is on disk (stale,
-//! hand-edited, or written by an older version). Version 2 holds only what the Host owns:
-//! Groups (id, name, order, collapsed), Tabs (id, Group, order, custom Title, last cwd) and the
-//! active Tab. Session ids are never persisted: Tabs respawn at their last cwd (ADR 0002).
+//! hand-edited, or written by an older version). Version 3 holds only what the Host owns:
+//! Groups (id, name, order, collapsed), Tabs (id, Group, order, custom Title, last cwd, and a
+//! linked Tab's link) and the active Tab. Session ids are never persisted: Tabs respawn at
+//! their last cwd (ADR 0002); a linked Tab keeps its place and has nothing to respawn (ADR 0003).
 //!
-//! Version 1 (the webview's, `serialize()` in the old `src/lib/layout.svelte.ts`) also held the
-//! sidebar width, the Panel and each Tab's unread mark. Those are a client's, so the one-time
-//! migration moves them into `settings.json` under `sidebar` (the webview's section) instead of
-//! keeping them here, and the file is rewritten as version 2.
+//! Version 2 is version 3 with no linked Tabs, so it reads as it is. Version 1 (the webview's,
+//! `serialize()` in the old `src/lib/layout.svelte.ts`) also held the sidebar width, the Panel
+//! and each Tab's unread mark. Those are a client's, so the one-time migration moves them into
+//! `settings.json` under `sidebar` (the webview's section) instead of keeping them here. Either
+//! is rewritten as version 3 once read.
 
 use super::model::Model;
 use crate::host::Paths;
-use crate::model::{Group, Tab};
+use crate::model::{Group, Tab, TabLink};
 use crate::store;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashSet};
 
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// The file as written.
 #[derive(Debug, Serialize, Deserialize)]
@@ -35,6 +37,8 @@ pub struct PersistedTab {
     pub group_id: String,
     pub custom_title: Option<String>,
     pub last_cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<TabLink>,
 }
 
 impl File {
@@ -51,6 +55,7 @@ impl File {
                     group_id: t.group_id.clone(),
                     custom_title: t.custom_title.clone(),
                     last_cwd: t.last_cwd.clone(),
+                    link: t.link.clone(),
                 })
                 .collect(),
             active_tab_id: model.active_tab_id.clone(),
@@ -75,7 +80,9 @@ fn string(v: Option<&Value>) -> Option<String> {
 /// `None` means "start fresh". Every rule of the webview's `validateAndMigrate` holds: Tabs and
 /// Groups without an id (or a Group without a name) are dropped, so are duplicate Group ids and
 /// Tabs whose Group is gone; a Group lists only existing Tabs, each once; a Tab its Group
-/// forgot is appended back; the active Tab must exist.
+/// forgot is appended back; the active Tab must exist. A Tab whose `link` is not a whole link
+/// is dropped (read as a local Tab, it would spawn a shell here), and so is a second link to the
+/// same Host's Tab.
 pub fn parse(raw: &Value) -> Option<Parsed> {
     let r = raw.as_object()?;
     let raw_groups = r.get("groups")?.as_array()?;
@@ -109,12 +116,23 @@ pub fn parse(raw: &Value) -> Option<Parsed> {
 
     let mut tabs: Vec<PersistedTab> = Vec::new();
     let mut unread: Vec<String> = Vec::new();
+    let mut links: HashSet<TabLink> = HashSet::new();
     for t in raw_tabs {
         let (Some(id), Some(group_id)) = (string(t.get("id")), string(t.get("groupId"))) else {
             continue;
         };
         if !group_ids.contains(&group_id) {
             continue; // its Group is gone
+        }
+        let link = match t.get("link") {
+            None | Some(Value::Null) => None,
+            Some(l) => match (string(l.get("hostId")), string(l.get("tabId"))) {
+                (Some(host_id), Some(tab_id)) => Some(TabLink { host_id, tab_id }),
+                _ => continue, // half a link
+            },
+        };
+        if link.as_ref().is_some_and(|l| !links.insert(l.clone())) {
+            continue; // that Host's Tab is linked already
         }
         if t.get("unread") == Some(&Value::Bool(true)) {
             unread.push(id.clone());
@@ -124,6 +142,7 @@ pub fn parse(raw: &Value) -> Option<Parsed> {
             group_id,
             custom_title: string(t.get("customTitle")),
             last_cwd: string(t.get("lastCwd")),
+            link,
         });
     }
     let valid: HashSet<&str> = tabs.iter().map(|t| t.id.as_str()).collect();
@@ -152,6 +171,7 @@ pub fn parse(raw: &Value) -> Option<Parsed> {
                 session_id: None,
                 custom_title: t.custom_title,
                 last_cwd: t.last_cwd,
+                link: t.link,
             };
             (t.id, tab)
         })
@@ -329,6 +349,48 @@ mod tests {
         assert_eq!(p.model.groups[1].tab_ids, ["t3"]);
         assert_eq!(p.model.active_tab_id.as_deref(), Some("t1"));
         assert_eq!(p.client, Some(json!({ "unread": ["t3"] })), "a v1 file with no width or Panel");
+    }
+
+    #[test]
+    fn a_version_2_file_reads_as_it_is_and_is_written_as_version_3() {
+        let raw = json!({
+            "version": 2,
+            "groups": [{ "id": "g", "name": "Work", "tabIds": ["t1"] }],
+            "tabs": [{ "id": "t1", "groupId": "g", "customTitle": null, "lastCwd": "/w" }],
+            "activeTabId": "t1"
+        });
+        let p = parse(&raw).unwrap();
+        assert_eq!(p.client, None);
+        assert_eq!(p.model.tabs["t1"].link, None);
+        let value = serde_json::to_value(File::from_model(&p.model)).unwrap();
+        assert_eq!(value["version"], 3);
+        assert!(value["tabs"][0].get("link").is_none(), "a local Tab carries no link");
+    }
+
+    #[test]
+    fn linked_tabs_keep_their_link_and_their_place_among_local_ones() {
+        let raw = json!({
+            "version": 3,
+            "groups": [{ "id": "g", "name": "Work", "tabIds": ["t1", "l1", "t2", "bad", "dup"] }],
+            "tabs": [
+                { "id": "t1", "groupId": "g" },
+                { "id": "l1", "groupId": "g", "link": { "hostId": "h_dell", "tabId": "tab_r1" } },
+                { "id": "t2", "groupId": "g", "link": null },
+                { "id": "bad", "groupId": "g", "link": { "hostId": "h_dell" } },
+                { "id": "dup", "groupId": "g", "link": { "hostId": "h_dell", "tabId": "tab_r1" } }
+            ],
+            "activeTabId": "l1"
+        });
+        let p = parse(&raw).unwrap();
+        assert_eq!(p.model.groups[0].tab_ids, ["t1", "l1", "t2"], "half a link and a second link are dropped");
+        let link = TabLink { host_id: "h_dell".into(), tab_id: "tab_r1".into() };
+        assert_eq!(p.model.tabs["l1"].link, Some(link));
+        assert_eq!(p.model.tabs["t2"].link, None);
+        assert_eq!(p.model.active_tab_id.as_deref(), Some("l1"));
+
+        let value = serde_json::to_value(File::from_model(&p.model)).unwrap();
+        assert_eq!(value["tabs"][1]["link"], json!({ "hostId": "h_dell", "tabId": "tab_r1" }));
+        assert_eq!(parse(&value).unwrap().model, p.model, "round trip");
     }
 
     #[test]

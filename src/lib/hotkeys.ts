@@ -29,6 +29,7 @@ export type ActionId =
   | GroupJumpAction
   | "host.newTab"
   | "host.moveTab"
+  | "host.newLocalTab"
   | "sidebar.toggle"
   | "settings.toggle";
 
@@ -71,6 +72,8 @@ export const ACTIONS: readonly ActionDef[] = [
   // Handoff: the first paired Host that is online, the Group of its active Tab.
   { id: "host.newTab", label: "New Tab on Host", category: "Hosts", default: cmd("t", { shift: true }) },
   { id: "host.moveTab", label: "Move Tab to Host", category: "Hosts", default: cmd("m", { shift: true }) },
+  // A plain new Tab on this Mac right after the Tab in view, whichever Host that Tab is on.
+  { id: "host.newLocalTab", label: "New Local Tab", category: "Hosts", default: null },
   { id: "sidebar.toggle", label: "Toggle Sidebar", category: "App", default: cmd("b") },
   { id: "settings.toggle", label: "Settings", category: "App", default: cmd(",") },
 ];

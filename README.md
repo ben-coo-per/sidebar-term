@@ -61,7 +61,7 @@ Still to do, in order:
 
 `sidebar-termd` runs the same core as the app on a machine with no display (a Linux box on your
 tailnet), so Sessions can live there and be driven from the Mac app (Settings > Hosts: its Tabs
-join the sidebar under the Host's name) and from a phone. It keeps its own Tabs and Groups
+join your Groups, tagged with the Host's name) and from a phone. It keeps its own Tabs and Groups
 (`layout.json` in its data dir: one Tab on first run, every Tab's shell respawned at launch). It
 is a second binary from the same workspace; `docs/architecture.md` "Host daemon" and "Hosts" say
 what it does at this stage.
@@ -81,7 +81,8 @@ without it the server still listens on `127.0.0.1:47611`. To pair a phone:
 `journalctl --user -u sidebar-termd -n 3`. Flags (`sidebar-termd --help`): `--data-dir`, `--port`,
 `--web-root`, `--pair`. On a Mac, for a smoke test, `cargo run --bin sidebar-termd -- --web-root build --pair`
 keeps its files in `~/Library/Application Support/com.bencooper.sidebarterm/daemon`, apart from
-the app's.
+the app's. It turns Remote on, so with Tailscale on that Mac it also points the Mac's Serve rule
+at itself; `tailscale serve --https=443 off` undoes that afterwards.
 
 ## App icon
 

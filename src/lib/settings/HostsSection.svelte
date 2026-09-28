@@ -94,8 +94,9 @@
     <div>
       <h2>Hosts</h2>
       <p class="hint">
-        Other machines running sidebar-term (a Mac with Remote on, or sidebar-termd): their Tabs join the sidebar under
-        the Host's name.
+        Other machines running sidebar-term (a Mac with Remote on, or sidebar-termd): their Tabs join your Groups, tagged
+        with the Host's name. Tabs made there from elsewhere land in a Group named after it. Removing a Host takes its
+        Tabs out of the sidebar; they keep running there.
       </p>
     </div>
   </div>

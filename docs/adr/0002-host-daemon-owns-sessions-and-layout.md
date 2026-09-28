@@ -2,6 +2,8 @@
 
 Status: **proposed** (epic #24; revise there). Supersedes 0001, which is marked so: the layout
 part of this decision is built (#20, after #25 split the core), and the code follows this ADR.
+Its sidebar part (a remote Host's snapshot shown under a Host section) is superseded by 0003:
+a paired Host's Tabs are linked into the Mac's own Groups.
 
 ## Context
 

@@ -12,8 +12,12 @@ _Avoid_: Terminal, shell instance, pane
 The sidebar entry for one session. It has a title, an icon and a badge, and belongs to exactly one group.
 _Avoid_: Item, row, entry
 
+**Linked Tab**:
+A Tab in the Mac's Groups whose Session runs on a paired Host: it points at that Host's Tab and has no Session on the Mac. The Host owns the Tab, its Session and its Title; the Mac only places it, and its row carries a chip with the Host's name. A Tab made on the Host from elsewhere is linked into a Group named after the Host.
+_Avoid_: Remote Tab (a remote hop is an ssh Session), mirrored Tab, proxy Tab
+
 **Group**:
-A user-named, user-ordered container of tabs in the sidebar. Groups are manual; the app never creates or reorders them on its own.
+A user-named, user-ordered container of tabs in the sidebar. Groups are manual; the app never reorders them, and creates one on its own only for a paired Host's Tabs made elsewhere (named after the Host), when no Group has that name.
 _Avoid_: Folder, workspace, section
 
 **Agent session**:
@@ -104,7 +108,7 @@ _Avoid_: Device, client (except in code, where it is any connection)
 A client's Terminal taking a Session's output: what the Session printed before, then the live output, with its typing going to the Session's pty. A phone attaches over Remote at the Host's grid size and never resizes the pty; the Mac webview attaches in-process to the local Host's Sessions (which the Host spawns with their Tabs) and sizes them.
 _Avoid_: Connect (that is the phone reaching the Mac at all), open (that is a Tab), mirror
 **Host**:
-A machine running the sidebar-term core, whose Sessions, Tabs and Groups can be shown and driven from a client. The Mac app is its own local Host; a second machine runs the core as a headless daemon (`sidebar-termd`). A client shows each paired Host as a section of the sidebar.
+A machine running the sidebar-term core, whose Sessions, Tabs and Groups can be shown and driven from a client. The Mac app is its own local Host; a second machine runs the core as a headless daemon (`sidebar-termd`). The Mac shows a paired Host's Tabs as linked Tabs in its own Groups.
 _Avoid_: Server, remote machine, node, peer
 
 **Handoff**:
