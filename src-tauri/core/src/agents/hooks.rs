@@ -5,7 +5,8 @@
 //! - `PermissionRequest`: may it use a tool? Held open until answered ([`permission`]).
 //! - `PreToolUse` for `AskUserQuestion`: a question with options, held open the same way
 //!   ([`question`]). Claude Code also sends a `PermissionRequest` for it, which is let through.
-//! - `UserPromptSubmit`, `PostToolUse`, `Stop`: lines of Manager's feed ([`event`]).
+//! - `UserPromptSubmit`, `PostToolUse`, `Stop`: lines of Manager's feed ([`event`]), and what
+//!   the Journal counts of them ([`step`]).
 //!
 //! Payloads carry `tool_name`, `tool_input`, `tool_response`, `prompt`, `cwd` and
 //! `permission_suggestions` (Claude Code's hooks reference). A reply is the JSON a command hook
@@ -253,17 +254,55 @@ pub fn event(name: &str, payload: &Value) -> Option<(AgentEventKind, String)> {
     }
 }
 
+/// Whether a `PostToolUse` says its tool failed or was interrupted.
+fn failed(payload: &Value) -> bool {
+    payload.get("tool_response").is_some_and(|r| {
+        r.get("is_error").and_then(Value::as_bool).unwrap_or(false)
+            || r.get("interrupted").and_then(Value::as_bool).unwrap_or(false)
+    })
+}
+
+/// What a hook says that the Journal counts (`journal.rs`): numbers, never words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// The user gave it a prompt: a turn.
+    Prompt,
+    /// It changed a file, adding and removing this many lines.
+    Edit { added: u32, removed: u32 },
+    /// Its conversation is kept in this file (Claude Code's transcript): said by `Agents` when
+    /// a hook first names it, and when it changes (`/clear`, a resume).
+    Transcript(String),
+}
+
+/// What hook `name` says that the Journal counts; `None` for most.
+pub fn step(name: &str, payload: &Value) -> Option<Step> {
+    match name {
+        "UserPromptSubmit" => Some(Step::Prompt),
+        "PostToolUse" if !failed(payload) => {
+            let input = payload.get("tool_input")?;
+            let (added, removed) = match str_of(payload, "tool_name")? {
+                "Edit" | "MultiEdit" => edit_counts(input),
+                "Write" => (str_of(input, "content").map_or(0, |c| c.lines().count()), 0),
+                _ => return None,
+            };
+            Some(Step::Edit { added: added as u32, removed: removed as u32 })
+        }
+        _ => None,
+    }
+}
+
+/// The transcript a hook's payload names.
+pub fn transcript(payload: &Value) -> Option<&str> {
+    str_of(payload, "transcript_path").filter(|p| !p.is_empty())
+}
+
 fn tool_used(payload: &Value, cwd: Option<&str>) -> (AgentEventKind, String) {
     let tool = str_of(payload, "tool_name").unwrap_or("a tool");
     let input = payload.get("tool_input").cloned().unwrap_or(Value::Null);
     let file = str_of(&input, "file_path")
         .or_else(|| str_of(&input, "notebook_path"))
         .map(|p| shown_path(p, cwd));
-    let response = payload.get("tool_response");
-    let failed = response.is_some_and(|r| {
-        r.get("is_error").and_then(Value::as_bool).unwrap_or(false)
-            || r.get("interrupted").and_then(Value::as_bool).unwrap_or(false)
-    });
+    let failed = failed(payload);
     let (kind, text) = match (tool, &file) {
         ("Edit" | "MultiEdit", Some(file)) => {
             let (a, r) = edit_counts(&input);
@@ -393,5 +432,24 @@ mod tests {
             Some((AgentEventKind::Started, "Started “Show Codex usage windows”".into()))
         );
         assert_eq!(event("SessionStart", &json!({})), None);
+    }
+
+    #[test]
+    fn the_journal_counts_prompts_and_the_lines_of_edits() {
+        let used = |tool: &str, input: Value| step("PostToolUse", &json!({ "tool_name": tool, "tool_input": input }));
+        assert_eq!(step("UserPromptSubmit", &json!({ "prompt": "Fix it" })), Some(Step::Prompt));
+        assert_eq!(
+            used("Edit", json!({ "file_path": "/r/a.rs", "old_string": "a\nb", "new_string": "a\nb\nc" })),
+            Some(Step::Edit { added: 3, removed: 2 })
+        );
+        assert_eq!(used("Write", json!({ "file_path": "/r/b.rs", "content": "1\n2" })), Some(Step::Edit { added: 2, removed: 0 }));
+        assert_eq!(used("Read", json!({ "file_path": "/r/a.rs" })), None);
+        assert_eq!(used("Bash", json!({ "command": "ls" })), None);
+        let failed = json!({ "tool_name": "Write", "tool_input": { "content": "1" }, "tool_response": { "is_error": true } });
+        assert_eq!(step("PostToolUse", &failed), None, "an edit that failed changed nothing");
+        assert_eq!(step("Stop", &json!({})), None);
+        assert_eq!(transcript(&json!({ "transcript_path": "/c/projects/r/1.jsonl" })), Some("/c/projects/r/1.jsonl"));
+        assert_eq!(transcript(&json!({ "transcript_path": "" })), None);
+        assert_eq!(transcript(&json!({})), None);
     }
 }
