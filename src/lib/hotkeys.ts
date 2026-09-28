@@ -76,7 +76,7 @@ export const ACTIONS: readonly ActionDef[] = [
   // A plain new Tab on this Mac right after the Tab in view, whichever Host that Tab is on.
   { id: "host.newLocalTab", label: "New Local Tab", category: "Hosts", default: null },
   { id: "sidebar.toggle", label: "Toggle Sidebar", category: "App", default: cmd("b") },
-  { id: "view.manager", label: "Tabs / Manager", category: "App", default: cmd("m", { shift: true }) },
+  { id: "view.manager", label: "Tabs / Manager", category: "App", default: cmd("0") },
   { id: "settings.toggle", label: "Settings", category: "App", default: cmd(",") },
 ];
 
