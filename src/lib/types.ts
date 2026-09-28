@@ -178,7 +178,7 @@ export interface GuardSnapshot {
 
 /** One usage limit of one coding agent, e.g. Claude Code's 5-hour window. */
 export interface UsageWindow {
-  /** Short name for the window: "5h", "Week", "Opus wk". */
+  /** Short name for the window, one per bar: "5h", "Week", "Fable wk" (one model's week). */
   label: string;
   /** Percent of the limit used; 100 is the limit (overage can exceed it). */
   usedPercent: number;

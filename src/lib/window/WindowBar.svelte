@@ -1,6 +1,7 @@
-<!-- The window's top bar, the same in both modes: right of the traffic lights, the Tabs / Manager
-     switch, Manager's zoom (in Manager), then the Usage summary and the Tray at the right. It is
-     the window's Tauri drag region; its controls opt out (docs/architecture.md "Window"). -->
+<!-- The window's top bar, in both modes: right of the traffic lights, the Tabs / Manager switch,
+     Manager's zoom (in Manager), then the Usage summary (in Tabs: Manager shows Usage whole,
+     under Needs you) and the Tray at the right. It is the window's Tauri drag region; its
+     controls opt out (docs/architecture.md "Window"). -->
 <script lang="ts">
   import { layout, setManagerZoom } from "../layout.svelte";
   import { MANAGER_ZOOMS, type ManagerZoom } from "../sidebar/settings";
@@ -14,7 +15,8 @@
 
   const zoomItems = MANAGER_ZOOMS.map((id) => ({ id, label: ZOOM_LABELS[id] }));
 
-  // The summary reads Usage whichever mode shows and whether or not the Panel is open.
+  // The summary reads Usage whether or not the Panel is open. It reads in Manager too, where
+  // it does not show, so the numbers are there on the way back to Tabs.
   $effect(() => {
     if (usageSettings.ready) return watchUsage([...usageSettings.agents]);
   });
@@ -26,7 +28,9 @@
     <Segmented label="Zoom" items={zoomItems} selected={layout.managerZoom} onselect={(z: ManagerZoom) => setManagerZoom(z)} />
   {/if}
   <span class="spacer" data-tauri-drag-region></span>
-  <span class="usage"><UsageSummary /></span>
+  {#if layout.mode === "tabs"}
+    <span class="usage"><UsageSummary /></span>
+  {/if}
   <Tray />
 </header>
 

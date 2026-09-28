@@ -85,7 +85,7 @@ The panel view showing the Mac's CPU and memory, split between sessions (each in
 _Avoid_: Activity monitor (that is Apple's app), stats, usage
 
 **Usage**:
-The panel view showing how much of each chosen coding agent's usage limits is spent: one bar per limit window (Claude Code's 5 hours and week, Codex's), with the time until it resets. Which agents it shows is chosen on the Settings page.
+The panel view showing how much of each chosen coding agent's usage limits is spent: one bar per limit window (Claude Code's 5 hours and week, Codex's), with the time until it resets. Manager shows it too, at the bottom of Needs you. Which agents it shows is chosen on the Settings page.
 _Avoid_: Quota, credits, stats, Activity (that is CPU and memory)
 
 **Remote**:
@@ -112,7 +112,7 @@ A machine running the sidebar-term core, whose Sessions, Tabs and Groups can be 
 _Avoid_: Server, remote machine, node, peer
 
 **Manager**:
-The window's second mode, beside Tabs: every Agent session as a Lane, the questions agents wait on (answered in place when the agent is Hooked), finished work not looked at, and the selected Tab's Terminal, to type into. Its Tabs are the sidebar's; opening one goes back to Tabs.
+The mode the window opens in, beside Tabs: every Agent session as a Lane, the questions agents wait on (answered in place when the agent is Hooked), finished work not looked at, and the selected Tab's Terminal, to type into. The edges between the three drag. Its Tabs are the sidebar's; opening one goes to Tabs.
 _Avoid_: Dashboard, overview, mission control
 
 **Lane**:

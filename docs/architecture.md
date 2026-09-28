@@ -370,14 +370,18 @@ Bars are neutral grey, amber from 80% and red from 95%. A window whose reset tim
 0%. Numbers older than 10 minutes say how old (`as of 12m ago`); an agent whose numbers could not
 be read says why, with its last numbers dimmed; one whose endpoint rate-limited the app keeps its
 last numbers undimmed with a muted "Waiting for the limit to clear" line, never an error. Closed,
-the header shows each agent's fullest window (`Claude 48%  Codex 3%`). Gemini CLI has no usage
-source yet.
+the header shows each agent's fullest window (`Claude 48%  Codex 3%`). Manager shows the same
+view at the bottom of Needs you ("Manager"). Gemini CLI has no usage source yet.
 
 - Claude Code: `GET https://api.anthropic.com/api/oauth/usage` (undocumented; what Claude Code's
   `/usage` calls; `anthropic-beta: oauth-2025-04-20`), with the OAuth access token from the login
   Keychain item `Claude Code-credentials` (read with `/usr/bin/security`;
   `~/.claude/.credentials.json` as fallback). Answer: `five_hour`, `seven_day`, `seven_day_opus`,
-  `seven_day_sonnet`, each `{utilization: percent, resets_at: RFC 3339}` or null. The token is
+  `seven_day_sonnet`, `seven_day_overage_included` (the window Claude Code calls the Fable
+  limit), each `{utilization: percent, resets_at: RFC 3339}` or null; and one model's week as
+  an entry of `limits` (`kind: "weekly_scoped"`, `percent`, `resets_at`,
+  `scope.model.display_name`), shown as `<model> wk` unless a key gave that bar already. The
+  keys and `limits` are as Claude Code 2.1.284 reads them; an absent one shows no bar. The token is
   only read, never refreshed: refreshing would rotate Claude Code's refresh token and sign it out.
   It reaches `/usr/bin/curl` on stdin, never in argv. The endpoint is tightly rate-limited
   (measured: a second request within a minute of a successful one gets a 429 with `retry-after:
@@ -393,7 +397,12 @@ source yet.
   `window_minutes`, `resets_at` epoch s) in the most recently written of its session logs,
   `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, newest 14 day directories. Codex writes one per
   turn from its API's rate-limit headers, so the numbers are as fresh as the last Codex turn on
-  this Mac. A log is re-parsed only when its mtime or size changes.
+  this Mac. A record is of one limit (`limit_id`; `codex`, the shared one, when it names none):
+  the one the turn's model drew on. The newest record of each limit among the log's last 200
+  shows: the shared one's windows first (`5h`, `Week`), then a model's own under the last word
+  of its `limit_name` (`Astra 5h`). GPT-6 Astra draws on the shared limit today (checked
+  2026-09-28), so it has no bars of its own. A log is re-parsed only when its mtime or size
+  changes.
 
 ## Tray
 
@@ -817,12 +826,14 @@ conversations (Resume records no entry for them, so nothing is rerun).
 
 ## Manager
 
-The window's second mode, for running several agents at once (the first, Tabs, is the sidebar
-and one Terminal). The Tabs / Manager switch sits in the window bar ("Window"), with Manager's
-zoom beside it while Manager shows; `Cmd-0`
-(Hotkey `view.manager`) toggles. The mode and Manager's zoom are per window, in the `sidebar`
-section of settings. Manager has no list of its own: it reads the same Tabs and Session facts as
-the sidebar, and a Tab it opens opens in Tabs mode.
+The mode the window opens in, for running several agents at once (the other, Tabs, is the
+sidebar and one Terminal). The Tabs / Manager switch sits in the window bar ("Window"), with
+Manager's zoom beside it while Manager shows; `Cmd-0`
+(Hotkey `view.manager`) toggles. The mode, Manager's zoom and the sizes of its areas are per
+window, in the `sidebar` section of settings: a window opens in the mode it was left in, and in
+Manager when none is saved (`DEFAULT_MODE`). Nothing shows until the saved mode is read.
+Manager has no list of its own: it reads the same Tabs and Session facts as the sidebar, and a
+Tab it opens opens in Tabs mode.
 
 - **Lanes**: every Tab whose Session runs an agent, one row each, across the window of time
   (15 min, 1 h, 4 h, or since the oldest lane began; ticks at the quarters, refreshed every 30 s).
@@ -848,6 +859,16 @@ the sidebar, and a Tab it opens opens in Tabs mode.
   Needs input, then fades. A screen-only agent's card shows the last 3 lines of its Terminal and
   "Answer in its Terminal", which selects its Tab and gives the Terminal the focus. Below: Tabs whose agent finished or stopped while nobody looked, with what
   its last turn changed. The column is the narrow one (34% of the window, 300 px at least).
+- **Usage**: the Panel's Usage view (`UsageView.svelte`: every chosen agent's limits as bars,
+  "Panel"), held at the bottom of the Needs you column, as tall as its bars and 45% of the
+  column at most; Needs you scrolls above it. Its bars are square, as the lanes'. The window
+  bar's Usage summary does not show in Manager.
+- **Sizes**: the edge under the lanes and the edge between Needs you and the Terminal drag
+  (`managerLanesHeight`, `managerNeedsWidth`, in px; null until dragged). Until then the lanes
+  are as tall as they are, up to 55% of Manager, and Needs you is 34% of the window. Dragged,
+  the lanes take 140 px to 75% of Manager's height and Needs you 240 px to 60% of its width, so
+  the Terminal keeps room; it refits as the edges move, as on a sidebar drag. A double click on
+  an edge gives its size back to Manager.
 - In Tabs mode a strip at the top of the Groups says how many agents wait, and opens Manager.
 
 **Hooks** (`core/src/agents/`). Every Session's `PATH` starts with `<data dir>/claude-hooks/bin`,
@@ -874,7 +895,7 @@ feed, and their cards are answered in the Terminal.
 width of the window, 40 px tall, the same in Tabs and Manager: right of the traffic lights
 (`trafficLightPosition` centres them in it; `--traffic-lights-width` keeps the bar's contents
 clear of them), the Tabs / Manager switch and, in Manager, the zoom; at the right, the Usage
-summary and the Tray. It is the `data-tauri-drag-region`; its controls opt out. The sidebar, the
+summary (in Tabs only: Manager shows Usage whole) and the Tray. It is the `data-tauri-drag-region`; its controls opt out. The sidebar, the
 Terminal, Manager and the Settings page all sit under it. `dragDropEnabled: false` so HTML5
 drag-and-drop works in the sidebar: on macOS Tauri's handler claims every drag, including the
 webview's own. Files dropped on a Terminal therefore arrive as DOM `File`s; they paste as

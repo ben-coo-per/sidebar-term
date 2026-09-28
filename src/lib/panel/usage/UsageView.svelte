@@ -1,6 +1,6 @@
 <!-- The Usage view: each chosen coding agent's usage limits (5-hour window, week...) as thin bars,
-     with the time left until each resets. Agents are chosen on the Settings page.
-     See docs/architecture.md "Panel". -->
+     with the time left until each resets. Agents are chosen on the Settings page. Shown in the
+     Panel and, in Manager, at the bottom of Needs you. See docs/architecture.md "Panel". -->
 <script lang="ts">
   import { usage } from "./usage.svelte";
   import { usageSettings } from "./settings.svelte";

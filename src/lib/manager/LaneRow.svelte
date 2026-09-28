@@ -196,7 +196,6 @@
   .track {
     position: relative;
     height: 12px;
-    border-radius: 3px;
     background: var(--sidebar-bg);
   }
   .seg {
@@ -204,7 +203,6 @@
     top: 0;
     bottom: 0;
     min-width: 3px;
-    border-radius: 3px;
   }
   .seg.running {
     background: var(--status-running);
