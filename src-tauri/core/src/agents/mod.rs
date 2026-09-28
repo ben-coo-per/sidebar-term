@@ -91,6 +91,8 @@ struct Tracked {
     /// Its agent reported through its hooks (and has not ended since).
     hooked: bool,
     waiting: Option<Waiting>,
+    /// The transcript its hooks last named.
+    transcript: Option<String>,
 }
 
 /// A question an agent's hook is held open on.
@@ -306,7 +308,7 @@ impl Agents {
     /// to the reply to print, once there is one (a question waits for its answer); `None` lets
     /// Claude Code carry on as it would without the hook.
     pub(crate) async fn hook(&self, id: SessionId, event: &str, payload: Value) -> Option<Value> {
-        {
+        let transcript = {
             let mut state = lock(&self.inner.state);
             let t = state.sessions.entry(id).or_default();
             t.hooked = event != "SessionEnd";
@@ -316,6 +318,11 @@ impl Agents {
                     let _ = w.reply.send(None);
                 }
             }
+            let named = hooks::transcript(&payload).filter(|p| t.transcript.as_deref() != Some(*p));
+            named.map(|p| t.transcript.insert(p.to_owned()).clone())
+        };
+        if let Some(path) = transcript {
+            self.step(id, hooks::Step::Transcript(path), now_ms());
         }
         let ask = match event {
             "PermissionRequest" => hooks::permission(&payload),
@@ -467,6 +474,27 @@ mod tests {
         let texts: Vec<String> = rec.named(EVENT_AGENT_EVENT).iter().map(|e| e["text"].as_str().unwrap().to_owned()).collect();
         assert_eq!(texts, ["Asked to run ls", "You answered “Yes”"]);
         assert_eq!(*lock(&steps), [hooks::Step::Asked, hooks::Step::Answered], "SessionStart is no step of a turn");
+    }
+
+    #[tokio::test]
+    async fn a_transcript_is_said_when_it_is_first_named_and_when_it_changes() {
+        let (a, _) = agents();
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let seen = steps.clone();
+        a.watch_steps(Box::new(move |_, step, _| lock(&seen).push(step.clone())));
+        a.hook(3, "SessionStart", json!({ "transcript_path": "/c/1.jsonl" })).await;
+        a.hook(3, "UserPromptSubmit", json!({ "transcript_path": "/c/1.jsonl", "prompt": "hi" })).await;
+        a.hook(3, "Stop", json!({})).await;
+        a.hook(3, "SessionStart", json!({ "transcript_path": "/c/2.jsonl" })).await;
+        assert_eq!(
+            *lock(&steps),
+            [
+                hooks::Step::Transcript("/c/1.jsonl".into()),
+                hooks::Step::Prompt { len: 2 },
+                hooks::Step::Stop,
+                hooks::Step::Transcript("/c/2.jsonl".into()),
+            ]
+        );
         let mut info = claude(3, AgentStatus::Running);
         a.decorate_at(&mut info, 6);
         assert_eq!(info.pending, None);

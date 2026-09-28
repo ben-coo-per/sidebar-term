@@ -276,6 +276,14 @@ pub enum Step {
     Answered,
     /// It stopped, back at its prompt, or ended: the turn is over.
     Stop,
+    /// Its conversation is kept in this file (Claude Code's transcript): said by `Agents` when
+    /// a hook first names it, and when it changes (`/clear`, a resume).
+    Transcript(String),
+}
+
+/// The transcript a hook's payload names.
+pub fn transcript(payload: &Value) -> Option<&str> {
+    str_of(payload, "transcript_path").filter(|p| !p.is_empty())
 }
 
 /// The kinds of tool a turn counts its uses by.
@@ -538,6 +546,9 @@ mod tests {
         assert_eq!(used("TodoWrite", json!({})).kind, ToolKind::Other);
         let failed = step("PostToolUse", &json!({ "tool_name": "Bash", "tool_input": { "command": "false" }, "tool_response": { "is_error": true } }));
         assert!(matches!(failed, Some(Step::Tool(ToolUse { failed: true, .. }))));
+        assert_eq!(transcript(&json!({ "transcript_path": "/c/projects/r/1.jsonl" })), Some("/c/projects/r/1.jsonl"));
+        assert_eq!(transcript(&json!({ "transcript_path": "" })), None);
+        assert_eq!(transcript(&json!({})), None);
     }
 
     #[test]

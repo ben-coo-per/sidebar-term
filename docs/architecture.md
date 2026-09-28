@@ -93,9 +93,11 @@ answers it (see "Host daemon" for the daemon's answer).
 - `journal.rs` — the Journal (see "Journal", ADR 0004): `Journal` takes each Session's facts
   from the monitor after the layout (`observe`) and hears of every Session's exit, writes a span
   to `journal/<year>-<month>.jsonl` when an Agent status or its Context ends, and a row of
-  counts when a hooked agent's turn ends (`step`, from `Agents::watch_steps`), keeps what is
-  still open in `journal/open.json` for a launch after a crash, and reads both back (`read`,
-  `turns`).
+  counts when a hooked agent's turn ends (`step`, from `Agents::watch_steps`), and what Claude
+  Code's totals of tokens and cost moved by, read from each hooked agent's transcript
+  (`measure`), keeps what is still open in `journal/open.json` for a launch after a crash and
+  the totals counted in `journal/meters.json`, and reads all three back (`read`, `turns`,
+  `costs`).
 - `layout/` — the layout, owned by the Host (ADR 0002). `mod.rs`: `Layout`, the owner: loads
   `layout.json`, spawns each Tab's Session at launch (Tab id as Resume key) and on `tab_new`,
   kills it on `tab_close`, drops the Tab when its Session exits, emits `layout` on every change
@@ -524,12 +526,37 @@ Session's exit, or, if its agent was seen to leave and said nothing after, when 
 outside a turn are not counted. It is written under the Context its Session is in when it ends.
 A screen-only agent has no turns.
 
+**Cost.** Claude Code keeps running totals of the tokens it used and what they cost, per model,
+and writes them into the conversation's transcript as a `cost-state` line (`startTime`,
+`modelUsage`): when it exits and at some idle moments, not at every turn. Every hook names the
+transcript (`transcript_path`); `Agents` says so once per transcript (`Step::Transcript`), and
+the Journal watches the file from then on, whether or not its Session lives. Every 30 s it
+reads what each watched transcript gained, and when the totals moved writes what they moved
+by as a `cost` row: tokens per model (`in`, `out`, `th` thinking, `cr` read from the cache, `cw`
+written to it) and `usd` in millionths of a dollar, from when the totals were last known (`a`)
+to when the file was written (`b`), under the Context its Session was last in. So a
+conversation's cost arrives in a few large rows, the last as the agent exits, and says
+nothing of which turn it was spent in.
+
+What was counted is kept per transcript in `journal/meters.json`, which makes the rows
+differences and lets the next launch count what Claude Code wrote as the Host killed it. What
+a transcript held before it was first looked at is not counted. Totals are taken to carry on
+within one run of Claude Code (`startTime`) across transcripts (`/clear`), and across runs in
+one transcript when they are what it held and more (a resume); otherwise a new run is counted
+from nothing. A transcript whose totals have not moved for 30 days, in no live Session, is
+let go.
+
+The token counts on a transcript's messages are not used: over a finished conversation they
+add up to well under the totals (246k output tokens against 315k in one, subagents included).
+Codex is not read yet.
+
 **Files.** `journal/<year>-<month>.jsonl`, appended, one JSON object per line:
 
 ```
 {"k":"ctx","id":1,"tab":"t3","agent":"claude","repo":"/r/.git","name":"r","wt":"fix","br":"fix"}
 {"k":"span","c":1,"s":"running","a":1790553601000,"b":1790553643000}
 {"k":"turn","c":1,"a":1790553601000,"b":1790553643000,"len":38,"tools":{"edit":2,"run":1},"add":9,"del":2,"files":1,"cmds":{"cargo":1}}
+{"k":"cost","c":1,"a":1790553601000,"b":1790554201000,"m":{"claude-opus-5-5":{"in":120,"out":9100,"cr":810000,"cw":5200,"usd":1420000}}}
 ```
 
 A `ctx` row gives a Context a number and the rows after it name that number, so a repo's path
@@ -537,7 +564,7 @@ is written once per file and run, not on every span (a span is under 72 bytes). 
 until a later `ctx` row gives it to something else; each run starts again at 1, so a file is read
 from the top. Months are UTC and only decide the file: a span over the end of a month is written
 as two, so every span lies within its file's month, and a reader opens the months its range
-touches. A turn is written whole, in the month it began in. `a` and `b` are epoch ms. A line that does not parse is skipped (a crash can cut the
+touches. A turn is written whole, in the month it began in, and a cost in the month of its `b`. `a` and `b` are epoch ms. A line that does not parse is skipped (a crash can cut the
 last one short; the next write starts on a new line).
 
 **A crash.** Spans and turns still open would go with the process, so every 30 s they are
@@ -545,7 +572,8 @@ written to `journal/open.json` with the time (`alive_at`); the next launch ends 
 time, writes them as rows and removes the file. A crash costs each at most 30 s.
 
 **Reading.** `Journal::read(from, to)` gives every span that overlaps the range, cut to it, with
-the open ones ending now; `Journal::turns(from, to)` every turn that began in it, whole. No client reads it yet: Rewind, the IPC command and the Host protocol
+the open ones ending now; `Journal::turns(from, to)` every turn that began in it, whole;
+`Journal::costs(from, to)` every cost whose `b` is in it. No client reads it yet: Rewind, the IPC command and the Host protocol
 message are later slices of #63.
 
 ## Host protocol

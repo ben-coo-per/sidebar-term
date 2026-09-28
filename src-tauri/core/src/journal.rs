@@ -12,15 +12,26 @@
 //! and how long they waited. No row per tool used, and no words: not the prompt, not a path.
 //! A screen-only agent has its spans only.
 //!
+//! **Cost.** Claude Code keeps running totals of the tokens it used and what they cost, per
+//! model, and writes them into the conversation's transcript now and then (a `cost-state`
+//! line: when it exits, at some idle moments; not every turn). The hooks name the transcript;
+//! every [`TICK`] the Journal reads what each one has gained, and when the totals
+//! moved, writes what they moved by as a `cost` row ([`Cost`]), from when they were last known
+//! to when the file was written. The totals it has counted are kept in `journal/meters.json`,
+//! so what Claude Code writes as the Host kills it is counted by the next launch. The
+//! messages in a transcript carry token counts too; they are not used, because they add up to
+//! well under the totals.
+//!
 //! **Files.** `journal/<year>-<month>.jsonl` in the Host's data dir, one JSON object per line,
 //! appended. Months are UTC and only say which file a span is in: a span that crosses the end
 //! of a month is written as two, so every span lies within its file's month. A turn is written
-//! whole, in the month it began in. Three kinds of row:
+//! whole, in the month it began in, and a cost in the month it was read in. Four kinds of row:
 //!
 //! ```text
 //! {"k":"ctx","id":1,"tab":"t3","agent":"claude","repo":"/r/.git","name":"r","br":"main"}
 //! {"k":"span","c":1,"s":"running","a":1790000000000,"b":1790000042000}
 //! {"k":"turn","c":1,"a":1790000000000,"b":1790000042000,"len":38,"tools":{"edit":2,"run":1},"add":9,"del":2,"files":1,"cmds":{"cargo":1}}
+//! {"k":"cost","c":1,"a":1790000000000,"b":1790000600000,"m":{"claude-opus-5-5":{"in":120,"out":9100,"cr":810000,"cw":5200,"usd":1420000}}}
 //! ```
 //!
 //! A `ctx` row gives a Context a number, and the rows after it name it by that number, so a
@@ -50,6 +61,15 @@ use std::time::Duration;
 const TICK: Duration = Duration::from_secs(30);
 /// The spans still open, for the next launch to end (see the module's words on a crash).
 const OPEN: &str = "open.json";
+/// The transcripts looked at for Claude Code's totals, and the totals counted so far.
+const METERS: &str = "meters.json";
+/// How much of a transcript's end is read for the totals when it is first looked at. After
+/// that, what it gained since is read.
+const TAIL: u64 = 1024 * 1024;
+/// The most of a transcript read at once; of more than that, the end.
+const READ_MAX: u64 = 8 * 1024 * 1024;
+/// A transcript whose totals have not moved for this long, in no live Session, is let go.
+const METER_IDLE_MS: u64 = 30 * DAY_MS;
 const DAY_MS: u64 = 86_400_000;
 /// Programs a turn counts its commands under at most; commands of any other are not counted
 /// by program.
@@ -169,6 +189,92 @@ pub struct Turn {
     pub tally: Tally,
 }
 
+/// Tokens used on one model, and what they cost.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tokens {
+    /// Input tokens that were not read from the cache.
+    #[serde(rename = "in", default, skip_serializing_if = "is_zero")]
+    pub input: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub out: u64,
+    /// Thinking tokens.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub th: u64,
+    /// Input tokens read from the cache.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cr: u64,
+    /// Input tokens written to the cache.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cw: u64,
+    /// Millionths of a dollar, as Claude Code worked it out.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub usd: u64,
+}
+
+impl Tokens {
+    fn fields(&self) -> [u64; 6] {
+        [self.input, self.out, self.th, self.cr, self.cw, self.usd]
+    }
+
+    /// What `self` has over `base`, nothing where it has less.
+    fn over(&self, base: &Tokens) -> Tokens {
+        Tokens {
+            input: self.input.saturating_sub(base.input),
+            out: self.out.saturating_sub(base.out),
+            th: self.th.saturating_sub(base.th),
+            cr: self.cr.saturating_sub(base.cr),
+            cw: self.cw.saturating_sub(base.cw),
+            usd: self.usd.saturating_sub(base.usd),
+        }
+    }
+}
+
+/// Tokens by model, under the model's id (`claude-opus-5-5`).
+pub type Models = BTreeMap<String, Tokens>;
+
+/// What an agent used between two readings of its totals.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Cost {
+    pub context: Context,
+    /// When the totals were last known before, epoch ms.
+    pub start: u64,
+    /// When the totals were written, epoch ms.
+    pub end: u64,
+    pub models: Models,
+}
+
+/// Claude Code's totals as a transcript holds them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Totals {
+    /// Its `startTime`: the run of Claude Code that counted them.
+    start: u64,
+    models: Models,
+}
+
+/// A transcript the Journal reads the totals from, in `meters.json` under its path.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Watched {
+    /// The Context its cost is counted under: its Session's, when last known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ctx: Option<Context>,
+    /// The file's length when it was last read.
+    #[serde(default)]
+    len: u64,
+    /// When its totals last moved, or when it was first looked at, epoch ms.
+    at: u64,
+    /// The totals last read from it, and the run that counted them.
+    #[serde(default)]
+    start: u64,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    totals: Models,
+}
+
+/// `meters.json`.
+#[derive(Default, Serialize, Deserialize)]
+struct MetersFile {
+    files: BTreeMap<String, Watched>,
+}
+
 /// A line of a month's file.
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "k", rename_all = "lowercase")]
@@ -190,6 +296,12 @@ enum Row {
         b: u64,
         #[serde(flatten)]
         tally: Tally,
+    },
+    Cost {
+        c: u32,
+        a: u64,
+        b: u64,
+        m: Models,
     },
 }
 
@@ -285,6 +397,12 @@ struct State {
     turns: HashMap<SessionId, OpenTurn>,
     /// The Context each live Session's agent was last seen in.
     contexts: HashMap<SessionId, Context>,
+    /// The transcript of each live Session's hooked agent.
+    transcripts: HashMap<SessionId, String>,
+    /// Every transcript looked at, by path.
+    watched: BTreeMap<String, Watched>,
+    /// `watched` has changed since `meters.json` was written.
+    unsaved: bool,
     /// The month whose file `ids` was written to.
     month: Option<Month>,
     /// The number of each Context the file was given in this run.
@@ -315,6 +433,8 @@ impl Journal {
                 }
             }
             let _ = fs::remove_file(&path);
+            let meters = fs::read(dir.join(METERS)).ok().and_then(|b| serde_json::from_slice::<MetersFile>(&b).ok());
+            lock(&journal.inner.state).watched = meters.unwrap_or_default().files;
         }
         journal
     }
@@ -395,6 +515,19 @@ impl Journal {
                 }
                 self.close_turn(&mut state, id, at);
             }
+            Step::Transcript(path) => {
+                state.transcripts.insert(id, path.clone());
+                if !state.watched.contains_key(path) {
+                    // What it holds already is not this Journal's to count: it was used before
+                    // the file was looked at.
+                    let len = fs::metadata(path).map_or(0, |m| m.len());
+                    let seen = totals_in(Path::new(path), len.saturating_sub(TAIL)).unwrap_or_default();
+                    let ctx = state.contexts.get(&id).cloned();
+                    let watched = Watched { ctx, len, at, start: seen.start, totals: seen.models };
+                    state.watched.insert(path.clone(), watched);
+                    state.unsaved = true;
+                }
+            }
             Step::Tool(_) | Step::Asked | Step::Answered => {
                 let Some(turn) = state.turns.get_mut(&id) else { return };
                 turn.left = None;
@@ -423,6 +556,8 @@ impl Journal {
             self.close_turn(&mut state, id, now);
         }
         state.contexts.remove(&id);
+        // Its transcript stays watched: Claude Code writes its totals as it goes.
+        state.transcripts.remove(&id);
     }
 
     /// The Host is stopping: every open span and turn ends now, and nothing is written after.
@@ -431,6 +566,7 @@ impl Journal {
     }
 
     fn finish_at(&self, now: u64) {
+        self.measure(now);
         let mut state = lock(&self.inner.state);
         let ids: Vec<SessionId> = state.open.keys().copied().collect();
         for id in ids {
@@ -524,6 +660,88 @@ impl Journal {
         spans
     }
 
+    /// Look at every watched transcript that changed, and write what Claude Code's totals
+    /// moved by. The files are read outside the lock.
+    fn measure(&self, now: u64) {
+        let Some(dir) = &self.inner.dir else { return };
+        let looks: Vec<(String, u64)> = {
+            let mut state = lock(&self.inner.state);
+            if state.finished {
+                return;
+            }
+            let state = &mut *state;
+            for (id, path) in &state.transcripts {
+                if let (Some(context), Some(w)) = (state.contexts.get(id), state.watched.get_mut(path)) {
+                    if w.ctx.as_ref() != Some(context) {
+                        w.ctx = Some(context.clone());
+                        state.unsaved = true;
+                    }
+                }
+            }
+            state.watched.iter().map(|(path, w)| (path.clone(), w.len)).collect()
+        };
+        let read: Vec<(String, u64, u64, Option<Totals>)> = looks
+            .into_iter()
+            .filter_map(|(path, len)| {
+                let meta = fs::metadata(&path).ok()?;
+                if meta.len() == len {
+                    return None;
+                }
+                let written = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
+                let written = written.map_or(now, |d| (d.as_millis() as u64).min(now));
+                // A file that is shorter than it was is another file: all of it is new.
+                let from = if meta.len() > len { len } else { 0 };
+                let totals = totals_in(Path::new(&path), from);
+                Some((path, meta.len(), written, totals))
+            })
+            .collect();
+        let mut state = lock(&self.inner.state);
+        if state.finished {
+            return;
+        }
+        for (path, len, written, totals) in read {
+            state.count(dir, &path, len, written, totals);
+        }
+        let live: HashSet<&String> = state.transcripts.values().collect();
+        let idle: Vec<String> = state
+            .watched
+            .iter()
+            .filter(|(path, w)| now.saturating_sub(w.at) > METER_IDLE_MS && !live.contains(path))
+            .map(|(path, _)| path.clone())
+            .collect();
+        for path in idle {
+            state.watched.remove(&path);
+            state.unsaved = true;
+        }
+        if state.unsaved {
+            let file = MetersFile { files: state.watched.clone() };
+            let written = fs::create_dir_all(dir)
+                .map_err(|e| e.to_string())
+                .and_then(|_| crate::store::write(&dir.join(METERS), &file));
+            state.unsaved = written.is_err();
+            state.said(written.map_err(|e| format!("{METERS}: {e}")));
+        }
+    }
+
+    /// Every cost read in `from..to` (epoch ms), whole, in the order they were written.
+    pub fn costs(&self, from: u64, to: u64) -> Vec<Cost> {
+        let mut costs = Vec::new();
+        if from >= to {
+            return costs;
+        }
+        let _state = lock(&self.inner.state);
+        if let Some(dir) = &self.inner.dir {
+            let last = Month::of(to - 1);
+            let mut month = Month::of(from);
+            while month <= last {
+                costs.extend(read_file(&dir.join(month.file())).2);
+                month = month.next();
+            }
+        }
+        costs.retain(|c| (from..to).contains(&c.end));
+        costs
+    }
+
     /// Every turn that began in `from..to` (epoch ms), whole, the ones still going included
     /// (they end now). In the order they were written, the ones still going last.
     pub fn turns(&self, from: u64, to: u64) -> Vec<Turn> {
@@ -587,6 +805,64 @@ impl State {
             let written = self.append(dir, month, &open.context, row);
             self.said(written);
             start = stop;
+        }
+    }
+
+    /// The totals `path` now holds are `totals`, written at `at`: write what they have over
+    /// what was counted, under the transcript's Context, and count them.
+    fn count(&mut self, dir: &Path, path: &str, len: u64, at: u64, totals: Option<Totals>) {
+        let base = totals.as_ref().map(|t| self.counted(path, t));
+        let Some(w) = self.watched.get_mut(path) else { return };
+        w.len = len;
+        let (Some(totals), Some(base)) = (totals, base) else { return };
+        if totals.start == w.start && totals.models == w.totals {
+            return;
+        }
+        let over: Models = totals
+            .models
+            .iter()
+            .map(|(model, t)| (model.clone(), t.over(base.get(model).unwrap_or(&Tokens::default()))))
+            .filter(|(_, t)| *t != Tokens::default())
+            .collect();
+        let (from, context) = (w.at, w.ctx.clone());
+        w.start = totals.start;
+        w.totals = totals.models;
+        self.unsaved = true;
+        if over.is_empty() {
+            return;
+        }
+        let at = at.max(from);
+        w.at = at;
+        if let Some(context) = context {
+            let row = |c| Row::Cost { c, a: from, b: at, m: over };
+            let written = self.append(dir, Month::of(at), &context, row);
+            self.said(written);
+        }
+    }
+
+    /// What of `totals` was counted already: the most this Journal read from the same run of
+    /// Claude Code, in any transcript (`/clear` starts another, and the totals carry on);
+    /// failing that what this transcript last held, if the totals are those and more (a
+    /// resume, carrying them on under another run); else nothing.
+    fn counted(&self, path: &str, totals: &Totals) -> Models {
+        let sum = |m: &Models| m.values().flat_map(|t| t.fields()).sum::<u64>();
+        let same_run = self
+            .watched
+            .values()
+            .filter(|w| totals.start != 0 && w.start == totals.start)
+            .max_by_key(|w| sum(&w.totals));
+        if let Some(w) = same_run {
+            return w.totals.clone();
+        }
+        let has_more = |held: &Models| {
+            held.iter().all(|(model, t)| {
+                let now = totals.models.get(model).copied().unwrap_or_default();
+                now.fields().iter().zip(t.fields()).all(|(now, held)| *now >= held)
+            })
+        };
+        match self.watched.get(path) {
+            Some(w) if has_more(&w.totals) => w.totals.clone(),
+            _ => Models::new(),
         }
     }
 
@@ -666,10 +942,50 @@ fn ends_mid_line(path: &Path) -> bool {
     last().is_ok_and(|b| b != b'\n')
 }
 
-/// The spans and the turns in one month's file, in order; none for a file that is not there.
-fn read_file(path: &Path) -> (Vec<Span>, Vec<Turn>) {
-    let (mut spans, mut turns) = (Vec::new(), Vec::new());
-    let Ok(text) = fs::read_to_string(path) else { return (spans, turns) };
+/// Claude Code's totals in the transcript at `path`: its last `cost-state` line, looked for
+/// from byte `from` on (in the last [`READ_MAX`] bytes, if that is more). `None` when there is
+/// none there. A line cut by where the reading starts is not one.
+fn totals_in(path: &Path, from: u64) -> Option<Totals> {
+    let mut f = fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(from.max(len.saturating_sub(READ_MAX)))).ok()?;
+    let mut tail = Vec::new();
+    f.read_to_end(&mut tail).ok()?;
+    let text = String::from_utf8_lossy(&tail);
+    text.lines().rev().filter(|l| l.contains("cost-state")).find_map(totals_of)
+}
+
+/// The totals a `cost-state` line holds; `None` for any other line.
+fn totals_of(line: &str) -> Option<Totals> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    if v.get("type")?.as_str()? != "cost-state" {
+        return None;
+    }
+    let models = v.get("modelUsage")?.as_object()?;
+    let n = |u: &serde_json::Value, key: &str| u.get(key).and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let models = models
+        .iter()
+        .map(|(model, u)| {
+            let usd = u.get("costUSD").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+            let tokens = Tokens {
+                input: n(u, "inputTokens"),
+                out: n(u, "outputTokens"),
+                th: n(u, "thinkingTokens"),
+                cr: n(u, "cacheReadInputTokens"),
+                cw: n(u, "cacheCreationInputTokens"),
+                usd: (usd.max(0.0) * 1e6).round() as u64,
+            };
+            (model.clone(), tokens)
+        })
+        .collect();
+    Some(Totals { start: n(&v, "startTime"), models })
+}
+
+/// The spans, the turns and the costs in one month's file, in order; none for a file that is
+/// not there.
+fn read_file(path: &Path) -> (Vec<Span>, Vec<Turn>, Vec<Cost>) {
+    let (mut spans, mut turns, mut costs) = (Vec::new(), Vec::new(), Vec::new());
+    let Ok(text) = fs::read_to_string(path) else { return (spans, turns, costs) };
     let mut contexts: HashMap<u32, Context> = HashMap::new();
     for line in text.lines() {
         match serde_json::from_str::<Row>(line) {
@@ -686,19 +1002,28 @@ fn read_file(path: &Path) -> (Vec<Span>, Vec<Turn>) {
                     turns.push(Turn { context: context.clone(), start: a, end: b, tally });
                 }
             }
+            Ok(Row::Cost { c, a, b, m }) => {
+                if let Some(context) = contexts.get(&c) {
+                    costs.push(Cost { context: context.clone(), start: a, end: b, models: m });
+                }
+            }
             Err(_) => {}
         }
     }
-    (spans, turns)
+    (spans, turns, costs)
 }
 
-/// Start the thread that writes the open spans and turns down every [`TICK`]. A panicking tick is
-/// skipped; the thread never exits.
+/// Start the thread that, every [`TICK`], writes the open spans and turns down and looks at the
+/// transcripts. A panicking tick is skipped; the thread never exits.
 pub fn spawn(journal: Journal) {
     let started = thread::Builder::new().name("journal".into()).spawn(move || loop {
         thread::sleep(TICK);
-        if catch_unwind(AssertUnwindSafe(|| journal.checkpoint(now_ms()))).is_err() {
-            eprintln!("journal: writing the open spans panicked; skipping this tick");
+        let tick = || {
+            journal.checkpoint(now_ms());
+            journal.measure(now_ms());
+        };
+        if catch_unwind(AssertUnwindSafe(tick)).is_err() {
+            eprintln!("journal: a tick panicked; skipping it");
         }
     });
     if let Err(e) = started {
@@ -1156,6 +1481,163 @@ mod tests {
         j.step(1, &Step::Prompt { len: 2 }, DAY + 300);
         let turns = j.turns_at(DAY, DAY + DAY_MS, DAY + 400);
         assert_eq!(turns.iter().map(|t| (t.tally.len, t.end - DAY)).collect::<Vec<_>>(), [(1, 100)]);
+    }
+
+    /// A transcript line with Claude Code's totals, in the shape of 2.1.283's.
+    fn cost_state(start: u64, models: &[(&str, u64, f64)]) -> String {
+        let usage: serde_json::Map<String, serde_json::Value> = models
+            .iter()
+            .map(|(model, out, usd)| {
+                let u = serde_json::json!({
+                    "inputTokens": 10, "outputTokens": out, "thinkingTokens": 0,
+                    "cacheReadInputTokens": out * 100, "cacheCreationInputTokens": 0,
+                    "webSearchRequests": 0, "costUSD": usd,
+                });
+                (model.to_string(), u)
+            })
+            .collect();
+        let line = serde_json::json!({
+            "type": "cost-state", "sessionId": "s", "startTime": start, "totalCostUSD": 0.0,
+            "hasUnknownModelCost": false, "modelUsage": usage,
+        });
+        format!("{line}\n")
+    }
+
+    fn add(path: &Path, lines: &str) {
+        let mut f = fs::OpenOptions::new().create(true).append(true).open(path).unwrap();
+        f.write_all(lines.as_bytes()).unwrap();
+    }
+
+    const OPUS: &str = "claude-opus-5-5";
+    const TALK: &str = "{\"type\":\"assistant\",\"message\":{\"usage\":{\"output_tokens\":5}}}\n";
+
+    fn outs(costs: &[Cost]) -> Vec<(u64, u64, u64, u64)> {
+        costs.iter().map(|c| (c.start - DAY, c.end - DAY, c.models[OPUS].out, c.models[OPUS].usd)).collect()
+    }
+
+    #[test]
+    fn a_cost_is_what_the_totals_moved_by() {
+        let tmp = TempDir::new("journal");
+        let j = journal(&tmp);
+        let file = tmp.path().join("1.jsonl");
+        let path = file.to_string_lossy().into_owned();
+        j.observe_at(&[agent(1, AgentStatus::Running, "main")], tab, DAY);
+        j.step(1, &Step::Transcript(path.clone()), DAY + 100);
+        j.measure(DAY + 200);
+        add(&file, TALK);
+        j.measure(DAY + 300);
+        assert!(j.costs(DAY, DAY + DAY_MS).is_empty(), "no totals yet");
+        add(&file, &cost_state(7, &[(OPUS, 1000, 0.5), ("claude-haiku-4-5", 20, 0.001)]));
+        j.measure(DAY + 1000);
+        add(&file, TALK);
+        j.measure(DAY + 2000);
+        add(&file, &cost_state(7, &[(OPUS, 1500, 0.75), ("claude-haiku-4-5", 20, 0.001)]));
+        j.measure(DAY + 3000);
+        j.measure(DAY + 4000);
+        let costs = j.costs(DAY, DAY + DAY_MS);
+        assert_eq!(outs(&costs), [(100, 1000, 1000, 500_000), (1000, 3000, 500, 250_000)]);
+        assert_eq!(costs[0].models["claude-haiku-4-5"], Tokens { input: 10, out: 20, cr: 2000, usd: 1000, ..Tokens::default() });
+        assert_eq!(costs[1].models.len(), 1, "a model that used nothing more is not written");
+        assert_eq!(costs[1].models[OPUS], Tokens { out: 500, cr: 50_000, usd: 250_000, ..Tokens::default() });
+        assert_eq!(costs[0].context.br.as_deref(), Some("main"));
+        let row = lines(&tmp, SEPTEMBER).into_iter().find(|l| l.contains(r#""k":"cost""#)).unwrap();
+        assert!(row.starts_with(&format!(r#"{{"k":"cost","c":1,"a":{},"b":{},"m":{{"#, DAY + 100, DAY + 1000)), "{row}");
+    }
+
+    #[test]
+    fn totals_are_found_however_much_was_written_after_them() {
+        let tmp = TempDir::new("journal");
+        let j = journal(&tmp);
+        let file = tmp.path().join("1.jsonl");
+        j.observe_at(&[agent(1, AgentStatus::Running, "main")], tab, DAY);
+        j.step(1, &Step::Transcript(file.to_string_lossy().into_owned()), DAY);
+        add(&file, TALK);
+        j.measure(DAY + 100);
+        // Between two looks: the totals, then more than the first look would read.
+        add(&file, &cost_state(7, &[(OPUS, 1000, 0.5)]));
+        add(&file, &TALK.repeat(2 * TAIL as usize / TALK.len()));
+        j.measure(DAY + 200);
+        assert_eq!(outs(&j.costs(DAY, DAY + DAY_MS)), [(0, 200, 1000, 500_000)]);
+    }
+
+    #[test]
+    fn what_a_transcript_held_before_it_was_looked_at_is_not_counted() {
+        let tmp = TempDir::new("journal");
+        let j = journal(&tmp);
+        let file = tmp.path().join("1.jsonl");
+        add(&file, &cost_state(7, &[(OPUS, 1000, 0.5)]));
+        j.observe_at(&[agent(1, AgentStatus::Running, "main")], tab, DAY);
+        j.step(1, &Step::Transcript(file.to_string_lossy().into_owned()), DAY + 100);
+        j.measure(DAY + 200);
+        assert!(j.costs(DAY, DAY + DAY_MS).is_empty());
+        add(&file, &cost_state(7, &[(OPUS, 1300, 0.6)]));
+        j.measure(DAY + 300);
+        assert_eq!(outs(&j.costs(DAY, DAY + DAY_MS)), [(100, 300, 300, 100_000)]);
+    }
+
+    #[test]
+    fn totals_carry_on_over_a_clear_and_a_resume_and_start_again_in_a_new_run() {
+        let tmp = TempDir::new("journal");
+        let j = journal(&tmp);
+        let (one, two) = (tmp.path().join("1.jsonl"), tmp.path().join("2.jsonl"));
+        let path = |f: &PathBuf| f.to_string_lossy().into_owned();
+        j.observe_at(&[agent(1, AgentStatus::Running, "main")], tab, DAY);
+        j.step(1, &Step::Transcript(path(&one)), DAY);
+        add(&one, &cost_state(7, &[(OPUS, 1000, 0.5)]));
+        j.measure(DAY + 100);
+        // `/clear`: another transcript, the same run, its totals carrying on.
+        j.step(1, &Step::Transcript(path(&two)), DAY + 200);
+        add(&two, &cost_state(7, &[(OPUS, 1200, 0.6)]));
+        j.measure(DAY + 300);
+        // A resume: another run, carrying the totals on.
+        add(&two, &cost_state(8, &[(OPUS, 1250, 0.7)]));
+        j.measure(DAY + 400);
+        // Another run that counts from nothing.
+        add(&two, &cost_state(9, &[(OPUS, 40, 0.02)]));
+        j.measure(DAY + 500);
+        add(&two, &cost_state(9, &[(OPUS, 90, 0.03)]));
+        j.measure(DAY + 600);
+        assert_eq!(
+            outs(&j.costs(DAY, DAY + DAY_MS)),
+            [(0, 100, 1000, 500_000), (200, 300, 200, 100_000), (300, 400, 50, 100_000), (400, 500, 40, 20_000), (500, 600, 50, 10_000)]
+        );
+    }
+
+    #[test]
+    fn totals_written_while_the_host_was_down_are_counted_by_the_next_launch() {
+        let tmp = TempDir::new("journal");
+        let j = journal(&tmp);
+        let file = tmp.path().join("1.jsonl");
+        j.observe_at(&[agent(1, AgentStatus::Running, "fix")], tab, DAY);
+        j.step(1, &Step::Transcript(file.to_string_lossy().into_owned()), DAY);
+        add(&file, &cost_state(7, &[(OPUS, 1000, 0.5)]));
+        j.measure(DAY + 100);
+        j.finish_at(DAY + 200);
+        // Claude Code writes its totals as the Host kills it.
+        add(&file, &cost_state(7, &[(OPUS, 1100, 0.55)]));
+
+        let j = journal(&tmp);
+        j.measure(DAY + 9000);
+        let costs = j.costs(DAY, DAY + DAY_MS);
+        assert_eq!(outs(&costs), [(0, 100, 1000, 500_000), (100, 9000, 100, 50_000)]);
+        assert_eq!(costs[1].context.br.as_deref(), Some("fix"), "under the Context it was last in");
+        // Long after, in no Session: let go.
+        j.measure(DAY + 9000 + METER_IDLE_MS + 1);
+        assert!(lock(&j.inner.state).watched.is_empty());
+    }
+
+    /// `JOURNAL_TRANSCRIPT=<a transcript> cargo test -p sidebar-term-core real_transcript -- --ignored --nocapture`
+    #[test]
+    #[ignore = "reads a real Claude Code transcript named by JOURNAL_TRANSCRIPT"]
+    fn real_transcript() {
+        let path = std::env::var("JOURNAL_TRANSCRIPT").expect("JOURNAL_TRANSCRIPT");
+        let len = fs::metadata(&path).unwrap().len();
+        let totals = totals_in(Path::new(&path), len.saturating_sub(TAIL)).expect("no cost-state in its last MiB");
+        assert!(totals.start > 0);
+        for (model, t) in &totals.models {
+            println!("{model}: {t:?}");
+        }
+        assert!(totals.models.values().any(|t| t.out > 0 && t.usd > 0));
     }
 
     #[test]
