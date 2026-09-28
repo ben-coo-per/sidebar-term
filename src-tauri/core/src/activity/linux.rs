@@ -414,8 +414,12 @@ mod tests {
         fn footprint_and_start_time_of_this_process() {
             let me = std::process::id() as i32;
             let pss = footprint(me).expect("own smaps_rollup");
-            let rss = parse_status_rss(&fs::read_to_string("/proc/self/status").unwrap()).unwrap();
-            assert!(pss > 1 << 20 && pss <= rss, "pss {pss} rss {rss}");
+            // The footprint is `Pss + SwapPss`: shared memory and swapped-out pages count, so the
+            // bound is the whole resident set (`VmRSS`, shmem included) plus what is swapped.
+            let status = fs::read_to_string("/proc/self/status").unwrap();
+            let resident = kib(&status, "VmRSS").unwrap() * 1024;
+            let swap = kib(&status, "VmSwap").unwrap_or(0) * 1024;
+            assert!(pss > 1 << 20 && pss <= resident + swap, "pss {pss} resident {resident} swap {swap}");
             let start = start_time(me).expect("own stat");
             assert!(start > 0);
             assert_eq!(start_time(me), Some(start), "stable");
