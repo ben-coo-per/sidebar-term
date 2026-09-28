@@ -1,6 +1,6 @@
 // The latest UsageSnapshot, read only while something shows it (the Panel, whose header carries a
-// summary even while the Usage view is closed, or the window bar), plus a clock for the
-// "resets in" times.
+// summary even while the Usage view is closed, the window bar, or Manager, under Needs you),
+// plus a clock for the "resets in" times.
 
 import { onUsage, watchUsage } from "../../ipc";
 import type { AgentKind, UsageSnapshot } from "../../types";

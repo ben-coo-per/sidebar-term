@@ -30,6 +30,10 @@
 //! rollout-*.jsonl`) from its API's response headers, on every turn. Free to read, so checked
 //! every tick, but only as fresh as the last Codex turn on this Mac.
 //!
+//! One model's limits: Claude Code's answer lists each model's week (Fable's) beside the windows
+//! every model draws on; Codex names the limit each record is of (`limit_id`), which is the
+//! shared one unless the turn's model has a limit of its own. Both show as bars of their own.
+//!
 //! The network and the Keychain go through `/usr/bin/curl` and `/usr/bin/security`, as Activity
 //! uses `/bin/ps`: no HTTP or Keychain crate. The token reaches curl on stdin, never in argv,
 //! which `ps` shows to every user.
@@ -62,16 +66,25 @@ const CLAUDE_BACKOFF_MAX: Duration = Duration::from_secs(60 * 60);
 const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 /// Claude Code's windows, in display order: response key, label.
-const CLAUDE_WINDOWS: [(&str, &str); 4] = [
+const CLAUDE_WINDOWS: [(&str, &str); 5] = [
     ("five_hour", "5h"),
     ("seven_day", "Week"),
     ("seven_day_opus", "Opus wk"),
     ("seven_day_sonnet", "Sonnet wk"),
+    // Claude Code's own name for this window is the "Fable limit".
+    ("seven_day_overage_included", "Fable wk"),
 ];
+/// The kind of a `limits` entry that is one model's week.
+const CLAUDE_MODEL_WEEK: &str = "weekly_scoped";
 /// Codex logs are looked for in this many of the newest day directories.
 const CODEX_RECENT_DAYS: usize = 14;
 /// At most this many of the newest Codex logs are searched for a usage record.
 const CODEX_SCAN: usize = 10;
+/// At most this many of a Codex log's newest usage records are read: a limit not named in them
+/// has not been drawn on for a while.
+const CODEX_RECORDS: usize = 200;
+/// The limit every Codex model draws on unless it has one of its own; a record naming none means it.
+const CODEX_LIMIT: &str = "codex";
 
 #[derive(Default)]
 struct Watch {
@@ -562,24 +575,50 @@ fn parse_curl_output(text: &str) -> Result<Value, Fetch> {
     }
 }
 
-/// `{"five_hour":{"utilization":48.0,"resets_at":"2026-..."},"seven_day":{..},"seven_day_opus":null}`
-/// -> the windows present, in `CLAUDE_WINDOWS` order. `None` when there are none.
+/// `{"five_hour":{"utilization":48.0,"resets_at":"2026-..."},"seven_day":{..},"seven_day_opus":null,
+/// "limits":[{"kind":"weekly_scoped","percent":61.0,"resets_at":"2026-..","scope":{"model":{"display_name":"Fable"}}}]}`
+/// -> the windows present, in `CLAUDE_WINDOWS` order, then each model's week from `limits`
+/// ("Fable wk") that is not among them already. `None` when there are none.
 fn parse_claude_usage(v: &Value) -> Option<Vec<UsageWindow>> {
-    let windows: Vec<_> = CLAUDE_WINDOWS
-        .iter()
-        .filter_map(|&(key, label)| {
-            let w = v.get(key)?;
-            Some(UsageWindow {
-                label: label.to_owned(),
-                used_percent: w.get("utilization")?.as_f64()? as f32,
-                resets_at: w
-                    .get("resets_at")
-                    .and_then(Value::as_str)
-                    .and_then(parse_rfc3339_ms),
-            })
+    let resets_at = |w: &Value| {
+        w.get("resets_at")
+            .and_then(Value::as_str)
+            .and_then(parse_rfc3339_ms)
+    };
+    let keyed = CLAUDE_WINDOWS.iter().filter_map(|&(key, label)| {
+        let w = v.get(key)?;
+        Some(UsageWindow {
+            label: label.to_owned(),
+            used_percent: w.get("utilization")?.as_f64()? as f32,
+            resets_at: resets_at(w),
         })
-        .collect();
+    });
+    let limits = v.get("limits").and_then(Value::as_array);
+    let models = limits.into_iter().flatten().filter_map(|l| {
+        if l.get("kind")?.as_str()? != CLAUDE_MODEL_WEEK {
+            return None;
+        }
+        let name = l.get("scope")?.get("model")?.get("display_name")?.as_str()?;
+        let name = name.trim().trim_start_matches("Claude ").trim();
+        (!name.is_empty()).then_some(UsageWindow {
+            label: format!("{name} wk"),
+            used_percent: l.get("percent")?.as_f64()? as f32,
+            resets_at: resets_at(l),
+        })
+    });
+    let windows = distinct(keyed.chain(models));
     (!windows.is_empty()).then_some(windows)
+}
+
+/// The windows, without those whose label an earlier one has: a label names one bar.
+fn distinct(windows: impl Iterator<Item = UsageWindow>) -> Vec<UsageWindow> {
+    let mut out: Vec<UsageWindow> = Vec::new();
+    for w in windows {
+        if !out.iter().any(|o| o.label.eq_ignore_ascii_case(&w.label)) {
+            out.push(w);
+        }
+    }
+    out
 }
 
 // ---- Codex ----
@@ -622,16 +661,57 @@ fn recent_codex_logs(sessions: &Path) -> Vec<(PathBuf, SystemTime, u64)> {
     logs
 }
 
-/// The last usage record in a Codex log: a line like
-/// `{"timestamp":"..","payload":{"type":"token_count","rate_limits":{"primary":{..},"secondary":null,"plan_type":"plus"}}}`.
-fn last_codex_reading(log: &str) -> Option<CodexReading> {
-    log.lines()
-        .rev()
-        .filter(|l| l.contains("\"rate_limits\":{"))
-        .find_map(codex_reading)
+/// One usage record of a Codex log: one limit's windows, as its API's response headers said.
+struct CodexRecord {
+    /// The limit's id: `CODEX_LIMIT`, or a limit of its own that a model draws on.
+    limit: String,
+    /// What to call it on a bar; none for `CODEX_LIMIT`, whose bars say only their window.
+    name: Option<String>,
+    windows: Vec<UsageWindow>,
+    plan: Option<String>,
+    at: Option<u64>,
 }
 
-fn codex_reading(line: &str) -> Option<CodexReading> {
+/// The last usage record of each limit in a Codex log, among its newest `CODEX_RECORDS`: lines like
+/// `{"timestamp":"..","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","limit_name":null,"primary":{..},"secondary":null,"plan_type":"plus"}}}`.
+/// Codex records one limit per turn, the one the turn's model drew on, so a model with a limit of
+/// its own shows beside the shared one: `CODEX_LIMIT`'s windows first ("5h", "Week"), then the
+/// others' under their names ("Astra 5h"), most recently recorded first. The time is the newest
+/// record's, the plan the newest one named.
+fn last_codex_reading(log: &str) -> Option<CodexReading> {
+    let mut records: Vec<CodexRecord> = Vec::new();
+    let newest = log
+        .lines()
+        .rev()
+        .filter(|l| l.contains("\"rate_limits\":{"))
+        .filter_map(codex_record)
+        .take(CODEX_RECORDS);
+    for r in newest {
+        if !records.iter().any(|seen| seen.limit == r.limit) {
+            records.push(r);
+        }
+    }
+    let updated_at = records.first()?.at;
+    let plan = records.iter().find_map(|r| r.plan.clone());
+    records.sort_by_key(|r| r.limit != CODEX_LIMIT); // stable: the rest stay newest first
+    let windows = records.into_iter().flat_map(|r| {
+        let name = r.name;
+        r.windows.into_iter().map(move |w| match &name {
+            Some(name) => UsageWindow {
+                label: format!("{name} {}", w.label),
+                ..w
+            },
+            None => w,
+        })
+    });
+    Some(CodexReading {
+        windows: distinct(windows),
+        plan,
+        updated_at,
+    })
+}
+
+fn codex_record(line: &str) -> Option<CodexRecord> {
     let v: Value = serde_json::from_str(line).ok()?;
     let limits = v.get("payload")?.get("rate_limits")?;
     let at = v
@@ -646,14 +726,36 @@ fn codex_reading(line: &str) -> Option<CodexReading> {
         return None;
     }
     windows.sort_by_key(|(minutes, _)| *minutes); // shortest window first, as for Claude Code
-    Some(CodexReading {
-        windows: windows.into_iter().map(|(_, w)| w).collect(),
-        plan: limits
-            .get("plan_type")
+    let text = |key: &str| {
+        limits
+            .get(key)
             .and_then(Value::as_str)
-            .map(str::to_owned),
-        updated_at: at,
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    let limit = text("limit_id").unwrap_or(CODEX_LIMIT).to_ascii_lowercase();
+    let name = (limit != CODEX_LIMIT).then(|| limit_short_name(text("limit_name").unwrap_or(&limit)));
+    Some(CodexRecord {
+        limit,
+        name,
+        windows: windows.into_iter().map(|(_, w)| w).collect(),
+        plan: text("plan_type").map(str::to_owned),
+        at,
     })
+}
+
+/// A limit's name, short enough for a bar's label: its last word, capitalised ("gpt-6-astra" ->
+/// "Astra", "codex_other" -> "Other"); the whole name when that is not a word ("gpt-5.5").
+fn limit_short_name(name: &str) -> String {
+    let last = name.rsplit(['-', '_', ' ']).find(|part| !part.is_empty());
+    match last {
+        Some(word) if word.starts_with(|c: char| c.is_alphabetic()) => {
+            let mut chars = word.chars();
+            let first = chars.next().map(|c| c.to_uppercase().to_string());
+            first.unwrap_or_default() + chars.as_str()
+        }
+        _ => name.to_owned(),
+    }
 }
 
 /// `{"used_percent":3.0,"window_minutes":10080,"resets_at":<epoch s>}`; older Codex versions say
@@ -827,6 +929,52 @@ mod tests {
             ]
         );
         assert_eq!(parse_claude_usage(&json!({"error": "nope"})), None);
+    }
+
+    #[test]
+    fn claude_usage_of_one_model() {
+        let labels = |body: Value| -> Vec<String> {
+            let windows = parse_claude_usage(&body).expect("windows");
+            windows.into_iter().map(|w| w.label).collect()
+        };
+        // The window Claude Code calls the Fable limit, by its key.
+        let keyed = json!({
+            "five_hour": {"utilization": 48.0, "resets_at": null},
+            "seven_day_overage_included": {"utilization": 61.5, "resets_at": "2026-04-25T06:31:40.140Z"},
+        });
+        assert_eq!(
+            parse_claude_usage(&keyed).expect("windows")[1],
+            UsageWindow {
+                label: "Fable wk".into(),
+                used_percent: 61.5,
+                resets_at: Some(1_777_098_700_140),
+            }
+        );
+        // Each model's week in `limits`, once: not again when its key is there too, and only
+        // the entries that are a model's.
+        let listed = json!({
+            "five_hour": {"utilization": 48.0, "resets_at": null},
+            "seven_day_overage_included": {"utilization": 61.5, "resets_at": null},
+            "limits": [
+                {"kind": "session", "group": "session", "percent": 48.0, "resets_at": null},
+                {"kind": "weekly_all", "group": "weekly", "percent": 19.0, "resets_at": null},
+                {"kind": "weekly_scoped", "group": "weekly", "percent": 61.5, "resets_at": null,
+                 "scope": {"model": {"display_name": "Claude Fable"}}},
+                {"kind": "weekly_scoped", "group": "weekly", "percent": 7.0,
+                 "resets_at": "2026-04-25T06:31:40.140Z", "scope": {"model": {"display_name": "Haiku"}}},
+                {"kind": "weekly_scoped", "group": "weekly", "percent": 3.0, "scope": {"model": null}},
+            ],
+        });
+        assert_eq!(labels(listed.clone()), ["5h", "Fable wk", "Haiku wk"]);
+        assert_eq!(
+            parse_claude_usage(&listed).expect("windows")[2],
+            UsageWindow {
+                label: "Haiku wk".into(),
+                used_percent: 7.0,
+                resets_at: Some(1_777_098_700_140),
+            }
+        );
+        assert_eq!(labels(json!({"five_hour": {"utilization": 1}, "limits": "none"})), ["5h"]);
     }
 
     const MIN: u64 = 60_000;
@@ -1052,6 +1200,44 @@ mod tests {
             })
         );
         assert_eq!(last_codex_reading("{\"payload\":{}}\n"), None);
+    }
+
+    #[test]
+    fn codex_records_of_several_limits() {
+        // A turn on the shared limit, one on a model's own, then the shared one again, and last
+        // a second one of its own: each limit's newest record, the shared one's bars first.
+        let log = r#"{"timestamp":"2026-04-25T06:30:00.000Z","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","limit_name":null,"primary":{"used_percent":10.0,"window_minutes":300,"resets_at":1777703487},"secondary":{"used_percent":20.0,"window_minutes":10080,"resets_at":1777703487},"plan_type":"pro"}}}
+{"timestamp":"2026-04-25T06:31:00.000Z","payload":{"type":"token_count","rate_limits":{"limit_id":"codex_astra","limit_name":"gpt-6-astra","primary":{"used_percent":70.0,"window_minutes":300,"resets_at":1777703487},"secondary":null,"plan_type":"pro"}}}
+{"timestamp":"2026-04-25T06:32:00.000Z","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","limit_name":null,"primary":{"used_percent":11.0,"window_minutes":300,"resets_at":1777703487},"secondary":{"used_percent":21.0,"window_minutes":10080,"resets_at":1777703487},"plan_type":"pro"}}}
+{"timestamp":"2026-04-25T06:33:00.000Z","payload":{"type":"token_count","rate_limits":{"limit_id":"codex_other","primary":null,"secondary":{"used_percent":5.0,"window_minutes":10080,"resets_at":1777703487}}}}
+"#;
+        let reading = last_codex_reading(log).expect("reading");
+        let bars: Vec<(&str, f32)> = reading
+            .windows
+            .iter()
+            .map(|w| (w.label.as_str(), w.used_percent))
+            .collect();
+        assert_eq!(
+            bars,
+            [("5h", 11.0), ("Week", 21.0), ("Other Week", 5.0), ("Astra 5h", 70.0)]
+        );
+        // The newest record's time; it names no plan, so the one before it does.
+        assert_eq!(reading.updated_at, parse_rfc3339_ms("2026-04-25T06:33:00.000Z"));
+        assert_eq!(reading.plan.as_deref(), Some("pro"));
+    }
+
+    #[test]
+    fn limit_short_names() {
+        let cases = [
+            ("gpt-6-astra", "Astra"),
+            ("codex_other", "Other"),
+            ("gpt-reserve", "Reserve"),
+            ("gpt-5.5", "gpt-5.5"),
+            ("astra", "Astra"),
+        ];
+        for (name, want) in cases {
+            assert_eq!(limit_short_name(name), want);
+        }
     }
 
     #[test]

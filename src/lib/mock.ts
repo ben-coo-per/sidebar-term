@@ -970,6 +970,7 @@ function fakeUsage(agent: AgentKind): AgentUsage | null {
         windows: [
           { label: "5h", usedPercent: Math.min(100, 48 + (now - startedAt) / 20_000), resetsAt: now + 2.2 * HOUR },
           { label: "Week", usedPercent: 83, resetsAt: now + 76 * HOUR },
+          { label: "Fable wk", usedPercent: 64, resetsAt: now + 76 * HOUR },
         ],
         plan: "max",
         updatedAt: now,

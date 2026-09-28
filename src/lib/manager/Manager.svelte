@@ -2,8 +2,9 @@
      Under the window bar (src/lib/window/WindowBar.svelte: Tabs / Manager, the zoom, Usage, the
      Tray), top to bottom: every agent Tab as a lane across the window of time, then two columns:
      the narrow one what needs the user (questions answered in place, the answers just sent,
-     finished work not looked at), the wide one the selected Tab's Terminal (SelectedTab.svelte),
-     to type into as in Tabs mode. A click on a lane or a finished row selects its Tab, as does
+     finished work not looked at) with Usage held at its bottom (the Panel's view, every limit's
+     bar: the window bar shows no summary in Manager), the wide one the selected Tab's Terminal
+     (SelectedTab.svelte), to type into as in Tabs mode. A click on a lane or a finished row selects its Tab, as does
      "Answer in its Terminal" on the card of an agent whose question Manager cannot answer;
      "Open Tab", on a lane, a card, a finished row or the Terminal's bar, opens it in Tabs mode.
      The edges between the three drag: the one under the lanes sizes them, the one beside Needs
@@ -32,6 +33,9 @@
   } from "../layout.svelte";
   import { settingsPage } from "../settings/visibility.svelte";
   import { terminals } from "../terminal/manager";
+  import UsageView from "../panel/usage/UsageView.svelte";
+  import { watch as watchUsage } from "../panel/usage/usage.svelte";
+  import { usageSettings } from "../panel/usage/settings.svelte";
   import CheckIcon from "../sidebar/icons/CheckIcon.svelte";
   import LaneRow from "./LaneRow.svelte";
   import SelectedTab from "./SelectedTab.svelte";
@@ -77,6 +81,9 @@
 
   $effect(() => rememberOrder(shown.map((l) => l.tab.id)));
   $effect(() => runClock());
+  $effect(() => {
+    if (usageSettings.ready) return watchUsage([...usageSettings.agents]);
+  });
 
   /** Until dragged, the lanes are as tall as they are, up to this share of Manager's height. */
   const AUTO_LANES_SHARE = 0.55;
@@ -88,6 +95,7 @@
   let root: HTMLDivElement | undefined = $state();
   let lanesSection: HTMLElement | undefined = $state();
   let lanesEl: HTMLDivElement | undefined = $state();
+  let columnEl: HTMLDivElement | undefined = $state();
   let needsEl: HTMLDivElement | undefined = $state();
 
   /** The keys are Manager's: taken from whatever had the focus, a Terminal just mounted too. */
@@ -97,8 +105,8 @@
     root?.focus({ preventScroll: true });
   }
 
-  // Keys come here, not to a Terminal, until the user clicks into one; the columns scroll where
-  // they were.
+  // Keys come here, not to a Terminal, until the user clicks into one; the lanes and Needs you
+  // scroll where they were.
   $effect(() => {
     void takeKeys();
     if (lanesEl) lanesEl.scrollTop = manager.scroll.lanes;
@@ -171,7 +179,7 @@
    * the shield takes the pointer while an edge is held, so the edge never gets the clicks.
    */
   function startResize(e: PointerEvent, edge: Edge) {
-    const el = edge === "lanes" ? lanesSection : needsEl;
+    const el = edge === "lanes" ? lanesSection : columnEl;
     if (e.button !== 0 || !el || !root) return;
     e.preventDefault();
     if (pressed?.edge === edge && e.timeStamp - pressed.at < DOUBLE_CLICK_MS) {
@@ -257,61 +265,68 @@
       tabindex="-1"
       onpointerdown={(e) => startResize(e, "lanes")}
     ></div>
-    <div class="column" bind:this={needsEl}>
-      <span class="heading" class:waiting={cards.length > 0}>Needs you<span class="count">({cards.length})</span></span>
+    <div class="column" bind:this={columnEl}>
+      <div class="needs" bind:this={needsEl}>
+        <span class="heading" class:waiting={cards.length > 0}>Needs you<span class="count">({cards.length})</span></span>
 
-      {#each manager.sent as s (s.pendingId)}
-        <SentRow sent={s} />
-      {/each}
+        {#each manager.sent as s (s.pendingId)}
+          <SentRow sent={s} />
+        {/each}
 
-      {#if cards.length === 0}
-        <span class="nothing">Nothing is waiting on you.</span>
-      {/if}
+        {#if cards.length === 0}
+          <span class="nothing">Nothing is waiting on you.</span>
+        {/if}
 
-      {#each cards as lane (lane.tab.id)}
-        <QuestionCard
-          {lane}
-          now={manager.now}
-          focused={focused === lane}
-          onanswer={(i) => void answer(lane, i)}
-          onshow={() => void pick(lane.tab)}
-          onopen={() => openTab(lane.tab)}
-        />
-      {/each}
+        {#each cards as lane (lane.tab.id)}
+          <QuestionCard
+            {lane}
+            now={manager.now}
+            focused={focused === lane}
+            onanswer={(i) => void answer(lane, i)}
+            onshow={() => void pick(lane.tab)}
+            onopen={() => openTab(lane.tab)}
+          />
+        {/each}
 
-      {#if done.length > 0}
-        <span class="heading finished-heading">Finished, not looked at<span class="count">({done.length})</span></span>
-        {#each done as f (f.tab.id)}
-          <div
-            class="finished"
-            role="button"
-            tabindex="-1"
-            onclick={() => void pick(f.tab)}
-            onkeydown={(e) => {
-              if (e.key !== "Enter") return;
-              e.preventDefault();
-              openTab(f.tab);
-            }}
-          >
-            <span class="finished-icon"><CheckIcon size={14} /></span>
-            <span class="finished-title" title={f.title}>{f.project}</span>
-            {#if f.description}<span class="finished-description">{f.description}</span>{/if}
-            <span class="finished-summary">{f.summary}</span>
-            <span class="finished-since">{formatDuration(manager.now - f.since)} ago</span>
-            <button
-              type="button"
-              class="link"
+        {#if done.length > 0}
+          <span class="heading finished-heading">Finished, not looked at<span class="count">({done.length})</span></span>
+          {#each done as f (f.tab.id)}
+            <div
+              class="finished"
+              role="button"
               tabindex="-1"
-              onclick={(e) => {
-                e.stopPropagation();
+              onclick={() => void pick(f.tab)}
+              onkeydown={(e) => {
+                if (e.key !== "Enter") return;
+                e.preventDefault();
                 openTab(f.tab);
               }}
             >
-              Open Tab
-            </button>
-          </div>
-        {/each}
-      {/if}
+              <span class="finished-icon"><CheckIcon size={14} /></span>
+              <span class="finished-title" title={f.title}>{f.project}</span>
+              {#if f.description}<span class="finished-description">{f.description}</span>{/if}
+              <span class="finished-summary">{f.summary}</span>
+              <span class="finished-since">{formatDuration(manager.now - f.since)} ago</span>
+              <button
+                type="button"
+                class="link"
+                tabindex="-1"
+                onclick={(e) => {
+                  e.stopPropagation();
+                  openTab(f.tab);
+                }}
+              >
+                Open Tab
+              </button>
+            </div>
+          {/each}
+        {/if}
+      </div>
+
+      <section class="usage" aria-label="Usage">
+        <span class="heading">Usage</span>
+        <UsageView />
+      </section>
     </div>
 
     <div class="viewer">
@@ -418,11 +433,11 @@
     padding: 0 16px;
   }
   .rows::-webkit-scrollbar,
-  .column::-webkit-scrollbar {
+  .needs::-webkit-scrollbar {
     width: 8px;
   }
   .rows::-webkit-scrollbar-thumb,
-  .column::-webkit-scrollbar-thumb {
+  .needs::-webkit-scrollbar-thumb {
     background: var(--scrollbar-thumb);
     border-radius: 4px;
   }
@@ -467,12 +482,38 @@
     border-top: 1px solid var(--sidebar-border);
   }
   .column {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .needs {
+    flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
     gap: 10px;
     padding: 12px 16px;
+  }
+  /* As tall as its bars, at the bottom of the column; Needs you scrolls above it. The view
+     brings 12 px of its own at the sides. */
+  .usage {
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 45%;
+    padding: 10px 4px 4px;
+    border-top: 1px solid var(--sidebar-divider);
+  }
+  .usage > .heading {
+    padding: 0 12px;
+  }
+  /* Square, as the lanes' bars. */
+  .usage :global(.track),
+  .usage :global(.fill) {
+    border-radius: 0;
   }
   .viewer {
     position: relative;
