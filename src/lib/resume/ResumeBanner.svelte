@@ -85,7 +85,7 @@
     border-top: 1px solid var(--sidebar-border);
     background: var(--sidebar-bg);
     padding: 8px 10px 6px 12px;
-    font-size: 12px;
+    font-size: calc(12px * var(--ui-font-scale));
     color: var(--text-primary);
     animation: rise var(--duration-medium) var(--ease-standard);
   }
@@ -201,14 +201,14 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-family: ui-monospace, "SF Mono", Menlo, monospace;
-    font-size: 11.5px;
+    font-family: var(--font-mono);
+    font-size: calc(11.5px * var(--ui-font-scale));
     color: var(--text-secondary);
   }
   .busy {
     flex: 0 0 auto;
     color: var(--status-needs-input);
-    font-size: 11px;
+    font-size: calc(11px * var(--ui-font-scale));
   }
   .row-action {
     appearance: none;

@@ -1,517 +1,242 @@
-<!-- The Settings page: shown over the Terminal (⌘, or the app menu's "Settings…"). Holds which
-     agents the Panel's Usage view shows, the Tabs' CPU and memory and Memory Guard, and the Hotkeys:
-     click a binding, press the new combo; Escape cancels. See src/lib/hotkeys.ts for the rules. -->
+<!-- The Settings page: shown over the Terminal (⌘, or the app menu's "Settings…"). Its categories
+     (./categories.ts) are listed down the left, and the selected one's section shows in the pane
+     beside them; a narrow page lists them across the top instead. The page holds no setting
+     itself. What the sections share in looks is ./settings.css. -->
 <script lang="ts">
-  import {
-    ACTIONS,
-    comboError,
-    comboFromEvent,
-    combosEqual,
-    formatCombo,
-    isMac,
-    isModifierOnly,
-    type ActionCategory,
-    type ActionDef,
-    type ActionId,
-  } from "../hotkeys";
-  import { hotkeys, resetAllBindings, resetBinding, setBinding } from "../hotkeys.svelte";
-  import { closeSettings } from "./visibility.svelte";
-  import { USAGE_AGENTS } from "../panel/usage/model";
-  import { setUsageAgent, usageSettings } from "../panel/usage/settings.svelte";
-  import { AGENT_NAMES } from "../agentStatus";
-  import type { AgentKind } from "../types";
-  import { activitySettings, setTabStats } from "../panel/activity/settings.svelte";
-  import { memoryGuard, setGuardLimit, toggleMemoryGuard } from "../guard/memoryGuard.svelte";
-  import { GUARD_LIMITS, THAW_GAP } from "../guard/model";
+  import "./settings.css";
+  import { hotkeys } from "../hotkeys.svelte";
   import CloseIcon from "../sidebar/icons/CloseIcon.svelte";
-  import RemoteSection from "./RemoteSection.svelte";
-  import HostsSection from "./HostsSection.svelte";
+  import { CATEGORIES, categoryOf } from "./categories";
+  import { closeSettings, selectCategory, settingsPage } from "./visibility.svelte";
 
-  const CATEGORIES: ActionCategory[] = ["Tabs", "Groups", "Hosts", "App"];
-  const byCategory = CATEGORIES.map((category) => ({
-    category,
-    actions: ACTIONS.filter((a) => a.category === category),
-  }));
-  /** Where each agent's usage comes from, said next to its checkbox. */
-  const USAGE_SOURCES: Record<AgentKind, string> = {
-    claude: "Asks api.anthropic.com every minute, signed in as Claude Code (from your Keychain).",
-    codex: "Read from Codex's session logs, which it updates on every turn.",
-    gemini: "",
-  };
+  /** A page narrower than this (px) lists its categories across the top. */
+  const COMPACT_BELOW = 640;
 
-  const labelOf = (id: ActionId) => ACTIONS.find((a) => a.id === id)?.label ?? id;
+  let page = $state<HTMLElement>();
+  /** The page's width, 0 until measured. */
+  let width = $state(0);
 
-  /** The action whose binding is being recorded, if any. */
-  let recordingId = $state<ActionId | null>(null);
-  /** Modifiers held so far while recording, e.g. "⌘⇧". */
-  let heldModifiers = $state("");
-  /** One line under a row: why a combo was refused, or which action lost it. */
-  let note = $state<{ id: ActionId; text: string; error: boolean } | null>(null);
+  const compact = $derived(width > 0 && width < COMPACT_BELOW);
+  const current = $derived(categoryOf(settingsPage.category));
+  const Section = $derived(current.component);
 
-  const anyCustom = $derived(ACTIONS.some((a) => !combosEqual(hotkeys.bindings[a.id], a.default)));
-
-  function startRecording(id: ActionId) {
-    recordingId = id;
-    heldModifiers = "";
-    note = null;
-    hotkeys.recording = true;
-  }
-
-  function stopRecording() {
-    recordingId = null;
-    heldModifiers = "";
-    hotkeys.recording = false;
-  }
-
-  function modifiersOf(e: KeyboardEvent): string {
-    const c = comboFromEvent(e, isMac());
-    return (c.ctrl ? "⌃" : "") + (c.alt ? "⌥" : "") + (c.shift ? "⇧" : "") + (c.meta ? "⌘" : "");
-  }
-
-  function assign(id: ActionId, set: () => ActionId | null) {
-    const displaced = set();
-    note = displaced
-      ? { id, text: `Taken from “${labelOf(displaced)}”, which is now unassigned.`, error: false }
-      : null;
-  }
-
-  function onWindowKeydown(e: KeyboardEvent) {
-    if (!recordingId) return;
-    e.preventDefault();
-    e.stopPropagation();
-    if (isModifierOnly(e)) {
-      heldModifiers = modifiersOf(e);
-      return;
-    }
-    if (e.key === "Escape" && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
-      stopRecording();
-      return;
-    }
-    const id = recordingId;
-    const combo = comboFromEvent(e, isMac());
-    const error = comboError(combo);
-    if (error) {
-      note = { id, text: error, error: true };
-      return; // keep recording so the next try needs no extra click
-    }
-    stopRecording();
-    assign(id, () => setBinding(id, combo));
-  }
-
-  function onWindowKeyup(e: KeyboardEvent) {
-    if (recordingId) heldModifiers = modifiersOf(e);
+  function focusCategory(id: string) {
+    page?.querySelector<HTMLElement>(`[data-category="${id}"]`)?.focus();
   }
 
   function onPageKeydown(e: KeyboardEvent) {
-    if (e.key === "Escape" && !recordingId) {
+    if (hotkeys.recording) return;
+    if (e.key === "Escape") {
       e.preventDefault();
       closeSettings();
+      return;
     }
+    if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+    // The arrow keys move between categories from the navigation only: in the pane they scroll,
+    // and move the caret in a field.
+    if (!(e.target as Element).closest(".nav")) return;
+    const at = CATEGORIES.findIndex((c) => c.id === current.id);
+    let to: number;
+    switch (e.key) {
+      case "ArrowUp":
+      case "ArrowLeft":
+        to = Math.max(at - 1, 0);
+        break;
+      case "ArrowDown":
+      case "ArrowRight":
+        to = Math.min(at + 1, CATEGORIES.length - 1);
+        break;
+      case "Home":
+        to = 0;
+        break;
+      case "End":
+        to = CATEGORIES.length - 1;
+        break;
+      default:
+        return;
+    }
+    e.preventDefault();
+    const { id } = CATEGORIES[to];
+    selectCategory(id);
+    focusCategory(id);
   }
 
-  function bindingText(a: ActionDef): string {
-    if (recordingId === a.id) return heldModifiers ? `${heldModifiers}…` : "Press keys…";
-    return formatCombo(hotkeys.bindings[a.id]) || "Unassigned";
-  }
-
-  function focusOnMount(node: HTMLElement) {
-    node.focus();
-  }
-
-  // Leaving the page mid-recording must hand the keyboard back to the app's Hotkeys.
-  $effect(() => stopRecording);
+  // Keyboard focus belongs in the page while it shows, so that Esc closes it and the arrow keys
+  // move between categories: on opening, and when the section that held the focus went away.
+  $effect(() => {
+    const { id } = current;
+    if (page && !page.contains(document.activeElement)) focusCategory(id);
+  });
 </script>
 
-<svelte:window onkeydowncapture={onWindowKeydown} onkeyupcapture={onWindowKeyup} />
-
 <div
-  class="page"
+  class="settings-page"
+  class:compact
   role="dialog"
   aria-label="Settings"
   tabindex="-1"
+  bind:this={page}
+  bind:clientWidth={width}
   onkeydown={onPageKeydown}
-  onpointerdown={(e) => {
-    // WebKit doesn't focus buttons on click, so a click elsewhere won't blur: cancel here.
-    if (recordingId && !(e.target as Element).closest(".binding.recording")) stopRecording();
-  }}
-  use:focusOnMount
 >
-  <div class="content">
-    <header class="page-header">
-      <h1>Settings</h1>
-      <button type="button" class="icon-btn" onclick={closeSettings} title="Close (Esc)" aria-label="Close Settings">
-        <CloseIcon size={12} />
-      </button>
-    </header>
-
-    <section>
-      <div class="section-header">
-        <div>
-          <h2>Usage</h2>
-          <p class="hint">Agents whose usage limits the Panel's Usage view shows.</p>
-        </div>
-      </div>
-      <ul class="rows">
-        {#each USAGE_AGENTS as agent (agent)}
-          <li class="row">
-            <label class="check">
-              <span class="label">
-                {AGENT_NAMES[agent]}
-                <span class="detail">{USAGE_SOURCES[agent]}</span>
-              </span>
-              <input
-                type="checkbox"
-                checked={usageSettings.agents.includes(agent)}
-                onchange={(e) => setUsageAgent(agent, e.currentTarget.checked)}
-              />
-            </label>
-          </li>
-        {/each}
-      </ul>
-    </section>
-
-    <RemoteSection />
-
-    <HostsSection />
-
-    <section>
-      <div class="section-header">
-        <div>
-          <h2>Memory</h2>
-          <p class="hint">What each Tab costs, and keeping heavy Tabs from slowing the Mac down.</p>
-        </div>
-      </div>
-      <ul class="rows">
-        <li class="row">
-          <label class="check">
-            <span class="label">
-              CPU and memory on Tabs
-              <span class="detail">Each Tab shows what its processes use. Reads every process every 2 seconds.</span>
-            </span>
-            <input type="checkbox" checked={activitySettings.tabStats} onchange={(e) => setTabStats(e.currentTarget.checked)} />
-          </label>
-        </li>
-        <li class="row">
-          <label class="check">
-            <span class="label">
-              Memory Guard
-              <span class="detail">
-                When memory use passes the limit, freezes the Tab using the most memory (never the one in view), and
-                thaws it once memory is {THAW_GAP} points under the limit. A frozen Tab stops using CPU and stops
-                growing but keeps the memory it holds. Going to it thaws it. Also in the Tray.
-              </span>
-            </span>
-            <input type="checkbox" checked={memoryGuard.on} onchange={() => void toggleMemoryGuard()} />
-          </label>
-        </li>
-        <li class="row">
-          <label class="check">
-            <span class="label">
-              Memory Guard limit
-              <span class="detail">Memory Used, as in the Activity view, as a share of this Mac's memory.</span>
-            </span>
-            <select
-              class="select"
-              value={memoryGuard.limitPercent}
-              onchange={(e) => void setGuardLimit(Number(e.currentTarget.value))}
-            >
-              {#each GUARD_LIMITS as limit (limit)}
-                <option value={limit}>{limit}%</option>
-              {/each}
-            </select>
-          </label>
-        </li>
-      </ul>
-    </section>
-
-    <section>
-      <div class="section-header">
-        <div>
-          <h2>Hotkeys</h2>
-          <p class="hint">Click a hotkey, then press the new combination. Esc cancels.</p>
-        </div>
-        <button type="button" class="text-btn" onclick={resetAllBindings} disabled={!anyCustom}>Restore Defaults</button>
-      </div>
-
-      {#each byCategory as { category, actions } (category)}
-        <h3>{category}</h3>
-        <ul class="rows">
-          {#each actions as a (a.id)}
-            {@const bound = hotkeys.bindings[a.id]}
-            {@const custom = !combosEqual(bound, a.default)}
-            <li class="row">
-              <span class="label">{a.label}</span>
-              <span class="controls">
-                {#if custom}
-                  <button
-                    type="button"
-                    class="text-btn small"
-                    onclick={() => assign(a.id, () => resetBinding(a.id))}
-                    title="Back to {formatCombo(a.default) || 'unassigned'}"
-                  >
-                    Reset
-                  </button>
-                {/if}
-                {#if bound && recordingId !== a.id}
-                  <button
-                    type="button"
-                    class="icon-btn small"
-                    onclick={() => {
-                      note = null;
-                      setBinding(a.id, null);
-                    }}
-                    title="Unassign"
-                    aria-label="Unassign {a.label}"
-                  >
-                    <CloseIcon size={9} />
-                  </button>
-                {/if}
-                <button
-                  type="button"
-                  class="binding"
-                  class:recording={recordingId === a.id}
-                  class:unassigned={!bound && recordingId !== a.id}
-                  class:custom
-                  onclick={() => (recordingId === a.id ? stopRecording() : startRecording(a.id))}
-                  aria-label="{a.label}: {bindingText(a)}"
-                >
-                  {bindingText(a)}
-                </button>
-              </span>
-              {#if note?.id === a.id}
-                <span class="note" class:error={note.error}>{note.text}</span>
-              {/if}
-            </li>
-          {/each}
-        </ul>
+  <div class="nav-column">
+    <h1>Settings</h1>
+    <div class="nav" role="tablist" aria-label="Settings categories" aria-orientation={compact ? "horizontal" : "vertical"}>
+      {#each CATEGORIES as c (c.id)}
+        {@const selected = c.id === current.id}
+        <button
+          type="button"
+          class="nav-item"
+          class:selected
+          role="tab"
+          id="settings-category-{c.id}"
+          aria-selected={selected}
+          aria-controls="settings-pane"
+          tabindex={selected ? 0 : -1}
+          data-category={c.id}
+          onclick={(e) => {
+            selectCategory(c.id);
+            // WebKit doesn't focus buttons on click.
+            e.currentTarget.focus();
+          }}
+        >
+          {c.label}
+        </button>
       {/each}
-    </section>
+    </div>
   </div>
+
+  <!-- Keyed: each category starts scrolled to its top. -->
+  {#key current.id}
+    <div class="pane" id="settings-pane" role="tabpanel" aria-labelledby="settings-category-{current.id}" tabindex="-1">
+      <div class="pane-column">
+        <Section />
+      </div>
+    </div>
+  {/key}
+
+  <button type="button" class="icon-btn close" onclick={closeSettings} title="Close (Esc)" aria-label="Close Settings">
+    <CloseIcon size={12} />
+  </button>
 </div>
 
 <style>
-  .page {
+  .settings-page {
     position: absolute;
     inset: 0;
     z-index: 50;
     display: flex;
-    flex-direction: column;
     background: var(--term-bg);
     color: var(--text-primary);
-    font-family:
-      -apple-system,
-      BlinkMacSystemFont,
-      "SF Pro Text",
-      sans-serif;
+    font-family: var(--font-ui);
     outline: none;
     animation: fade var(--duration-fast) var(--ease-standard);
   }
-  .content {
-    flex: 1 1 auto;
+
+  /* The navigation: a column in the sidebar's looks. */
+  .nav-column {
+    flex: none;
+    width: 176px;
+    overflow-x: hidden;
     overflow-y: auto;
-    padding: 20px 32px 40px;
-  }
-  /* :global so the sections that are their own components (Remote, Hosts) get the column too. */
-  .content > :global(*) {
-    max-width: 560px;
-    margin-left: auto;
-    margin-right: auto;
-  }
-  .content::-webkit-scrollbar {
-    width: 8px;
-  }
-  .content::-webkit-scrollbar-thumb {
-    background: var(--scrollbar-thumb);
-    border-radius: 4px;
-  }
-  .page-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 18px;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--sidebar-border);
   }
   h1 {
     margin: 0;
-    font-size: 20px;
+    padding: 16px 16px 10px;
+    font-size: calc(16px * var(--ui-font-scale));
     font-weight: 600;
   }
-  .content > :global(section + section) {
-    margin-top: 32px;
-  }
-  .section-header {
+  .nav {
     display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    gap: 12px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid var(--sidebar-divider);
+    flex-direction: column;
+    gap: 1px;
+    padding: 0 6px 12px;
   }
-  h2 {
-    margin: 0 0 3px;
-    font-size: 14px;
-    font-weight: 600;
-  }
-  .hint {
-    margin: 0;
-    font-size: 12px;
-    color: var(--text-secondary);
-  }
-  h3 {
-    margin: 18px 0 4px;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    text-transform: uppercase;
-    color: var(--text-tertiary);
-  }
-  .rows {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-  }
-  .row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    min-height: 34px;
-    padding: 3px 0;
-    border-bottom: 1px solid var(--sidebar-divider);
-  }
-  .label {
-    flex: 1 1 auto;
-    font-size: 13px;
-  }
-  .check {
-    flex: 1 1 auto;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 4px 0;
-    cursor: pointer;
-  }
-  .detail {
-    display: block;
-    margin-top: 1px;
-    font-size: 11.5px;
-    color: var(--text-tertiary);
-  }
-  .check input {
-    flex: none;
-    width: 14px;
-    height: 14px;
-    margin: 0;
-    accent-color: var(--accent);
-    cursor: pointer;
-  }
-  .select {
-    flex: none;
-    font: inherit;
-    font-size: 12px;
-    padding: 2px 6px;
-    border: 1px solid var(--sidebar-border);
-    border-radius: var(--radius-sm);
-    background: var(--sidebar-bg-raised);
-    color: var(--text-primary);
-    cursor: pointer;
-  }
-  .controls {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .binding {
+  .nav-item {
     appearance: none;
-    min-width: 92px;
-    font: inherit;
-    font-size: 12px;
-    letter-spacing: 0.04em;
-    text-align: center;
-    padding: 3px 10px;
-    border: 1px solid var(--sidebar-border);
-    border-radius: var(--radius-sm);
-    background: var(--sidebar-bg-raised);
-    color: var(--text-primary);
-    cursor: pointer;
-    outline: none;
-  }
-  .binding:hover {
-    background: var(--sidebar-bg-active);
-  }
-  .binding:focus-visible {
-    box-shadow: 0 0 0 2px var(--focus-ring);
-  }
-  .binding.custom {
-    border-color: var(--accent-dim);
-  }
-  .binding.unassigned {
-    color: var(--text-tertiary);
-    letter-spacing: normal;
-  }
-  .binding.recording {
-    border-color: var(--accent);
-    background: var(--accent-dim);
-    color: var(--accent-strong);
-    letter-spacing: normal;
-  }
-  .note {
-    flex-basis: 100%;
-    text-align: right;
-    font-size: 11.5px;
-    color: var(--text-secondary);
-    padding: 2px 0 3px;
-  }
-  .note.error {
-    color: var(--danger);
-  }
-  .icon-btn {
-    appearance: none;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 26px;
-    height: 26px;
-    padding: 0;
+    flex: none;
+    min-height: var(--row-height);
+    padding: 4px 10px;
     border: none;
     border-radius: var(--radius-sm);
     background: transparent;
-    color: var(--text-tertiary);
-    cursor: pointer;
-  }
-  .icon-btn.small {
-    width: 20px;
-    height: 20px;
-  }
-  .icon-btn:hover {
-    background: var(--sidebar-bg-raised);
-    color: var(--text-primary);
-  }
-  .text-btn {
-    appearance: none;
-    border: 1px solid var(--sidebar-border);
-    background: var(--sidebar-bg-raised);
     color: var(--text-secondary);
     font: inherit;
-    font-size: 12px;
-    padding: 4px 10px;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    white-space: nowrap;
+    font-size: calc(12.5px * var(--ui-font-scale));
+    text-align: left;
+    cursor: default;
+    user-select: none;
+    outline: none;
   }
-  .text-btn.small {
-    font-size: 11px;
-    padding: 2px 7px;
-    border-color: transparent;
-    background: transparent;
-    color: var(--text-tertiary);
+  .nav-item:hover {
+    background: var(--sidebar-bg-raised);
   }
-  .text-btn:hover:not(:disabled) {
+  .nav-item.selected {
     background: var(--sidebar-bg-active);
     color: var(--text-primary);
   }
-  .text-btn:disabled {
-    opacity: 0.45;
-    cursor: default;
+  .nav-item:focus-visible {
+    box-shadow: inset 0 0 0 1.5px var(--focus-ring);
   }
+
+  /* The pane: the selected category's section, in a column of a width that reads well. Its side
+     padding keeps the column clear of the close button at any width. */
+  .pane {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 16px 40px 40px;
+    outline: none;
+  }
+  /* A container (settings-pane), for a section to ask how wide it is. */
+  .pane-column {
+    max-width: 600px;
+    margin: 0 auto;
+    container: settings-pane / inline-size;
+  }
+  .pane::-webkit-scrollbar,
+  .nav-column::-webkit-scrollbar {
+    width: 8px;
+  }
+  .pane::-webkit-scrollbar-thumb,
+  .nav-column::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 4px;
+  }
+  .close {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+  }
+
+  /* Narrow: the navigation is a row across the top, wrapping when it must; the close button
+     sits beside the title, over the navigation. */
+  .compact {
+    flex-direction: column;
+  }
+  .compact .nav-column {
+    width: auto;
+    overflow: visible;
+    border-right: none;
+    border-bottom: 1px solid var(--sidebar-border);
+  }
+  .compact h1 {
+    padding: 14px 48px 8px 16px;
+  }
+  .compact .nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 2px;
+    padding: 0 10px 8px;
+  }
+  .compact .pane {
+    padding: 16px 16px 32px;
+  }
+
   @keyframes fade {
     from {
       opacity: 0;

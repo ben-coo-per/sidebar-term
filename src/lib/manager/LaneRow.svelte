@@ -141,7 +141,7 @@
     align-items: baseline;
     gap: 6px;
     min-width: 0;
-    font-size: 12.5px;
+    font-size: calc(12.5px * var(--ui-font-scale));
   }
   .title {
     flex: 0 1 auto;
@@ -178,7 +178,7 @@
   }
   .chip {
     flex: none;
-    font-size: 10px;
+    font-size: calc(10px * var(--ui-font-scale));
     line-height: 14px;
     padding: 0 5px;
     border-radius: 4px;
@@ -223,7 +223,7 @@
   }
   .status {
     text-align: right;
-    font-size: 11px;
+    font-size: calc(11px * var(--ui-font-scale));
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
     color: var(--text-tertiary);
@@ -245,7 +245,7 @@
     border: none;
     background: none;
     font: inherit;
-    font-size: 11.5px;
+    font-size: calc(11.5px * var(--ui-font-scale));
     color: var(--accent-strong);
     white-space: nowrap;
     cursor: default;
@@ -266,7 +266,7 @@
   }
   .hotkey {
     font-family: inherit;
-    font-size: 10.5px;
+    font-size: calc(10.5px * var(--ui-font-scale));
     line-height: 16px;
     padding: 0 5px;
     border: 1px solid var(--sidebar-border);

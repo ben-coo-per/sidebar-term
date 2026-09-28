@@ -1,12 +1,14 @@
-/* Design tokens for sidebar-term. v1 is dark-only, tuned to sit next to the fixed
-   terminal background (#0f1115) without fighting it. System font, compact rows,
-   restrained motion. See docs/architecture.md "Design". */
+/* Design tokens for sidebar-term. The defaults are dark, tuned to sit next to the terminal
+   background (#0f1115) without fighting it. System font, compact rows, restrained motion.
+   See docs/architecture.md "Design". The colours and fonts are the user's to change on the
+   Settings page (Appearance, src/lib/appearance/model.ts), which sets them on the root element
+   over these. */
 
 :root {
   color-scheme: dark;
 
   /* Surfaces */
-  --term-bg: #0f1115; /* fixed: the terminal's own background */
+  --term-bg: #0f1115; /* the terminal's own background (src/lib/terminal/theme.ts) */
   --sidebar-bg: #15171c; /* slightly lifted off the terminal */
   --sidebar-bg-raised: #1b1e25; /* rows on hover, menus, dialogs */
   --sidebar-bg-active: #23262f; /* active tab row, pressed states */
@@ -59,9 +61,14 @@
   --focus-ring: #5b93f5;
   --scrollbar-thumb: #33363f;
 
+  /* Fonts */
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  --font-mono: "SF Mono", ui-monospace, Menlo, monospace; /* paths, commands, codes */
+  --ui-font-scale: 1; /* every font size of the app is its default times this */
+
   /* Metrics */
-  --row-height: 28px;
-  --group-header-height: 26px;
+  --row-height: calc(28px * var(--ui-font-scale));
+  --group-header-height: calc(26px * var(--ui-font-scale));
   --radius-sm: 5px;
   --radius-md: 7px;
   --sidebar-min-width: 180px;

@@ -1,0 +1,214 @@
+/* What the Settings page's sections share: the section header, the rows and the controls in
+   them. Imported by SettingsPage.svelte and held to its root class. :where() keeps that class out
+   of the specificity, so a section's scoped rule for the same selector wins over the one here.
+   Colours, fonts and the font scale come from src/lib/theme.css. */
+
+.settings-page {
+  --control-height: calc(24px * var(--ui-font-scale));
+  --control-height-small: calc(20px * var(--ui-font-scale));
+}
+
+/* The section's heading: its name and one line on what it holds, and a button at the right if any. */
+:where(.settings-page) .section-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--sidebar-divider);
+}
+:where(.settings-page) .section-header > div {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+:where(.settings-page) h2 {
+  margin: 0 0 4px;
+  font-size: calc(16px * var(--ui-font-scale));
+  font-weight: 600;
+}
+:where(.settings-page) .hint {
+  margin: 0;
+  font-size: calc(12px * var(--ui-font-scale));
+  color: var(--text-secondary);
+}
+/* A heading over one list of rows, in a section that has several. */
+:where(.settings-page) h3 {
+  margin: 18px 0 4px;
+  font-size: calc(11px * var(--ui-font-scale));
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+/* Rows: a label (with its detail under it) and the control at the right. */
+:where(.settings-page) .rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+:where(.settings-page) .row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  min-height: 34px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--sidebar-divider);
+}
+/* A child of .row or .check. The small basis keeps a long detail from pushing the control onto
+   its own line; a row too narrow for both still wraps. */
+:where(.settings-page) .label {
+  flex: 1 1 140px;
+  min-width: 0;
+  font-size: calc(13px * var(--ui-font-scale));
+}
+:where(.settings-page) .detail {
+  display: block;
+  margin-top: 1px;
+  font-size: calc(11.5px * var(--ui-font-scale));
+  color: var(--text-tertiary);
+  word-break: break-word;
+}
+:where(.settings-page) .detail.error {
+  color: var(--danger);
+}
+:where(.settings-page) .detail.warn {
+  color: var(--status-needs-input);
+}
+/* A whole row as the label of its checkbox or select. */
+:where(.settings-page) .check {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0;
+  cursor: pointer;
+}
+/* Several controls at the right of one row. */
+:where(.settings-page) .controls {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* At the right still, when the row is too narrow and they wrap under the label. */
+:where(.settings-page) .row > :is(.controls, .text-btn) {
+  margin-left: auto;
+}
+:where(.settings-page) code {
+  font-family: var(--font-mono);
+  font-size: calc(11px * var(--ui-font-scale));
+}
+
+/* Controls */
+:where(.settings-page) input[type="checkbox"] {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+:where(.settings-page) .select {
+  flex: none;
+  height: var(--control-height);
+  padding: 0 6px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-sm);
+  background: var(--sidebar-bg-raised);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: calc(12px * var(--ui-font-scale));
+  cursor: pointer;
+}
+:where(.settings-page) .field {
+  min-width: 0;
+  height: var(--control-height);
+  padding: 0 8px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-sm);
+  background: var(--sidebar-bg);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: calc(12px * var(--ui-font-scale));
+  outline: none;
+}
+:where(.settings-page) .field:focus {
+  border-color: var(--accent);
+}
+:where(.settings-page) .field::placeholder {
+  color: var(--text-tertiary);
+  opacity: 0.7;
+  letter-spacing: normal;
+  text-transform: none;
+}
+:where(.settings-page) .text-btn {
+  appearance: none;
+  flex: none;
+  height: var(--control-height);
+  padding: 0 10px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-sm);
+  background: var(--sidebar-bg-raised);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: calc(12px * var(--ui-font-scale));
+  white-space: nowrap;
+  cursor: pointer;
+}
+/* The quiet one: beside a row's main control, or one of many in a list. */
+:where(.settings-page) .text-btn.small {
+  height: var(--control-height-small);
+  padding: 0 7px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: calc(11px * var(--ui-font-scale));
+}
+:where(.settings-page) .text-btn:hover:not(:disabled) {
+  background: var(--sidebar-bg-active);
+  color: var(--text-primary);
+}
+:where(.settings-page) .text-btn.danger:hover:not(:disabled) {
+  color: var(--danger);
+}
+:where(.settings-page) .text-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+:where(.settings-page) .icon-btn {
+  appearance: none;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+:where(.settings-page) .icon-btn.small {
+  width: var(--control-height-small);
+  height: var(--control-height-small);
+}
+:where(.settings-page) .icon-btn:hover {
+  background: var(--sidebar-bg-raised);
+  color: var(--text-primary);
+}
+
+/* Focus, when it came from the keyboard. A .field shows it on its border instead. */
+:where(.settings-page) :is(button, select):focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+:where(.settings-page) input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}

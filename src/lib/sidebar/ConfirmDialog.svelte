@@ -78,13 +78,13 @@
   }
   .message {
     margin: 0 0 4px;
-    font-size: 13px;
+    font-size: calc(13px * var(--ui-font-scale));
     font-weight: 600;
     color: var(--text-primary);
   }
   .detail {
     margin: 0 0 14px;
-    font-size: 12px;
+    font-size: calc(12px * var(--ui-font-scale));
     color: var(--text-secondary);
     line-height: 1.4;
     /* Handoff's explanation is one line per fact. */
@@ -108,7 +108,7 @@
     background: var(--sidebar-bg-active);
     color: var(--text-primary);
     font: inherit;
-    font-size: 12px;
+    font-size: calc(12px * var(--ui-font-scale));
     padding: 6px 12px;
     border-radius: var(--radius-sm);
     cursor: pointer;

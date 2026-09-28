@@ -32,7 +32,7 @@
   {#if usageSettings.agents.length === 0}
     <p class="empty">
       No agents chosen.
-      <button type="button" class="link" onclick={openSettings}>Choose in Settings</button>
+      <button type="button" class="link" onclick={() => openSettings("usage")}>Choose in Settings</button>
     </p>
   {:else if !snapshot}
     <p class="empty">Reading…</p>
@@ -74,7 +74,7 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
-    font-size: 11px;
+    font-size: calc(11px * var(--ui-font-scale));
     font-variant-numeric: tabular-nums;
   }
   .empty {
@@ -132,7 +132,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 10px;
+    font-size: calc(10px * var(--ui-font-scale));
     color: var(--text-tertiary);
   }
   /* A rate limit is waited out quietly: the same muted line as a real failure, not an alarm. */
@@ -143,11 +143,11 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 10px;
+    font-size: calc(10px * var(--ui-font-scale));
     color: var(--text-tertiary);
   }
   .label {
-    font-size: 10px;
+    font-size: calc(10px * var(--ui-font-scale));
     color: var(--text-tertiary);
   }
   .track {

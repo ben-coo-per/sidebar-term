@@ -45,11 +45,7 @@
     padding: 0 10px 0 var(--traffic-lights-width);
     background: var(--sidebar-bg);
     border-bottom: 1px solid var(--sidebar-border);
-    font-family:
-      -apple-system,
-      BlinkMacSystemFont,
-      "SF Pro Text",
-      sans-serif;
+    font-family: var(--font-ui);
     color: var(--text-primary);
     user-select: none;
     -webkit-app-region: drag;
@@ -60,6 +56,6 @@
   }
   /* Readable at a glance from across the bar. */
   .usage :global(.summary) {
-    font-size: 12px;
+    font-size: calc(12px * var(--ui-font-scale));
   }
 </style>

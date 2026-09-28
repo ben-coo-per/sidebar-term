@@ -24,7 +24,7 @@
 <style>
   .count {
     margin-left: 1px;
-    font-size: 10px;
+    font-size: calc(10px * var(--ui-font-scale));
     font-weight: 600;
     font-variant-numeric: tabular-nums;
     color: var(--status-frozen);

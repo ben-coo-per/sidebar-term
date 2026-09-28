@@ -125,11 +125,7 @@
     height: 100%;
     background: var(--sidebar-bg);
     border-right: 1px solid var(--sidebar-border);
-    font-family:
-      -apple-system,
-      BlinkMacSystemFont,
-      "SF Pro Text",
-      sans-serif;
+    font-family: var(--font-ui);
     color: var(--text-primary);
     min-width: 0;
   }
@@ -162,7 +158,7 @@
     border: none;
     color: var(--text-tertiary);
     font: inherit;
-    font-size: 11px;
+    font-size: calc(11px * var(--ui-font-scale));
     padding: 4px 7px;
     border-radius: var(--radius-sm);
     cursor: pointer;
@@ -194,7 +190,7 @@
   }
   .empty-title {
     margin: 0;
-    font-size: 12.5px;
+    font-size: calc(12.5px * var(--ui-font-scale));
     color: var(--text-secondary);
   }
   .new-tab-btn {
@@ -206,7 +202,7 @@
     color: var(--text-on-accent);
     border: none;
     font: inherit;
-    font-size: 12px;
+    font-size: calc(12px * var(--ui-font-scale));
     font-weight: 600;
     padding: 6px 12px;
     border-radius: var(--radius-sm);
@@ -217,7 +213,7 @@
   }
   .empty-hint {
     margin: 0;
-    font-size: 11px;
+    font-size: calc(11px * var(--ui-font-scale));
     color: var(--text-tertiary);
   }
 </style>

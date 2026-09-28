@@ -110,10 +110,12 @@
           </span>
           <span class="detail" class:error={!h.paired}>{h.url} · {stateLine(h)}</span>
         </span>
-        {#if h.paired && h.status === "offline"}
-          <button type="button" class="text-btn small" onclick={() => reconnectHost(h.id)}>Retry</button>
-        {/if}
-        <button type="button" class="text-btn small danger" onclick={() => removeHost(h.id)}>Remove</button>
+        <span class="controls">
+          {#if h.paired && h.status === "offline"}
+            <button type="button" class="text-btn small" onclick={() => reconnectHost(h.id)}>Retry</button>
+          {/if}
+          <button type="button" class="text-btn small danger" onclick={() => removeHost(h.id)}>Remove</button>
+        </span>
         <!-- Handoff's repo-to-path map: where this Host keeps its checkouts. -->
         <div class="map">
           <label class="map-row">
@@ -236,44 +238,6 @@
 </section>
 
 <style>
-  /* Matches SettingsPage.svelte's rows; scoped there, so repeated here. */
-  .section-header {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    gap: 12px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid var(--sidebar-divider);
-  }
-  h2 {
-    margin: 0 0 3px;
-    font-size: 14px;
-    font-weight: 600;
-  }
-  .hint {
-    margin: 0;
-    font-size: 12px;
-    color: var(--text-secondary);
-  }
-  .rows {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-  }
-  .row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px;
-    min-height: 34px;
-    padding: 5px 0;
-    border-bottom: 1px solid var(--sidebar-divider);
-  }
-  .label {
-    flex: 1 1 auto;
-    min-width: 0;
-    font-size: 13px;
-  }
   .name {
     display: inline-flex;
     align-items: center;
@@ -295,58 +259,30 @@
   .dot.unpaired {
     background: var(--danger);
   }
-  .detail {
-    display: block;
-    margin-top: 1px;
-    font-size: 11.5px;
-    color: var(--text-tertiary);
-    word-break: break-word;
-  }
-  .detail.error {
-    color: var(--danger);
-  }
-  code {
-    font-family: "SF Mono", ui-monospace, Menlo, monospace;
-    font-size: 11px;
-  }
   .add {
     flex: 1 1 auto;
     display: flex;
     flex-direction: column;
     gap: 8px;
+    min-width: 0;
     padding: 4px 0;
+  }
+  /* In a column: the shared basis would be its height. */
+  .add .label {
+    flex: none;
   }
   .fields {
     display: flex;
+    flex-wrap: wrap;
     gap: 6px;
   }
-  .field {
-    font: inherit;
-    font-size: 12px;
-    padding: 4px 8px;
-    border: 1px solid var(--sidebar-border);
-    border-radius: var(--radius-sm);
-    background: var(--sidebar-bg);
-    color: var(--text-primary);
-    outline: none;
-    min-width: 0;
-  }
-  .field:focus {
-    border-color: var(--accent);
-  }
-  .field::placeholder {
-    color: var(--text-tertiary);
-    opacity: 0.7;
-    letter-spacing: normal;
-    text-transform: none;
-  }
   .field.url {
-    flex: 1 1 auto;
+    flex: 1 1 180px;
   }
   .field.code {
     flex: none;
-    width: 108px;
-    font-family: "SF Mono", ui-monospace, Menlo, monospace;
+    width: calc(108px * var(--ui-font-scale));
+    font-family: var(--font-mono);
     letter-spacing: 0.08em;
     text-transform: uppercase;
   }
@@ -355,7 +291,8 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-    padding: 4px 0 4px 14px;
+    min-width: 0;
+    padding: 8px 0 4px 14px;
   }
   .map-hint {
     margin: -2px 0 2px 116px;
@@ -365,12 +302,13 @@
   }
   .map-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 6px;
   }
   .map-label {
     flex: 0 0 110px;
-    font-size: 12px;
+    font-size: calc(12px * var(--ui-font-scale));
     color: var(--text-secondary);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -379,43 +317,20 @@
   .map-label.mono,
   .field.path,
   .field.repo {
-    font-family: "SF Mono", ui-monospace, Menlo, monospace;
-    font-size: 11.5px;
+    font-family: var(--font-mono);
+    font-size: calc(11.5px * var(--ui-font-scale));
   }
   .field.path {
-    flex: 1 1 auto;
+    flex: 1 1 140px;
   }
   .field.repo {
     flex: 0 0 110px;
   }
-  .text-btn {
-    appearance: none;
-    border: 1px solid var(--sidebar-border);
-    background: var(--sidebar-bg-raised);
-    color: var(--text-secondary);
-    font: inherit;
-    font-size: 12px;
-    padding: 4px 10px;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    white-space: nowrap;
-  }
-  .text-btn.small {
-    font-size: 11px;
-    padding: 2px 7px;
-    border-color: transparent;
-    background: transparent;
-    color: var(--text-tertiary);
-  }
-  .text-btn:hover:not(:disabled) {
-    background: var(--sidebar-bg-active);
-    color: var(--text-primary);
-  }
-  .text-btn.danger:hover {
-    color: var(--danger);
-  }
-  .text-btn:disabled {
-    opacity: 0.45;
-    cursor: default;
+  /* A pane too narrow for the label column: what hangs under the fields starts at the left. */
+  @container settings-pane (max-width: 380px) {
+    .map-hint,
+    .add-override {
+      margin-left: 0;
+    }
   }
 </style>

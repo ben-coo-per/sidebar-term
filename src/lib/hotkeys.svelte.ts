@@ -1,6 +1,6 @@
 // The live Hotkey bindings: defaults from ./hotkeys.ts with the user's overrides applied,
-// persisted (overrides only) as the `hotkeys` section of the settings (./settings/store.ts). Edited on the
-// Settings page (src/lib/settings/SettingsPage.svelte); dispatched by ./shortcuts.ts.
+// persisted (overrides only) as the `hotkeys` section of the settings (./settings/store.ts). Edited in
+// the Settings page's Hotkeys section (./settings/HotkeysSection.svelte); dispatched by ./shortcuts.ts.
 
 import { loadSection, saveSection } from "./settings/store";
 import {

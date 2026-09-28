@@ -353,7 +353,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 12.5px;
+    font-size: calc(12.5px * var(--ui-font-scale));
   }
   /* An agent's few words on what it is at: after its project, quieter, never bold. */
   .description {
@@ -368,7 +368,7 @@
     border-radius: 4px;
     color: var(--text-primary);
     font: inherit;
-    font-size: 12.5px;
+    font-size: calc(12.5px * var(--ui-font-scale));
     padding: 1px 4px;
     outline: none;
   }
@@ -393,7 +393,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 10px;
+    font-size: calc(10px * var(--ui-font-scale));
     line-height: 14px;
     padding: 0 5px;
     border-radius: 4px;
@@ -430,7 +430,7 @@
   }
   .stats {
     flex: none;
-    font-size: 10.5px;
+    font-size: calc(10.5px * var(--ui-font-scale));
     font-variant-numeric: tabular-nums;
     color: var(--text-tertiary);
     white-space: nowrap;
