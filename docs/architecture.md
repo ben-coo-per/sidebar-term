@@ -92,8 +92,10 @@ answers it (see "Host daemon" for the daemon's answer).
   runtime handle, bundled as `Host`.
 - `journal.rs` — the Journal (see "Journal", ADR 0004): `Journal` takes each Session's facts
   from the monitor after the layout (`observe`) and hears of every Session's exit, writes a span
-  to `journal/<year>-<month>.jsonl` when an Agent status or its Context ends, keeps the spans
-  still open in `journal/open.json` for a launch after a crash, and reads spans back (`read`).
+  to `journal/<year>-<month>.jsonl` when an Agent status or its Context ends, and a row of
+  counts when a hooked agent's turn ends (`step`, from `Agents::watch_steps`), keeps what is
+  still open in `journal/open.json` for a launch after a crash, and reads both back (`read`,
+  `turns`).
 - `layout/` — the layout, owned by the Host (ADR 0002). `mod.rs`: `Layout`, the owner: loads
   `layout.json`, spawns each Tab's Session at launch (Tab id as Resume key) and on `tab_new`,
   kills it on `tab_close`, drops the Tab when its Session exits, emits `layout` on every change
@@ -506,27 +508,44 @@ exit, its agent leaving and the Host stopping (`finish`, before the Sessions are
 their dying is not written as the agent's doing) end it too. A Session with no agent, or with
 no Tab, is not kept. Agent time per repo, branch, agent or hour is a sum over spans.
 
+**Turns.** A hooked agent's hooks also say what it does. `agents/hooks.rs` reads each into a
+step (`Step`: the prompt, a tool used, a question asked, an answer, the stop), `Agents` tells
+whoever watches (`watch_steps`), and the Journal counts them: from the user's prompt to the
+agent's stop is a turn, and a turn is one row. It holds the prompt's length (`len`), tools used
+by kind (`tools`: `edit`, `read`, `web`, `run`, `agent`, `mcp`, `other`), failed uses (`fail`),
+lines added and removed and files changed (`add`, `del`, `files`), commands by the program they
+ran (`cmds`, a dozen programs at most), questions asked, permissions included (`asked`), and
+how long they waited in all, each from the question to the agent's next step (`waited`, ms).
+What is zero is not written. No words are kept: not the prompt (slice 3 of #63), not a path,
+not a command's arguments.
+
+A turn with no stop ends at the next prompt (Esc stops an agent without its Stop hook), at its
+Session's exit, or, if its agent was seen to leave and said nothing after, when it left. Steps
+outside a turn are not counted. It is written under the Context its Session is in when it ends.
+A screen-only agent has no turns.
+
 **Files.** `journal/<year>-<month>.jsonl`, appended, one JSON object per line:
 
 ```
 {"k":"ctx","id":1,"tab":"t3","agent":"claude","repo":"/r/.git","name":"r","wt":"fix","br":"fix"}
 {"k":"span","c":1,"s":"running","a":1790553601000,"b":1790553643000}
+{"k":"turn","c":1,"a":1790553601000,"b":1790553643000,"len":38,"tools":{"edit":2,"run":1},"add":9,"del":2,"files":1,"cmds":{"cargo":1}}
 ```
 
-A `ctx` row gives a Context a number and the spans after it name that number, so a repo's path
+A `ctx` row gives a Context a number and the rows after it name that number, so a repo's path
 is written once per file and run, not on every span (a span is under 72 bytes). A number holds
 until a later `ctx` row gives it to something else; each run starts again at 1, so a file is read
 from the top. Months are UTC and only decide the file: a span over the end of a month is written
 as two, so every span lies within its file's month, and a reader opens the months its range
-touches. `a` and `b` are epoch ms. A line that does not parse is skipped (a crash can cut the
+touches. A turn is written whole, in the month it began in. `a` and `b` are epoch ms. A line that does not parse is skipped (a crash can cut the
 last one short; the next write starts on a new line).
 
-**A crash.** Spans still open would go with the process, so every 30 s they are written to
-`journal/open.json` with the time (`alive_at`); the next launch ends them at that time, writes
-them as spans and removes the file. A crash costs each open span at most 30 s.
+**A crash.** Spans and turns still open would go with the process, so every 30 s they are
+written to `journal/open.json` with the time (`alive_at`); the next launch ends them at that
+time, writes them as rows and removes the file. A crash costs each at most 30 s.
 
 **Reading.** `Journal::read(from, to)` gives every span that overlaps the range, cut to it, with
-the open ones ending now. No client reads it yet: Rewind, the IPC command and the Host protocol
+the open ones ending now; `Journal::turns(from, to)` every turn that began in it, whole. No client reads it yet: Rewind, the IPC command and the Host protocol
 message are later slices of #63.
 
 ## Host protocol

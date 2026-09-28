@@ -491,6 +491,8 @@ pub fn run() {
             let journal = Journal::open(journal_dir);
             let for_exit = journal.clone();
             sessions.on_exit(Arc::new(move |id| for_exit.end(id)));
+            let for_steps = journal.clone();
+            agents.watch_steps(Box::new(move |id, step, at| for_steps.step(id, step, at)));
             journal::spawn(journal.clone());
             app.manage(journal.clone());
             let frozen_file = store::path(&*host.paths, store::FROZEN)

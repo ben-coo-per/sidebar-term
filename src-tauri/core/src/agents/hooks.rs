@@ -5,13 +5,15 @@
 //! - `PermissionRequest`: may it use a tool? Held open until answered ([`permission`]).
 //! - `PreToolUse` for `AskUserQuestion`: a question with options, held open the same way
 //!   ([`question`]). Claude Code also sends a `PermissionRequest` for it, which is let through.
-//! - `UserPromptSubmit`, `PostToolUse`, `Stop`: lines of Manager's feed ([`event`]).
+//! - `UserPromptSubmit`, `PostToolUse`, `Stop`: lines of Manager's feed ([`event`]), and steps
+//!   of the agent's turn for the Journal ([`step`]).
 //!
 //! Payloads carry `tool_name`, `tool_input`, `tool_response`, `prompt`, `cwd` and
 //! `permission_suggestions` (Claude Code's hooks reference). A reply is the JSON a command hook
 //! would print; an empty reply leaves Claude Code to ask in its Terminal as usual.
 
 use crate::model::{AgentEventKind, LineTone, PendingKind, PendingLine};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 /// The tool whose `PreToolUse` carries a question with options.
@@ -253,17 +255,133 @@ pub fn event(name: &str, payload: &Value) -> Option<(AgentEventKind, String)> {
     }
 }
 
+/// Whether a `PostToolUse` says its tool failed or was interrupted.
+fn failed(payload: &Value) -> bool {
+    payload.get("tool_response").is_some_and(|r| {
+        r.get("is_error").and_then(Value::as_bool).unwrap_or(false)
+            || r.get("interrupted").and_then(Value::as_bool).unwrap_or(false)
+    })
+}
+
+/// What a hook says of the agent's turn, for the Journal (`journal.rs`): counts, not words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// The user gave it a prompt of `len` characters: a turn begins.
+    Prompt { len: u32 },
+    /// It used a tool.
+    Tool(ToolUse),
+    /// It asked the user something, and waits.
+    Asked,
+    /// It has its answer.
+    Answered,
+    /// It stopped, back at its prompt, or ended: the turn is over.
+    Stop,
+}
+
+/// The kinds of tool a turn counts its uses by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolKind {
+    /// It changed a file.
+    Edit,
+    /// It read a file or searched the checkout.
+    Read,
+    /// It fetched a page or searched the web.
+    Web,
+    /// It ran a command.
+    Run,
+    /// It ran a subagent.
+    Agent,
+    /// A tool of an MCP server.
+    Mcp,
+    Other,
+}
+
+/// One use of a tool, as a turn counts it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolUse {
+    pub kind: ToolKind,
+    pub failed: bool,
+    /// Lines an edit added and removed.
+    pub added: u32,
+    pub removed: u32,
+    /// The file an edit changed.
+    pub file: Option<String>,
+    /// The program a command ran ([`program`]).
+    pub program: Option<String>,
+}
+
+/// Longest program name a turn counts; anything longer is not a program someone typed.
+const PROGRAM_MAX: usize = 24;
+
+/// The program a command line runs first, by name: `cargo` of `RUSTFLAGS=-g /usr/bin/cargo test`.
+/// `None` when its first word does not read as one (a subshell, a quoted path).
+pub fn program(command: &str) -> Option<String> {
+    let is_assignment = |w: &str| {
+        w.split_once('=').is_some_and(|(name, _)| {
+            !name.is_empty()
+                && !name.starts_with(|c: char| c.is_ascii_digit())
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+    };
+    let word = command.split_whitespace().find(|w| !is_assignment(w))?;
+    let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+');
+    if !word.chars().all(|c| plain(c) || c == '/') {
+        return None;
+    }
+    let name = word.rsplit('/').next()?;
+    (!name.is_empty() && name.len() <= PROGRAM_MAX).then(|| name.to_owned())
+}
+
+/// The step of a turn that hook `name` reports; `None` for a hook that is none.
+pub fn step(name: &str, payload: &Value) -> Option<Step> {
+    match name {
+        "UserPromptSubmit" => {
+            let len = str_of(payload, "prompt").map_or(0, |p| p.chars().count());
+            Some(Step::Prompt { len: len as u32 })
+        }
+        "PostToolUse" if str_of(payload, "tool_name") == Some(ASK_TOOL) => Some(Step::Answered),
+        "PostToolUse" => Some(Step::Tool(tool_use(payload))),
+        "Stop" | "SessionEnd" => Some(Step::Stop),
+        _ => None,
+    }
+}
+
+fn tool_use(payload: &Value) -> ToolUse {
+    let tool = str_of(payload, "tool_name").unwrap_or("");
+    let input = payload.get("tool_input").cloned().unwrap_or(Value::Null);
+    let kind = match tool {
+        "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => ToolKind::Edit,
+        "Read" | "Grep" | "Glob" => ToolKind::Read,
+        "WebFetch" | "WebSearch" => ToolKind::Web,
+        "Bash" => ToolKind::Run,
+        "Task" | "Agent" => ToolKind::Agent,
+        t if t.starts_with("mcp__") => ToolKind::Mcp,
+        _ => ToolKind::Other,
+    };
+    let (added, removed) = match tool {
+        "Edit" | "MultiEdit" => edit_counts(&input),
+        "Write" => (str_of(&input, "content").map_or(0, |c| c.lines().count()), 0),
+        _ => (0, 0),
+    };
+    let file = str_of(&input, "file_path").or_else(|| str_of(&input, "notebook_path"));
+    ToolUse {
+        kind,
+        failed: failed(payload),
+        added: added as u32,
+        removed: removed as u32,
+        file: file.filter(|_| kind == ToolKind::Edit).map(str::to_owned),
+        program: str_of(&input, "command").filter(|_| kind == ToolKind::Run).and_then(program),
+    }
+}
+
 fn tool_used(payload: &Value, cwd: Option<&str>) -> (AgentEventKind, String) {
     let tool = str_of(payload, "tool_name").unwrap_or("a tool");
     let input = payload.get("tool_input").cloned().unwrap_or(Value::Null);
     let file = str_of(&input, "file_path")
         .or_else(|| str_of(&input, "notebook_path"))
         .map(|p| shown_path(p, cwd));
-    let response = payload.get("tool_response");
-    let failed = response.is_some_and(|r| {
-        r.get("is_error").and_then(Value::as_bool).unwrap_or(false)
-            || r.get("interrupted").and_then(Value::as_bool).unwrap_or(false)
-    });
+    let failed = failed(payload);
     let (kind, text) = match (tool, &file) {
         ("Edit" | "MultiEdit", Some(file)) => {
             let (a, r) = edit_counts(&input);
@@ -393,5 +511,45 @@ mod tests {
             Some((AgentEventKind::Started, "Started “Show Codex usage windows”".into()))
         );
         assert_eq!(event("SessionStart", &json!({})), None);
+    }
+
+    #[test]
+    fn hooks_read_as_steps_of_a_turn() {
+        assert_eq!(step("UserPromptSubmit", &json!({ "prompt": "Fix the “é”" })), Some(Step::Prompt { len: 11 }));
+        assert_eq!(step("Stop", &json!({})), Some(Step::Stop));
+        assert_eq!(step("SessionEnd", &json!({})), Some(Step::Stop));
+        assert_eq!(step("SessionStart", &json!({})), None);
+        assert_eq!(step("PostToolUse", &json!({ "tool_name": "AskUserQuestion" })), Some(Step::Answered));
+        let used = |tool: &str, input: Value| match step("PostToolUse", &json!({ "tool_name": tool, "tool_input": input })) {
+            Some(Step::Tool(u)) => u,
+            other => panic!("{other:?}"),
+        };
+        let edit = used("Edit", json!({ "file_path": "/r/a.rs", "old_string": "a\nb", "new_string": "a\nb\nc" }));
+        assert_eq!((edit.kind, edit.added, edit.removed, edit.file.as_deref()), (ToolKind::Edit, 3, 2, Some("/r/a.rs")));
+        let write = used("Write", json!({ "file_path": "/r/b.rs", "content": "1\n2" }));
+        assert_eq!((write.kind, write.added, write.removed), (ToolKind::Edit, 2, 0));
+        let read = used("Read", json!({ "file_path": "/r/a.rs" }));
+        assert_eq!((read.kind, read.file), (ToolKind::Read, None), "a file read is not a file changed");
+        let run = used("Bash", json!({ "command": "cargo test -p core" }));
+        assert_eq!((run.kind, run.program.as_deref()), (ToolKind::Run, Some("cargo")));
+        assert_eq!(used("Agent", json!({ "description": "x" })).kind, ToolKind::Agent);
+        assert_eq!(used("WebSearch", json!({ "query": "x" })).kind, ToolKind::Web);
+        assert_eq!(used("mcp__linear__get_issue", json!({})).kind, ToolKind::Mcp);
+        assert_eq!(used("TodoWrite", json!({})).kind, ToolKind::Other);
+        let failed = step("PostToolUse", &json!({ "tool_name": "Bash", "tool_input": { "command": "false" }, "tool_response": { "is_error": true } }));
+        assert!(matches!(failed, Some(Step::Tool(ToolUse { failed: true, .. }))));
+    }
+
+    #[test]
+    fn a_command_is_counted_by_its_program() {
+        assert_eq!(program("cargo test").as_deref(), Some("cargo"));
+        assert_eq!(program("  RUSTFLAGS=-g CI=1 /usr/bin/cargo test").as_deref(), Some("cargo"));
+        assert_eq!(program("./scripts/demo/run.sh --fast").as_deref(), Some("run.sh"));
+        assert_eq!(program("cd /r && make").as_deref(), Some("cd"), "the first one only");
+        assert_eq!(program("(cd /r; make)"), None);
+        assert_eq!(program("\"/my tools/x\" y"), None);
+        assert_eq!(program("FOO=1"), None);
+        assert_eq!(program(""), None);
+        assert_eq!(program(&"x".repeat(PROGRAM_MAX + 1)), None);
     }
 }

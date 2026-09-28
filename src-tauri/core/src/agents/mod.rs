@@ -12,6 +12,10 @@
 //!   given; status changes of a screen-only agent), the last [`FEED_MAX`], on the
 //!   `agent-event` event and over the Host protocol.
 //!
+//! - **Steps**: what a hooked agent's hooks say of its turn (a prompt, a tool used, a question
+//!   asked and answered, the stop), to whoever watches them ([`Agents::watch_steps`]: the
+//!   Journal, which keeps a row per turn).
+//!
 //! The monitor calls [`Agents::decorate`] on every Session's facts each tick, before it compares
 //! them with the last ones, so a new question or status change goes out like any other change.
 
@@ -55,6 +59,9 @@ pub fn now_ms() -> u64 {
 /// Told of every agent event (Remote relays them to its clients).
 pub type Watcher = Box<dyn Fn(&AgentEvent) + Send + Sync>;
 
+/// Told of every step of a hooked agent's turn, with its Session and the time (epoch ms).
+pub type StepWatcher = Box<dyn Fn(SessionId, &hooks::Step, u64) + Send + Sync>;
+
 #[derive(Clone)]
 pub struct Agents {
     inner: Arc<Inner>,
@@ -68,6 +75,7 @@ struct Inner {
     hooks: Mutex<Option<(String, install::Installed)>>,
     state: Mutex<State>,
     watchers: Mutex<Vec<Watcher>>,
+    step_watchers: Mutex<Vec<StepWatcher>>,
     next_id: AtomicU64,
 }
 
@@ -110,6 +118,7 @@ impl Agents {
                 hooks: Mutex::new(None),
                 state: Mutex::default(),
                 watchers: Mutex::default(),
+                step_watchers: Mutex::default(),
                 next_id: AtomicU64::new(0),
             }),
         }
@@ -151,6 +160,17 @@ impl Agents {
     /// Told of every agent event from now on.
     pub fn watch(&self, watcher: Watcher) {
         lock(&self.inner.watchers).push(watcher);
+    }
+
+    /// Told of every step of a hooked agent's turn from now on.
+    pub fn watch_steps(&self, watcher: StepWatcher) {
+        lock(&self.inner.step_watchers).push(watcher);
+    }
+
+    fn step(&self, id: SessionId, step: hooks::Step, at: u64) {
+        for w in lock(&self.inner.step_watchers).iter() {
+            w(id, &step, at);
+        }
     }
 
     /// The last [`FEED_MAX`] agent events, oldest first.
@@ -245,12 +265,14 @@ impl Agents {
             }
             (label, id)
         };
+        let now = now_ms();
         self.record(AgentEvent {
-            at: now_ms(),
+            at: now,
             session_id: session,
             kind: AgentEventKind::Answered,
             text: format!("You answered “{label}”"),
         });
+        self.step(session, hooks::Step::Answered, now);
         Ok(())
     }
 
@@ -299,8 +321,12 @@ impl Agents {
             "PermissionRequest" => hooks::permission(&payload),
             "PreToolUse" => hooks::question(&payload),
             _ => {
+                let now = now_ms();
                 if let Some((kind, text)) = hooks::event(event, &payload) {
-                    self.record(AgentEvent { at: now_ms(), session_id: id, kind, text });
+                    self.record(AgentEvent { at: now, session_id: id, kind, text });
+                }
+                if let Some(step) = hooks::step(event, &payload) {
+                    self.step(id, step, now);
                 }
                 return None;
             }
@@ -333,6 +359,7 @@ impl Agents {
             });
         }
         self.record(AgentEvent { at: now, session_id: id, kind: AgentEventKind::Asked, text: ask.event });
+        self.step(id, hooks::Step::Asked, now);
         // Should the hook's request go away first (Claude Code gave up on it), the question goes too.
         let _clear = ClearOnDrop { agents: self.clone(), id, pending_id };
         rx.await.ok().flatten()
@@ -407,6 +434,12 @@ mod tests {
     #[tokio::test]
     async fn a_question_waits_for_its_answer() {
         let (a, rec) = agents();
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let seen = steps.clone();
+        a.watch_steps(Box::new(move |id, step, _| {
+            assert_eq!(id, 3);
+            lock(&seen).push(step.clone());
+        }));
         assert_eq!(a.hook(3, "SessionStart", json!({})).await, None);
         let payload = json!({ "tool_name": "Bash", "tool_input": { "command": "ls" } });
         let waiting = tokio::spawn({
@@ -433,6 +466,7 @@ mod tests {
         assert!(a.answer(3, pending.id, 0).is_err(), "answered once only");
         let texts: Vec<String> = rec.named(EVENT_AGENT_EVENT).iter().map(|e| e["text"].as_str().unwrap().to_owned()).collect();
         assert_eq!(texts, ["Asked to run ls", "You answered “Yes”"]);
+        assert_eq!(*lock(&steps), [hooks::Step::Asked, hooks::Step::Answered], "SessionStart is no step of a turn");
         let mut info = claude(3, AgentStatus::Running);
         a.decorate_at(&mut info, 6);
         assert_eq!(info.pending, None);
