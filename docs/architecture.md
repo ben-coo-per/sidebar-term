@@ -250,7 +250,7 @@ answers it (see "Host daemon" for the daemon's answer).
   Cmd-Shift-` next / previous Tab within the active Tab's Group (wrapping), Cmd-Shift-[ / ] previous
   / next Tab across all Groups, Cmd-Opt-Up/Down move Tab, Cmd-Shift-U mark the active Tab unread,
   Cmd-Shift-T / Cmd-Shift-H New Tab on / Move Tab to the first online Host ("Handoff"),
-  Cmd-Shift-M Tabs / Manager ("Manager"), Cmd-B toggle sidebar, Cmd-, Settings
+  Cmd-0 Tabs / Manager ("Manager"), Cmd-B toggle sidebar, Cmd-, Settings
   (also the app menu's "Settings…"; the sidebar has no Settings button).
   These are defaults: every one is a Hotkey the user can rebind on the Settings page
   (`src/lib/hotkeys.ts` holds the actions and rules; overrides persist in `settings.json` next to
@@ -796,7 +796,7 @@ conversations (Resume records no entry for them, so nothing is rerun).
 
 The window's second mode, for running several agents at once (the first, Tabs, is the sidebar
 and one Terminal). The Tabs / Manager switch sits in the sidebar's drag region when the sidebar is
-at least 260 px wide (narrower, the Tray needs the room), and in Manager's top bar; `Cmd-Shift-M`
+at least 260 px wide (narrower, the Tray needs the room), and in Manager's top bar; `Cmd-0`
 (Hotkey `view.manager`) toggles. The mode and Manager's zoom are per window, in the `sidebar`
 section of settings. Manager has no list of its own: it reads the same Tabs and Session facts as
 the sidebar, and a Tab it opens opens in Tabs mode.
