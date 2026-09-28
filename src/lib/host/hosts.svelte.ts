@@ -78,7 +78,7 @@ function persist(): void {
 
 /**
  * Tell this Mac's Remote which Hosts there are and where (never the tokens), so a phone paired
- * with this Mac can reach the linked Tabs' Hosts itself, with a pairing of its own (ADR 0004).
+ * with this Mac can reach the linked Tabs' Hosts itself, with a pairing of its own (ADR 0005).
  */
 function publish(): void {
   void remoteHostsSet(hosts.list.map(({ id, url, name }) => ({ id, url, name }))).catch((e) =>

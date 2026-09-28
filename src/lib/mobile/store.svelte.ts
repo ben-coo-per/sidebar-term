@@ -4,7 +4,7 @@
 //
 // The page's own Host (`LOCAL_HOST`: the origin the page was loaded from) gives the Groups, its
 // own Tabs, and its linked Tabs with the Hosts they point at (ADR 0003). The phone reaches each
-// of those Hosts itself, over a connection and a pairing of its own (ADR 0004): it stays in
+// of those Hosts itself, over a connection and a pairing of its own (ADR 0005): it stays in
 // reach while the Mac sleeps, and each Host lists and can remove the phone. What the page's Host
 // last said is kept, so the list is there before it answers, and when it does not.
 //

@@ -603,7 +603,7 @@ attached by path as `drop.rs` does locally; 64 MiB at most. `POST /api/conversat
 Mac app's webview (`tauri://localhost`, and `http://localhost:1420` in dev), since its page
 is another origin than the Host, and for a page served by a machine on the Host's own tailnet
 (`https://<machine>.<tailnet>.ts.net`: the phone's page, loaded from the Mac, pairing with this
-Host too; ADR 0004); what admits a client is still the code, then the token. `GET
+Host too; ADR 0005); what admits a client is still the code, then the token. `GET
 /ws` is the connection.
 
 **Messages** (`src/lib/host/protocol.ts` mirrors `remote/server.rs`). Text frames are JSON
@@ -612,7 +612,7 @@ five seconds, or the Host closes with 4408 (4401 for a token it does not know).
 
 | From the client | Fields | The Host answers |
 |---|---|---|
-| `auth` | `token, links?` | `hello`, or a close. With `links: true` the client is sent this Host's linked Tabs and the Hosts they point at (the phone; ADR 0004) |
+| `auth` | `token, links?` | `hello`, or a close. With `links: true` the client is sent this Host's linked Tabs and the Hosts they point at (the phone; ADR 0005) |
 | `attach` | `sessionId` | `attached {sessionId, cols, rows}`, then a binary replay of the Session's recent output; `exit` for a Session that is gone |
 | `detach` | `sessionId` | - |
 | `input` | `sessionId, data` | `error {message}` if the write failed |
@@ -677,7 +677,7 @@ the page returns to the foreground, pairs each command with its reply, uploads t
 `/api/upload`), its layout, Session facts and agent events, mirrored as the Mac's webview mirrors
 its Hosts'; then the view (Manager or Tabs) and the open Tab.
 
-*Hosts* (ADR 0004). The page's own Host (the origin it was loaded from, `LOCAL_HOST` in the
+*Hosts* (ADR 0005). The page's own Host (the origin it was loaded from, `LOCAL_HOST` in the
 store) is asked for its linked Tabs (`auth {links: true}`) and says which Hosts they point at.
 The phone reaches each of those itself: a token per Host, kept by the Host's URL
 (`localStorage`), got by presenting that Host's pairing code to its `/api/pair` from the page
@@ -848,7 +848,7 @@ this Mac's; the protocol has no freeze), Resume, the Panel's Activity.
 Mac, not the Mac's Hosts, so nothing of theirs is served through the Mac. A
 command naming a linked Tab is refused as if it did not exist, and a `tab_move` index counts the
 Tabs a client without linked Tabs sees. The phone reaches the Dell itself, with a pairing of its
-own (ADR 0004): the webview tells the core which Hosts there are and where (`remote_hosts_set`:
+own (ADR 0005): the webview tells the core which Hosts there are and where (`remote_hosts_set`:
 id, URL and name, never the token, at launch and on every change to the pairings), and Remote
 passes that on as `hello.hosts` and `hosts`.
 

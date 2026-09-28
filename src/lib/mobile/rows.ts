@@ -3,7 +3,7 @@
 // rename, else the automatic Title), the agent and its status, the Badge facts, and the Host a
 // linked Tab's Session runs on. The Groups are those of the Host the page came from; a linked Tab
 // (ADR 0003) takes everything else from the Host it points at, which the phone reaches itself
-// (ADR 0004). Pure.
+// (ADR 0005). Pure.
 
 import { agentLabel, computeAutomaticTitle, type AgentLabel } from "../agentStatus";
 import { LOCAL_HOST, type HostId } from "../host/ids";

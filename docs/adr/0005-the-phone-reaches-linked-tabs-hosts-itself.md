@@ -1,4 +1,4 @@
-# 4. The phone shows linked Tabs, and reaches their Hosts itself
+# 5. The phone shows linked Tabs, and reaches their Hosts itself
 
 Status: **accepted**. Supersedes the last paragraph of 0003 ("The phone paired to the Mac does
 not see linked Tabs at all"); the rest of 0003 stands.

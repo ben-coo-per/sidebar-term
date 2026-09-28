@@ -35,7 +35,7 @@
 //!   waiting on) and `release {sessionId, pendingId}` (let the agent ask it in its Terminal
 //!   instead). From the Host: `hello {host, device, layout, sessions, agentEvents, hosts}`,
 //!   `layout {layout}` on change (the layout without this Host's linked Tabs, which a client
-//!   cannot reach through it, unless it asked for them; ADR 0003 and 0004), `hosts {hosts}`
+//!   cannot reach through it, unless it asked for them; ADR 0003 and 0005), `hosts {hosts}`
 //!   when the Hosts those point at change (to a client that asked for linked Tabs; no command
 //!   reaches one through this Host either way), `session {session}` on each change to a
 //!   Session's facts,
