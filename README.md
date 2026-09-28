@@ -56,7 +56,7 @@ Still to do, in order:
    turn Remote on, pair, and check the page installs from Safari. If `tailscale serve` refuses,
    Settings shows its message; HTTPS certificates must be enabled in the admin console.
 2. Try it with a real Claude Code prompt: answer a permission question from the phone, use the
-   key bar's Esc / Shift-Tab, and see whether the fit-to-width font is readable in portrait.
+   keyboard's Esc / Shift-Tab, and see how the Terminal reads in portrait (text size: "Aa").
 3. Passkey / Face ID re-lock after idle (WebAuthn; the page is on a real HTTPS origin, so it is
    cheap to add). Not built yet: today the token alone admits a paired phone.
 4. Full control from the phone (create, close, rename, move Tabs): the Host protocol carries

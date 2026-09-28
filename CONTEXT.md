@@ -105,7 +105,7 @@ A phone that holds a token this Mac accepts; listed in Settings, where it can be
 _Avoid_: Device, client (except in code, where it is any connection)
 
 **Attach**:
-A client's Terminal taking a Session's output: what the Session printed before, then the live output, with its typing going to the Session's pty. A phone attaches over Remote at the Host's grid size and never resizes the pty; the Mac webview attaches in-process to the local Host's Sessions (which the Host spawns with their Tabs) and sizes them.
+A client's Terminal taking a Session's output: what the Session printed before, then the live output, with its typing going to the Session's pty. A phone attaches over Remote and asks the Host to size the pty to what fits its screen at a text size it can read, which the Host does while no other client shows the Session (ADR 0006); refused, it keeps the Host's grid and pans across it. The Mac webview attaches in-process to the local Host's Sessions (which the Host spawns with their Tabs) and sizes them.
 _Avoid_: Connect (that is the phone reaching the Mac at all), open (that is a Tab), mirror
 **Host**:
 A machine running the sidebar-term core, whose Sessions, Tabs and Groups can be shown and driven from a client. The Mac app is its own local Host; a second machine runs the core as a headless daemon (`sidebar-termd`). The Mac shows a paired Host's Tabs as linked Tabs in its own Groups.
