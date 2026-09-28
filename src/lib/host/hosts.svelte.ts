@@ -8,10 +8,11 @@
 // manager's, reached through the transport made here. See docs/architecture.md "Hosts".
 
 import { loadSection, saveSection } from "../settings/store";
-import type { ActivitySession, ConversationFiles, HostInfo, PathExists, SessionId } from "../types";
+import type { ActivitySession, ConversationFiles, HostInfo, PathExists, SessionId, SessionInfo } from "../types";
 import type { SessionTransport, TerminalSink } from "../terminal/manager";
 import { applyHostSnapshot, dropHost, dropUnknownHosts, type LayoutCommands } from "../layout.svelte";
-import { applySessionInfo, forgetSession, setHostHome } from "../sessions.svelte";
+import { applySessionInfo, forgetSession, sessionState, setHostHome } from "../sessions.svelte";
+import { screenOnlyEvent } from "../manager/history";
 import { addAgentEvent, dropHostAgentEvents, setHostAgentEvents } from "../manager/feed.svelte";
 import type { ConnectionStatus, HostClient } from "./client";
 import { openHostClient, pairHost } from "./connect";
@@ -101,6 +102,15 @@ function connect(state: HostState): void {
   const conn: Connection = { client, sinks: new Map(), offs: [] };
   connections.set(state.id, conn);
   const id = state.id;
+  /** The Host is older than Manager (its `hello` had no agent events): this client makes its feed. */
+  let keepsNoFeed = false;
+  /** A Session's facts from the Host; an older Host's status changes become feed lines here, as a current Host's own would. */
+  const session = (info: SessionInfo) => {
+    const before = sessionState(sessionKey(id, info.sessionId))?.status ?? null;
+    applySessionInfo(id, info);
+    const line = keepsNoFeed && info.agent && info.status !== before ? screenOnlyEvent(info.status) : null;
+    if (line) addAgentEvent(id, { at: Date.now(), sessionId: info.sessionId, ...line });
+  };
   conn.offs.push(
     client.on("status", (status, detail) => {
       state.status = status;
@@ -126,11 +136,13 @@ function connect(state: HostState): void {
       state.activity = {};
       applyHostSnapshot(id, layout, { fresh: true });
       for (const s of sessions) applySessionInfo(id, s);
-      setHostAgentEvents(id, agentEvents);
+      // An older Host keeps no feed: what this client made of it so far stays.
+      keepsNoFeed = agentEvents === null;
+      if (agentEvents) setHostAgentEvents(id, agentEvents);
     }),
     client.on("agentEvent", (event) => addAgentEvent(id, event)),
     client.on("layout", (layout) => applyHostSnapshot(id, layout)),
-    client.on("session", (session) => applySessionInfo(id, session)),
+    client.on("session", session),
     client.on("activity", (sessions) => {
       const next: Record<SessionId, ActivitySession> = {};
       for (const s of sessions) next[s.sessionId] = s;

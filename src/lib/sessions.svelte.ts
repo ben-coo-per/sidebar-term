@@ -12,6 +12,7 @@ import { inTauri, onSessionInfo } from "./ipc";
 import { terminals } from "./terminal/manager";
 import type { AgentStatus, SessionInfo } from "./types";
 import { computeAutomaticTitle } from "./agentStatus";
+import { recordStatus } from "./manager/history";
 import { isLocal, LOCAL_HOST, sessionKey, type HostId, type SessionKey } from "./host/ids";
 import { layout, setTabUnread, tabIdForSession, type Tab } from "./layout.svelte";
 
@@ -68,6 +69,11 @@ function isActiveTabForSession(key: SessionKey): boolean {
 export function applySessionInfo(host: HostId, info: SessionInfo): void {
   const key = sessionKey(host, info.sessionId);
   const s = ensure(key);
+  // A Host older than Manager sends no history, hooks or question: keep the history from what
+  // this client sees (from when it connected), and read the rest as a screen-only agent's.
+  if ((info as Partial<SessionInfo>).history === undefined) {
+    info = { ...info, history: recordStatus(s.info?.history ?? [], info.status ?? null, Date.now()), hooked: info.hooked ?? false, pending: info.pending ?? null };
+  }
   const previousAgent = s.info?.agent ?? null;
   const prevStatus = s.status;
   s.info = info;

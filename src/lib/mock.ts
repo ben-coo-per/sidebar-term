@@ -13,6 +13,8 @@
 //   cd ~/Dev/detached         -> detached HEAD
 //   ls                        -> file paths to double-click (opening one logs it to the console)
 //   offline                   -> (on the fake remote Host only) drop its connection for a while
+// `localStorage["sidebar-term:mock-dell-old"] = "1"` (then reload) makes "dell" a Host older than
+// Manager: no status history, hooks, questions or agent events, as a core from before them sends.
 //   newtab                    -> (on the fake remote Host only) a Tab made there from elsewhere,
 //                                as a phone would: it lands in the "dell" Group, Unread
 // The layout (Groups, Tabs, the active Tab) is a copy of the Host's rules (src-tauri/core/src/layout/)
@@ -1305,8 +1307,25 @@ export async function pairHost(url: string, code: string, name: string): Promise
   return { token: "mock-token", device: name };
 }
 
+/** Whether the fake "dell" plays a Host older than Manager (see the top of this file). */
+function dellIsOld(): boolean {
+  try {
+    return localStorage.getItem("sidebar-term:mock-dell-old") === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** A Session's facts as a core from before Manager sends them: no history, hooks or question. */
+function beforeManager(i: SessionInfo): SessionInfo {
+  const { history: _h, hooked: _k, pending: _p, ...rest } = i;
+  return rest as SessionInfo;
+}
+
 /** A fake Host protocol connection to "dell": hello after a moment, then its layout and Sessions live. */
 export function hostClient(url: string, token: string): HostClient {
+  const old = dellIsOld();
+  const facts = (i: SessionInfo) => (old ? beforeManager(i) : i);
   const listeners: { [K in keyof ClientEvents]: Set<ClientEvents[K]> } = {
     status: new Set(),
     hello: new Set(),
@@ -1376,8 +1395,8 @@ export function hostClient(url: string, token: string): HostClient {
       dellOutage = outage;
       const info: HostInfo = { name: "dell", version: "0.1.0-mock", home: DELL_HOME };
       void host.onLayout((snap) => emit("layout", snap)).then((off) => offs.push(off));
-      void host.onSessionInfo((i) => emit("session", i)).then((off) => offs.push(off));
-      void host.onAgentEvent((e) => emit("agentEvent", e)).then((off) => offs.push(off));
+      void host.onSessionInfo((i) => emit("session", facts(i))).then((off) => offs.push(off));
+      if (!old) void host.onAgentEvent((e) => emit("agentEvent", e)).then((off) => offs.push(off));
       void host
         .onSessionExit((e) => {
           if (wanted.delete(e.sessionId)) emit("exit", e.sessionId);
@@ -1385,7 +1404,7 @@ export function hostClient(url: string, token: string): HostClient {
         .then((off) => offs.push(off));
       emit("status", "online", null);
       void Promise.all([host.layoutGet(), host.agentEvents()]).then(([layout, events]) => {
-        emit("hello", info, "Mac app", layout, host.infos(), events);
+        emit("hello", info, "Mac app", layout, host.infos().map(facts), old ? null : events);
         for (const id of wanted) attachNow(host, id);
       });
       activityTimer = setInterval(() => emit("activity", host.activitySnapshot().sessions), 2000);

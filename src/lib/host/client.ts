@@ -28,8 +28,8 @@ export type ConnectionStatus = "connecting" | "online" | "offline";
 export interface ClientEvents {
   /** `detail` says why we are offline, when the Host said. */
   status: (status: ConnectionStatus, detail: string | null) => void;
-  /** `agentEvents`: the Host's recent agent events, oldest first (none from an older Host). */
-  hello: (host: HostInfo, device: string, layout: LayoutSnapshot, sessions: SessionInfo[], agentEvents: AgentEvent[]) => void;
+  /** `agentEvents`: the Host's recent agent events, oldest first; null from a Host older than Manager, which keeps none. */
+  hello: (host: HostInfo, device: string, layout: LayoutSnapshot, sessions: SessionInfo[], agentEvents: AgentEvent[] | null) => void;
   layout: (layout: LayoutSnapshot) => void;
   session: (session: SessionInfo) => void;
   activity: (sessions: ActivitySession[]) => void;
@@ -272,7 +272,7 @@ export class RemoteClient implements HostClient {
       case "hello":
         this.attempts = 0;
         this.emit("status", "online", null);
-        this.emit("hello", msg.host, msg.device, msg.layout, msg.sessions, msg.agentEvents ?? []);
+        this.emit("hello", msg.host, msg.device, msg.layout, msg.sessions, msg.agentEvents ?? null);
         // Back after a drop: pick up where we were.
         for (const id of this.wanted) this.send({ t: "attach", sessionId: id });
         break;
