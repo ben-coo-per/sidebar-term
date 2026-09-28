@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LAYERS, NO_MODS, SYMBOL_ROW, TOP_ROW, labelOf, press, withCtrl, type Key, type Layer, type Mods } from "./keys";
+import { LAYERS, NO_MODS, SYMBOL_ROW, TOP_ROW, keyAt, labelOf, press, withCtrl, type DrawnRow, type Key, type Layer, type Mods } from "./keys";
 
 function key(layer: Layer | "top", id: string): Key {
   const rows = layer === "top" ? [TOP_ROW] : LAYERS[layer];
@@ -105,6 +105,52 @@ describe("withCtrl", () => {
     expect(withCtrl("?")).toBe("\x7f");
     expect(withCtrl("1")).toBe("1");
     expect(withCtrl("ab")).toBe("ab");
+  });
+});
+
+describe("keyAt", () => {
+  // Two rows 42 high and 5 apart, keys 34 wide and 5 apart; the second row starts 19 in.
+  const row = (top: number, left: number, keys: string): DrawnRow<string> => ({
+    top,
+    bottom: top + 42,
+    keys: [...keys].map((key, i) => ({ left: left + i * 39, right: left + i * 39 + 34, key })),
+  });
+  const rows = [row(100, 3, "qwe"), row(147, 22, "as")];
+
+  it("is the key under the finger", () => {
+    expect(keyAt(20, 120, rows)).toBe("q");
+    expect(keyAt(45, 101, rows)).toBe("w");
+    expect(keyAt(70, 180, rows)).toBe("s");
+  });
+
+  it("is the nearer key, between two", () => {
+    expect(keyAt(38, 120, rows)).toBe("q");
+    expect(keyAt(41, 120, rows)).toBe("w");
+  });
+
+  it("is a key of the nearer row, between two rows", () => {
+    expect(keyAt(30, 143, rows)).toBe("q");
+    expect(keyAt(30, 146, rows)).toBe("a");
+  });
+
+  it("is the key at the end of its row, off that end", () => {
+    expect(keyAt(1, 170, rows)).toBe("a");
+    expect(keyAt(380, 170, rows)).toBe("s");
+    expect(keyAt(380, 120, rows)).toBe("e");
+  });
+
+  it("is a key of the top or bottom row just off it, and none further away", () => {
+    expect(keyAt(20, 95, rows)).toBe("q");
+    expect(keyAt(40, 195, rows)).toBe("a");
+    expect(keyAt(20, 80, rows)).toBeNull();
+    expect(keyAt(40, 210, rows)).toBeNull();
+  });
+
+  it("passes over a row that is not drawn", () => {
+    const hidden: DrawnRow<string> = { top: 0, bottom: 0, keys: [{ left: 0, right: 0, key: "~" }] };
+    expect(keyAt(20, 95, [hidden, ...rows])).toBe("q");
+    expect(keyAt(20, 95, [hidden])).toBeNull();
+    expect(keyAt(20, 95, [])).toBeNull();
   });
 });
 

@@ -234,6 +234,37 @@ export function press(key: Key, mods: Mods, layer: Layer, applicationCursor = fa
   }
 }
 
+/** A row of keys as drawn, in the page's pixels: its top and bottom, and each key's sides. */
+export interface DrawnRow<T> {
+  top: number;
+  bottom: number;
+  keys: { left: number; right: number; key: T }[];
+}
+
+/** How far over the top row or under the bottom one a finger still means a key. */
+export const REACH_PX = 10;
+
+/**
+ * The key a finger at (`x`, `y`) means: the nearest key of the nearest row. Between two keys,
+ * between two rows and off the end of a row narrower than the keyboard, a touch lands on the
+ * key beside it, as on the phone's own keyboard; none is lost to a gap. Null further than
+ * `reach` over or under the rows: there a finger means no key.
+ */
+export function keyAt<T>(x: number, y: number, rows: readonly DrawnRow<T>[], reach = REACH_PX): T | null {
+  const off = (from: number, to: number, at: number) => Math.max(from - at, 0, at - to);
+  let row: DrawnRow<T> | null = null;
+  for (const r of rows) {
+    if (r.bottom <= r.top || r.keys.length === 0) continue;
+    if (!row || off(r.top, r.bottom, y) < off(row.top, row.bottom, y)) row = r;
+  }
+  if (!row || off(row.top, row.bottom, y) > reach) return null;
+  let found = row.keys[0];
+  for (const k of row.keys) {
+    if (off(k.left, k.right, x) < off(found.left, found.right, x)) found = k;
+  }
+  return found.key;
+}
+
 /** What a key shows: a letter follows Shift. */
 export function labelOf(key: Key, mods: Mods): string {
   return key.action.kind === "text" && key.label.length === 1 && mods.shift !== "off" ? key.label.toUpperCase() : key.label;

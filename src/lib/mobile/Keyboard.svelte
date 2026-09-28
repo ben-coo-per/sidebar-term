@@ -1,9 +1,10 @@
 <!-- The phone's own keyboard for a Terminal, in place of the phone's: Esc, Tab, Ctrl, Alt and the
      arrows above, what a shell is typed with under them, then letters, numbers or symbols
      (keys.ts). A key acts as the finger lands, and again and again while held where that helps.
-     Nothing here takes the focus from the Terminal. -->
+     A finger between two keys, or off the end of a row, means the key nearest it: no touch is
+     lost to a gap. Nothing here takes the focus from the Terminal. -->
 <script lang="ts">
-  import { LAYERS, NO_MODS, SYMBOL_ROW, TOP_ROW, labelOf, press, type Key, type Layer, type Mods } from "./keys";
+  import { LAYERS, NO_MODS, SYMBOL_ROW, TOP_ROW, keyAt, labelOf, press, type DrawnRow, type Key, type Layer, type Mods } from "./keys";
 
   let {
     send,
@@ -22,6 +23,7 @@
   /** Shift tapped again within this long locks. */
   const LOCK_WITHIN_MS = 350;
 
+  let board: HTMLDivElement;
   let layer = $state<Layer>("letters");
   let mods = $state<Mods>(NO_MODS);
   /** The keys under a finger, by where they are. */
@@ -29,12 +31,16 @@
 
   let shiftAt = 0;
   const repeats = new Map<string, ReturnType<typeof setTimeout>>();
+  /** The key each finger landed on, by where the key is. */
+  const fingers = new Map<number, string>();
 
   const rows = $derived<{ name: string; keys: Key[]; strip: boolean }[]>([
     { name: "top", keys: TOP_ROW, strip: true },
     { name: "shell", keys: SYMBOL_ROW, strip: true },
     ...LAYERS[layer].map((keys, i) => ({ name: `${layer}-${i}`, keys, strip: false })),
   ]);
+
+  const keys = $derived(new Map<string, Key>(rows.flatMap((row) => row.keys.map((key): [string, Key] => [`${row.name}:${key.id}`, key]))));
 
   /** A row narrower than the keyboard sits in the middle of it. */
   function inset(keys: Key[]): string {
@@ -64,13 +70,38 @@
     repeats.delete(at);
   }
 
-  function land(e: PointerEvent, at: string, key: Key) {
+  /** Where the key a finger means is: the key it landed on, or the nearest as drawn. */
+  function under(e: PointerEvent): string | null {
+    const on = e.target instanceof Element ? e.target.closest<HTMLElement>(".key") : null;
+    if (on?.dataset.at) return on.dataset.at;
+    const drawn: DrawnRow<string>[] = [...board.querySelectorAll(".row")].map((row) => {
+      const box = row.getBoundingClientRect();
+      const drawnKeys = [...row.querySelectorAll<HTMLElement>(".key")].map((el) => {
+        const { left, right } = el.getBoundingClientRect();
+        return { left, right, key: el.dataset.at ?? "" };
+      });
+      return { top: box.top, bottom: box.bottom, keys: drawnKeys };
+    });
+    return keyAt(e.clientX, e.clientY, drawn);
+  }
+
+  function land(e: PointerEvent) {
     // Keep the focus where it is, on the Terminal.
     e.preventDefault();
+    const at = under(e);
+    const key = at === null ? undefined : keys.get(at);
+    if (at === null || !key) return;
+    try {
+      // The lift comes here wherever the pointer has gone by then.
+      board.setPointerCapture(e.pointerId);
+    } catch {
+      /* not a pointer that can be held: its lift is heard if it is over the keyboard */
+    }
     release(at);
     act(key);
     if (key.action.kind === "layer") return;
     down[at] = true;
+    fingers.set(e.pointerId, at);
     if (!key.repeat) return;
     const again = () => {
       act(key);
@@ -84,13 +115,29 @@
     return (kind === "shift" && mods.shift !== "off") || (kind === "ctrl" && mods.ctrl) || (kind === "alt" && mods.alt);
   }
 
-  $effect(() => () => {
-    for (const timer of repeats.values()) clearTimeout(timer);
-    repeats.clear();
+  function lift(e: PointerEvent) {
+    const at = fingers.get(e.pointerId);
+    fingers.delete(e.pointerId);
+    if (at !== undefined) release(at);
+  }
+
+  $effect(() => {
+    const el = board;
+    el.addEventListener("pointerdown", land);
+    el.addEventListener("pointerup", lift);
+    el.addEventListener("pointercancel", lift);
+    return () => {
+      el.removeEventListener("pointerdown", land);
+      el.removeEventListener("pointerup", lift);
+      el.removeEventListener("pointercancel", lift);
+      for (const timer of repeats.values()) clearTimeout(timer);
+      repeats.clear();
+      fingers.clear();
+    };
   });
 </script>
 
-<div class="keyboard" role="group" aria-label="Terminal keyboard" oncontextmenu={(e) => e.preventDefault()}>
+<div class="keyboard" role="group" aria-label="Terminal keyboard" bind:this={board} oncontextmenu={(e) => e.preventDefault()}>
   {#each rows as row (row.name)}
     <div class="row" class:strip={row.strip} class:shell={row.name === "shell"} style:padding-inline={inset(row.keys)}>
       {#each row.keys as key (key.id)}
@@ -100,6 +147,7 @@
           type="button"
           tabindex="-1"
           class="key"
+          data-at={at}
           class:quiet={key.quiet}
           class:down={down[at]}
           class:armed={armed(key)}
@@ -108,10 +156,6 @@
           style:flex-grow={key.width ?? 1}
           aria-label={key.title}
           aria-pressed={armed(key)}
-          onpointerdown={(e) => land(e, at, key)}
-          onpointerup={() => release(at)}
-          onpointercancel={() => release(at)}
-          onpointerleave={() => release(at)}
         >
           {label}
           {#if down[at] && !row.strip && key.action.kind === "text" && label.trim().length === 1}

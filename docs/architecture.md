@@ -727,7 +727,8 @@ below 6 px the grid still pans). Fingers move the view (`drag`): across the grid
 screen and the scrollback as one (`shareDrag`); in an alternate screen the program gets a wheel,
 a line at a time. The keyboard is the page's own (`Keyboard.svelte`, `keys.ts`: Esc, Tab,
 Shift-Tab, one-shot Ctrl and Alt, ^C and arrows, a row of what a shell is typed with, then
-letters, numbers or symbols; held keys repeat; paste reads the clipboard) and the phone's stays
+letters, numbers or symbols; held keys repeat; a finger between two keys, or off the end of a
+row, means the nearest key, `keyAt`; paste reads the clipboard) and the phone's stays
 down, its text area taking none (`inputmode="none"`); or, chosen under "Aa", the phone's, under
 the key bar (Esc, Tab, Shift-Tab, a one-shot Ctrl, arrows, ^C, Return; DECCKM-aware arrows), the
 screen sized to the visual viewport so the bar sits above it. `service-worker.ts` caches the page and assets
