@@ -682,7 +682,10 @@ store) is asked for its linked Tabs (`auth {links: true}`) and says which Hosts 
 The phone reaches each of those itself: a token per Host, kept by the Host's URL
 (`localStorage`), got by presenting that Host's pairing code to its `/api/pair` from the page
 (the list shows "<Host> has N Tabs of yours" with a Pair button until then; the Host's linked
-Tabs are left out meanwhile). A Host that refuses the token (the phone was removed there) goes
+Tabs are left out meanwhile). The pairing screen names the Host the code must come from (the
+page's own by the machine in its address, before it has said its name) and shows both ways to a
+code, the Mac app's Settings and the daemon's SIGUSR1: nothing in the Host protocol says which
+a Host is, and before pairing the phone has heard nothing from it. A Host that refuses the token (the phone was removed there) goes
 back behind its pairing; the page's own Host refusing forgets everything. What the page's Host
 last said (layout, facts, Hosts) is kept in `localStorage` and shown until it answers, so with
 the Mac asleep the Groups are there, its own Tabs greyed, and the other Hosts' Tabs open.

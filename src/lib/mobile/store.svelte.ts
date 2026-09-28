@@ -12,7 +12,7 @@
 
 import { pairWithHost, RemoteClient, type ConnectionStatus } from "../host/client";
 import { LOCAL_HOST, type HostId } from "../host/ids";
-import { normalizeHostUrl } from "../host/settings";
+import { hostNameFromUrl, normalizeHostUrl } from "../host/settings";
 import type { AgentEvent, HostInfo, LayoutSnapshot, LinkedHost, SessionId, SessionInfo } from "../types";
 import { lanes as sortedLanes, type Lane, type Lanes } from "./lanes";
 import { findRow, groupRows, unpairedHosts, type Facts, type GroupRows, type HostViews, type TabRow, type Unpaired } from "./rows";
@@ -393,7 +393,7 @@ export async function pair(code: string, name: string): Promise<void> {
       connectHome(paired.token);
     }
   } catch (e) {
-    mobile.pairError = why(e, other ? (other.name ?? new URL(other.url).host) : "the Host");
+    mobile.pairError = why(e, other ? (other.name ?? hostNameFromUrl(other.url)) : hostNameFromUrl(location.origin));
   } finally {
     mobile.pairing = false;
   }
@@ -447,7 +447,7 @@ export function hostViews(): HostViews {
   for (const h of Object.values(mobile.hosts)) {
     out[h.id] = {
       id: h.id,
-      name: h.info?.name ?? h.name ?? new URL(h.url).host,
+      name: h.info?.name ?? h.name ?? hostNameFromUrl(h.url),
       paired: h.paired,
       online: h.status === "online",
       home: h.info?.home ?? null,

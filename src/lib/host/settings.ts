@@ -112,6 +112,15 @@ export function normalizeHostUrl(input: string): string | null {
   return url.origin;
 }
 
+/**
+ * What to call the Host at `base` before it has said its name: the machine's label of a tailnet
+ * name (`dell` for `https://dell.tail1234.ts.net`), else the host as it stands (`127.0.0.1:47611`).
+ */
+export function hostNameFromUrl(base: string): string {
+  const { host, hostname } = new URL(base);
+  return hostname.endsWith(".ts.net") ? hostname.split(".")[0] : host;
+}
+
 /** The pairing code in a pasted pairing link (`…/m#pair=CODE`), if any. */
 export function codeFromPairingLink(input: string): string | null {
   const m = /#pair=([A-Za-z0-9]+)/.exec(input);
