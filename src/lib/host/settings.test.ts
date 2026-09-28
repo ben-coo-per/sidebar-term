@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { codeFromPairingLink, newHostId, normalizeHostUrl, parseHostsSection, webSocketUrl } from "./settings";
+import { codeFromPairingLink, hostNameFromUrl, newHostId, normalizeHostUrl, parseHostsSection, webSocketUrl } from "./settings";
 
 describe("normalizeHostUrl", () => {
   it("takes an origin, a bare host name, the phone page's URL, or a pasted trailing slash", () => {
@@ -23,6 +23,15 @@ describe("normalizeHostUrl", () => {
   it("reads the code out of a pasted pairing link", () => {
     expect(codeFromPairingLink("http://127.0.0.1:47699/m#pair=ABCDEFGH")).toBe("ABCDEFGH");
     expect(codeFromPairingLink("http://127.0.0.1:47699")).toBeNull();
+  });
+});
+
+describe("hostNameFromUrl", () => {
+  it("is the machine on a tailnet, else the host as it stands", () => {
+    expect(hostNameFromUrl("https://dell.tail1234.ts.net")).toBe("dell");
+    expect(hostNameFromUrl("http://127.0.0.1:47699")).toBe("127.0.0.1:47699");
+    expect(hostNameFromUrl("http://localhost:1420")).toBe("localhost:1420");
+    expect(hostNameFromUrl("https://dell.example.com")).toBe("dell.example.com");
   });
 });
 

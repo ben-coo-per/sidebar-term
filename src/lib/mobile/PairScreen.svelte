@@ -1,7 +1,11 @@
 <!-- Pairing: present a Host's code, name this phone, and get a token. The page's own Host
-     first (its code comes prefilled when the page was opened from the QR code); then, from the
-     list, each Host its linked Tabs point at. -->
+     first (its code comes prefilled when the page was opened from the pairing link: the QR
+     code, or the link the daemon prints); then, from the list, each Host its linked Tabs point
+     at. The code must come from the Host being paired with, which the screen names. Nothing
+     says before pairing whether that Host is the Mac app or the daemon, so the screen shows
+     both ways to a code. -->
 <script lang="ts">
+  import { hostNameFromUrl } from "../host/settings";
   import { mobile, pair, pairWith } from "./store.svelte";
 
   function defaultName(): string {
@@ -11,7 +15,12 @@
 
   /** Another Host than the page's own, chosen from the list. */
   const other = $derived(mobile.pairWith ? (mobile.hosts[mobile.pairWith] ?? null) : null);
-  const otherName = $derived(other ? (other.name ?? new URL(other.url).host) : "");
+  /** The Host the code must come from: the one chosen, else the one the page came from. */
+  const hostName = $derived(other ? (other.name ?? hostNameFromUrl(other.url)) : hostNameFromUrl(location.origin));
+
+  /** The code came with the pairing link: how to get one is said only once it is refused. */
+  const prefilled = !mobile.pairWith && mobile.pairCode !== "";
+  const showHow = $derived(!prefilled || mobile.pairError !== null);
 
   let code = $state(mobile.pairWith ? "" : mobile.pairCode);
   let name = $state(mobile.device ?? defaultName());
@@ -25,20 +34,43 @@
 </script>
 
 <main class="pair">
+  <h1>Pair with {hostName}</h1>
   {#if other}
-    <h1>Pair with {otherName}</h1>
     <p class="how">
-      Some of your Tabs run on <b>{otherName}</b>. This phone reaches it directly, so it needs a pairing code from it,
-      once. Where {otherName} is a Mac: Settings, Remote, <b>Pair a phone</b>. Where it runs the daemon:
+      Some of your Tabs run on <b>{hostName}</b>. This phone reaches {hostName} directly, so it needs a pairing code
+      from {hostName}, once.
     </p>
-    <pre class="command">systemctl --user kill -s USR1 sidebar-termd
-journalctl --user -u sidebar-termd -n 3</pre>
+  {:else if !showHow}
+    <p class="how">The code from the link is filled in. Name this phone and press <b>Pair</b>.</p>
   {:else}
-    <h1>Pair with your Mac</h1>
-    <p class="how">
-      In sidebar-term on the Mac, open Settings, turn on Remote and press <b>Pair a phone</b>. Scan the code it shows,
-      or type it here.
-    </p>
+    <p class="how">This page comes from <b>{hostName}</b>, so the pairing code must come from {hostName}.</p>
+  {/if}
+  {#if showHow}
+    <section class="way">
+      <h2>If {hostName} is a Mac</h2>
+      <p>
+        In sidebar-term on {hostName}, open Settings, then Remote. Turn on Remote access and press
+        <b>Pair a phone…</b>.
+        {#if other}
+          Type the code it shows here. Do not scan the QR code: it opens {hostName}'s own page.
+        {:else}
+          Scan the QR code it shows, or type the code here.
+        {/if}
+      </p>
+    </section>
+    <section class="way">
+      <h2>If {hostName} runs the daemon</h2>
+      <p>In a terminal on {hostName}, run these two commands:</p>
+      <pre class="command">systemctl --user kill --kill-whom=main -s USR1 sidebar-termd
+journalctl --user -u sidebar-termd -n 3</pre>
+      <p>
+        The second prints the daemon's log. The line with "pairing code" has the code and a link. Type the code here.
+        {#if other}
+          Do not open the link: it opens {hostName}'s own page.
+        {/if}
+      </p>
+    </section>
+    <p class="note">A code is 8 characters. It lasts ten minutes and five wrong tries. After that, start a new pairing.</p>
   {/if}
   <form onsubmit={submit}>
     <label>
@@ -71,7 +103,10 @@ journalctl --user -u sidebar-termd -n 3</pre>
 <style>
   .pair {
     box-sizing: border-box;
-    min-height: 100%;
+    /* The page itself does not scroll (Mobile.svelte): the screen does, when it is taller. */
+    height: 100%;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
     padding: calc(24px + env(safe-area-inset-top)) 24px calc(24px + env(safe-area-inset-bottom));
     max-width: 420px;
     margin: 0 auto;
@@ -80,15 +115,35 @@ journalctl --user -u sidebar-termd -n 3</pre>
     margin: 32px 0 12px;
     font-size: 24px;
     font-weight: 700;
+    overflow-wrap: anywhere;
   }
   .how {
-    margin: 0 0 28px;
+    margin: 0 0 20px;
     font-size: 15px;
     line-height: 1.45;
     color: var(--text-secondary);
   }
+  .way {
+    margin: 0 0 12px;
+    padding: 12px 14px;
+    border: 1px solid var(--sidebar-border);
+    border-radius: 10px;
+    font-size: 14px;
+    line-height: 1.45;
+    color: var(--text-secondary);
+  }
+  .way h2 {
+    margin: 0 0 6px;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+  }
+  .way p {
+    margin: 0;
+  }
   .command {
-    margin: -16px 0 28px;
+    margin: 8px 0;
     padding: 10px 12px;
     overflow-x: auto;
     border-radius: 10px;
@@ -96,7 +151,13 @@ journalctl --user -u sidebar-termd -n 3</pre>
     font-family: "SF Mono", ui-monospace, Menlo, monospace;
     font-size: 12px;
     line-height: 1.5;
-    color: var(--text-secondary);
+    color: var(--text-primary);
+  }
+  .note {
+    margin: 0 0 24px;
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--text-tertiary);
   }
   form {
     display: flex;

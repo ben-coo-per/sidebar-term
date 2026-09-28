@@ -12,8 +12,9 @@
 //! Flags: `--data-dir <dir>` (default: see [`default_data_dir`]), `--port <n>` (kept in
 //! `remote.json`), `--web-root <dir>` (the built phone page, `pnpm build`'s `build/`; default
 //! `<data dir>/web`), `--pair` (start a pairing at launch and print its code). SIGUSR1 starts a
-//! pairing at any time: `systemctl --user kill -s USR1 sidebar-termd`, then read the code in the
-//! journal. Everything is logged to stderr.
+//! pairing at any time: `systemctl --user kill --kill-whom=main -s USR1 sidebar-termd` (without
+//! `--kill-whom=main` the signal reaches every Session's processes and kills them), then read the
+//! code in the journal. Everything is logged to stderr.
 
 use sidebar_term_core::agents::Agents;
 use sidebar_term_core::host::{Asset, Assets, Events, Host, Paths};

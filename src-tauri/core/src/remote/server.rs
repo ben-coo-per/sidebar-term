@@ -177,19 +177,21 @@ async fn pair(
     };
     match inner.try_pair(&req.code, &req.name, login) {
         Ok((token, device)) => Json(json!({ "token": token, "device": device })).into_response(),
-        Err(PairError::NoPairing) => {
-            refused("No pairing in progress. Start one in Settings on the Mac.".into())
-        }
+        // "The Host", not "the Mac": this Host may be the daemon, and the client the Mac app.
+        Err(PairError::NoPairing) => refused(
+            "No pairing in progress on the Host. A code lasts ten minutes and works once. Start a new pairing there."
+                .into(),
+        ),
         Err(PairError::Wrong { left }) => refused(format!(
             "Wrong code. {left} {} left.",
             if left == 1 { "try" } else { "tries" }
         )),
-        Err(PairError::Locked) => {
-            refused("Too many wrong codes. Start a new pairing on the Mac.".into())
-        }
-        Err(PairError::Expired) => {
-            refused("That code has expired. Start a new pairing on the Mac.".into())
-        }
+        Err(PairError::Locked) => refused(
+            "Too many wrong codes: that pairing is cancelled. Start a new one on the Host.".into(),
+        ),
+        Err(PairError::Expired) => refused(
+            "That code has expired: a code lasts ten minutes. Start a new pairing on the Host.".into(),
+        ),
     }
 }
 
