@@ -90,6 +90,10 @@ answers it (see "Host daemon" for the daemon's answer).
 - `host.rs` — what the core takes from its binary: `Events` (emit a named JSON event), `Paths`
   (the data dir), `Assets` (the phone page's files), an `OutputSink` per Session, and a tokio
   runtime handle, bundled as `Host`.
+- `journal.rs` — the Journal (see "Journal", ADR 0004): `Journal` takes each Session's facts
+  from the monitor after the layout (`observe`) and hears of every Session's exit, writes a span
+  to `journal/<year>-<month>.jsonl` when an Agent status or its Context ends, keeps the spans
+  still open in `journal/open.json` for a launch after a crash, and reads spans back (`read`).
 - `layout/` — the layout, owned by the Host (ADR 0002). `mod.rs`: `Layout`, the owner: loads
   `layout.json`, spawns each Tab's Session at launch (Tab id as Resume key) and on `tab_new`,
   kills it on `tab_close`, drops the Tab when its Session exits, emits `layout` on every change
@@ -146,7 +150,8 @@ answers it (see "Host daemon" for the daemon's answer).
 - `resume.rs` — `Resume`: a thread records every keyed Session's Resume entry to `resume.json`
   each second it changes, and a last time on exit (see "Resume").
 - `store.rs` — atomic JSON read/write of `layout.json`, `settings.json`, `resume.json`,
-  `remote.json`, `frozen.json` and `usage.json` in the Host's data dir (`Paths`).
+  `remote.json`, `frozen.json` and `usage.json` in the Host's data dir (`Paths`); the Journal's
+  directory is named here and written by `journal.rs`.
 - `paths.rs` — which paths printed in a Terminal name a file on this Host.
 - `model.rs` — the types every event and command carries; mirrored by `src/lib/types.ts`.
 
@@ -484,6 +489,46 @@ and never types into one that is not at its prompt: that row stays, marked Busy.
 dropped once its Tab closes or becomes an Agent session (resumed by hand). Other jobs do not
 count, since shell startup files run commands too.
 
+## Journal
+
+What every Agent session on a Host was doing, where and for how long, kept on disk so Rewind can
+look back over a day or a week (`core/src/journal.rs`, ADR 0004; the epic is #63). The status
+history in `agents/` covers five hours and is gone at quit; the Journal is what stays. Each Host
+keeps its own, in its data dir, and nothing in it leaves the machine.
+
+**Spans.** The Journal writes when something ends, never on a timer. A span is one stretch of one
+Agent status (`running`, `needs-input`, `done`) in one Context: the Tab's id, the agent, and
+the repo (`GitInfo.common_dir`, with its name), Worktree and branch, or the cwd outside a repo.
+Over a remote hop the Context has neither, only `remote`. The monitor's changed facts reach
+`Journal::observe` each tick, after the layout, which gives the Session's Tab; a Session whose
+status or Context is no longer its open span's ends that span and starts the next. A Session's
+exit, its agent leaving and the Host stopping (`finish`, before the Sessions are killed, so
+their dying is not written as the agent's doing) end it too. A Session with no agent, or with
+no Tab, is not kept. Agent time per repo, branch, agent or hour is a sum over spans.
+
+**Files.** `journal/<year>-<month>.jsonl`, appended, one JSON object per line:
+
+```
+{"k":"ctx","id":1,"tab":"t3","agent":"claude","repo":"/r/.git","name":"r","wt":"fix","br":"fix"}
+{"k":"span","c":1,"s":"running","a":1790553601000,"b":1790553643000}
+```
+
+A `ctx` row gives a Context a number and the spans after it name that number, so a repo's path
+is written once per file and run, not on every span (a span is under 72 bytes). A number holds
+until a later `ctx` row gives it to something else; each run starts again at 1, so a file is read
+from the top. Months are UTC and only decide the file: a span over the end of a month is written
+as two, so every span lies within its file's month, and a reader opens the months its range
+touches. `a` and `b` are epoch ms. A line that does not parse is skipped (a crash can cut the
+last one short; the next write starts on a new line).
+
+**A crash.** Spans still open would go with the process, so every 30 s they are written to
+`journal/open.json` with the time (`alive_at`); the next launch ends them at that time, writes
+them as spans and removes the file. A crash costs each open span at most 30 s.
+
+**Reading.** `Journal::read(from, to)` gives every span that overlaps the range, cut to it, with
+the open ones ending now. No client reads it yet: Rewind, the IPC command and the Host protocol
+message are later slices of #63.
+
 ## Host protocol
 
 How a Host serves its Sessions, Tabs and Groups to a client (ADR 0002; vocabulary in
@@ -623,7 +668,7 @@ one Mac never read each other's `remote.json`, `resume.json` or `layout.json`.
 
 **What it does at this stage (#25, #20).** At launch it starts the Session core, Resume, the
 layout (its own `layout.json`: a Session is spawned for every Tab at its last cwd, or one Tab in
-one Group on a fresh install, exactly as the app does), the monitor, loads `remote.json`, and
+one Group on a fresh install, exactly as the app does), the monitor, the Journal, loads `remote.json`, and
 turns Remote on exactly as `remote_set(true)` does in the app: binds `127.0.0.1:<port>` and asks
 Tailscale Serve to publish it. Clients get its layout and every Session's facts (Agent status
 included) in `hello` and on every change, and drive it with the same commands as the app. `--port`

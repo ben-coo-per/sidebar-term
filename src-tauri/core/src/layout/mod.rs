@@ -219,6 +219,11 @@ impl Layout {
         lock(&self.inner.state).facts.get(&id).cloned()
     }
 
+    /// The id of the Tab whose Session is `id`; `None` for a Session that has none, or is gone.
+    pub fn tab_of(&self, id: SessionId) -> Option<String> {
+        lock(&self.inner.state).model.tab_of_session(id).map(|t| t.id.clone())
+    }
+
     /// Whether a client with a Terminal has attached to Session `id` in process (the Mac webview),
     /// so a client on the socket is not the only one showing it.
     pub fn is_attached(&self, id: SessionId) -> bool {

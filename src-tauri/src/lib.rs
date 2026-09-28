@@ -10,6 +10,7 @@ mod host;
 
 use host::AppHost;
 use sidebar_term_core::agents::Agents;
+use sidebar_term_core::journal::{self, Journal};
 use sidebar_term_core::layout::{Layout, TabNew};
 use sidebar_term_core::model::{
     AgentEvent, AgentKind, ClaudeConversation, ConversationFiles, Group, GuardSnapshot, HandoffProbe,
@@ -483,6 +484,15 @@ pub fn run() {
             let for_exit = agents.clone();
             sessions.on_exit(Arc::new(move |id| for_exit.forget(id)));
             app.manage(agents.clone());
+            // The Journal: what each Agent session does from here on, kept for Rewind.
+            let journal_dir = store::path(&*host.paths, store::JOURNAL)
+                .inspect_err(|e| eprintln!("journal: no app data dir ({e}); not kept"))
+                .ok();
+            let journal = Journal::open(journal_dir);
+            let for_exit = journal.clone();
+            sessions.on_exit(Arc::new(move |id| for_exit.end(id)));
+            journal::spawn(journal.clone());
+            app.manage(journal.clone());
             let frozen_file = store::path(&*host.paths, store::FROZEN)
                 .inspect_err(|e| eprintln!("memory guard: no app data dir ({e}); not persisted"))
                 .ok();
@@ -508,7 +518,10 @@ pub fn run() {
                 agents.clone(),
                 move || for_targets.probe_targets(),
                 move |id| for_marks.marks(id),
-                move |infos| for_observe.observe(infos),
+                move |infos| {
+                    for_observe.observe(infos);
+                    journal.observe(infos, |id| for_observe.tab_of(id));
+                },
             );
             let for_activity = sessions.clone();
             let for_guard = handle.clone();
@@ -617,6 +630,10 @@ pub fn run() {
             // The layout as it stands, ahead of the saver's quiet period.
             if let Some(layout) = handle.try_state::<Arc<Layout>>() {
                 layout.flush();
+            }
+            // The Sessions about to be killed end their spans now, not as they die.
+            if let Some(journal) = handle.try_state::<Journal>() {
+                journal.finish();
             }
             // Record what is running before killing it, so the next launch can resume it.
             if let Some(resume) = handle.try_state::<resume::Resume>() {

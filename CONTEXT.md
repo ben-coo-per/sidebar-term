@@ -134,3 +134,15 @@ _Avoid_: Migrate, transfer, sync
 **Checkout root**:
 The directory on a Host under which its repos are checked out, set per Host in Settings: a Tab in repo `x` lands in `<root>/x` there on a Handoff or a New Tab on that Host, unless an override names that repo's checkout elsewhere.
 _Avoid_: Workspace, projects dir, base path
+
+**Journal**:
+What a Host keeps on disk about its Agent sessions, for Rewind: a span for every stretch of one Agent status in one Tab, repo, Worktree and branch. Each Host keeps its own in its data dir, and nothing in it leaves the machine.
+_Avoid_: Log, history (that is a Lane's status over time), telemetry, analytics, usage log
+
+**Agent time**:
+Time Agent sessions spent in an Agent status, summed over the Journal's spans. Two agents working through the same hour are two hours of agent time.
+_Avoid_: Usage (that is limit windows), uptime, runtime
+
+**Rewind**:
+The look back over a day or a week, drawn from the Journal: which repo had the most agent time, how long agents waited on you, and so on.
+_Avoid_: Stats, analytics, report, recap, Usage (that is limit windows), Activity (that is CPU and memory)
