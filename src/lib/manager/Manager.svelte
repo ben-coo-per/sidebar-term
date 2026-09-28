@@ -6,6 +6,9 @@
      to type into as in Tabs mode. A click on a lane or a finished row selects its Tab, as does
      "Answer in its Terminal" on the card of an agent whose question Manager cannot answer;
      "Open Tab", on a lane, a card, a finished row or the Terminal's bar, opens it in Tabs mode.
+     The edges between the three drag: the one under the lanes sizes them, the one beside Needs
+     you sizes that column, and the Terminal takes the rest. A double click on an edge gives the
+     size back to Manager (the lanes as tall as they are, Needs you a share of the window).
 
      Keys (none with a modifier; the Hotkeys keep those), while the Terminal does not have the
      focus: 1-9 answer the focused card, Tab / Shift-Tab move the card focus and the selection
@@ -14,7 +17,19 @@
      Session's, Esc too, until a click outside it. -->
 <script lang="ts">
   import { tick } from "svelte";
-  import { layout, managerTab, showInManager, tabSessionKey, type Tab } from "../layout.svelte";
+  import {
+    layout,
+    managerTab,
+    setManagerLanesHeight,
+    setManagerNeedsWidth,
+    showInManager,
+    tabSessionKey,
+    MAX_MANAGER_LANES_HEIGHT,
+    MAX_MANAGER_NEEDS_WIDTH,
+    MIN_MANAGER_LANES_HEIGHT,
+    MIN_MANAGER_NEEDS_WIDTH,
+    type Tab,
+  } from "../layout.svelte";
   import { settingsPage } from "../settings/visibility.svelte";
   import { terminals } from "../terminal/manager";
   import CheckIcon from "../sidebar/icons/CheckIcon.svelte";
@@ -63,7 +78,15 @@
   $effect(() => rememberOrder(shown.map((l) => l.tab.id)));
   $effect(() => runClock());
 
+  /** Until dragged, the lanes are as tall as they are, up to this share of Manager's height. */
+  const AUTO_LANES_SHARE = 0.55;
+  /** Dragged, they never take more than this share, so the Terminal keeps room. */
+  const MAX_LANES_SHARE = 0.75;
+  /** Nor Needs you more than this share of its width. */
+  const MAX_NEEDS_SHARE = 0.6;
+
   let root: HTMLDivElement | undefined = $state();
+  let lanesSection: HTMLElement | undefined = $state();
   let lanesEl: HTMLDivElement | undefined = $state();
   let needsEl: HTMLDivElement | undefined = $state();
 
@@ -127,6 +150,58 @@
   function open(lane: Lane) {
     openTab(lane.tab);
   }
+
+  type Edge = "lanes" | "needs";
+  /** Two presses of one edge within this, the first not a drag, are a double click. */
+  const DOUBLE_CLICK_MS = 400;
+
+  /** The edge being dragged, if any. */
+  let resizing = $state<Edge | null>(null);
+  /** The edge last pressed and left where it was, and when. */
+  let pressed: { edge: Edge; at: number } | null = null;
+
+  function resize(edge: Edge, size: number | null) {
+    if (edge === "lanes") setManagerLanesHeight(size);
+    else setManagerNeedsWidth(size);
+  }
+
+  /**
+   * Drag an edge: the lanes' bottom one sizes them, Needs you's right one sizes the column. A
+   * double click gives the size back to Manager. It is told from the presses, not `dblclick`:
+   * the shield takes the pointer while an edge is held, so the edge never gets the clicks.
+   */
+  function startResize(e: PointerEvent, edge: Edge) {
+    const el = edge === "lanes" ? lanesSection : needsEl;
+    if (e.button !== 0 || !el || !root) return;
+    e.preventDefault();
+    if (pressed?.edge === edge && e.timeStamp - pressed.at < DOUBLE_CLICK_MS) {
+      pressed = null;
+      resize(edge, null);
+      return;
+    }
+    pressed = { edge, at: e.timeStamp };
+    resizing = edge;
+    const at = (ev: PointerEvent) => (edge === "lanes" ? ev.clientY : ev.clientX);
+    const start = at(e);
+    const box = el.getBoundingClientRect();
+    const from = edge === "lanes" ? box.height : box.width;
+    const max = edge === "lanes" ? root.clientHeight * MAX_LANES_SHARE : root.clientWidth * MAX_NEEDS_SHARE;
+
+    function onMove(ev: PointerEvent) {
+      if (at(ev) === start && pressed) return;
+      pressed = null;
+      resize(edge, Math.min(max, from + (at(ev) - start)));
+    }
+    function onUp() {
+      resizing = null;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  }
 </script>
 
 <svelte:window {onkeydown} />
@@ -134,6 +209,9 @@
 <div class="manager" bind:this={root} tabindex="-1" role="application" aria-label="Manager">
   <section
     class="lanes"
+    style:height={layout.managerLanesHeight === null ? null : `${layout.managerLanesHeight}px`}
+    style:max-height="{(layout.managerLanesHeight === null ? AUTO_LANES_SHARE : MAX_LANES_SHARE) * 100}%"
+    bind:this={lanesSection}
     aria-label="Agents"
     onpointerenter={() => (manager.hovering = true)}
     onpointerleave={() => (manager.hovering = false)}
@@ -160,7 +238,25 @@
     </div>
   </section>
 
-  <div class="split">
+  <div
+    class="split"
+    style:grid-template-columns={layout.managerNeedsWidth === null
+      ? null
+      : `min(${layout.managerNeedsWidth}px, ${MAX_NEEDS_SHARE * 100}%) minmax(0, 1fr)`}
+  >
+    <div
+      class="resize-handle rows"
+      class:active={resizing === "lanes"}
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Agents height"
+      aria-valuemin={MIN_MANAGER_LANES_HEIGHT}
+      aria-valuemax={MAX_MANAGER_LANES_HEIGHT}
+      aria-valuenow={layout.managerLanesHeight ?? undefined}
+      title="Drag to resize; double-click to fit the lanes"
+      tabindex="-1"
+      onpointerdown={(e) => startResize(e, "lanes")}
+    ></div>
     <div class="column" bind:this={needsEl}>
       <span class="heading" class:waiting={cards.length > 0}>Needs you<span class="count">({cards.length})</span></span>
 
@@ -219,6 +315,19 @@
     </div>
 
     <div class="viewer">
+      <div
+        class="resize-handle columns"
+        class:active={resizing === "needs"}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Needs you width"
+        aria-valuemin={MIN_MANAGER_NEEDS_WIDTH}
+        aria-valuemax={MAX_MANAGER_NEEDS_WIDTH}
+        aria-valuenow={layout.managerNeedsWidth ?? undefined}
+        title="Drag to resize; double-click for the usual width"
+        tabindex="-1"
+        onpointerdown={(e) => startResize(e, "needs")}
+      ></div>
       {#if selected}
         <SelectedTab tab={selected} lane={selectedLane} now={manager.now} onopen={() => openTab(selected)} onclose={() => select(null)} />
       {:else}
@@ -226,6 +335,12 @@
       {/if}
     </div>
   </div>
+
+  {#if resizing}
+    <!-- Over everything while an edge drags: the pointer keeps the resize cursor, and the
+         Terminal under it gets none of the movement. -->
+    <div class="drag-shield" class:rows={resizing === "lanes"}></div>
+  {/if}
 </div>
 
 <style>
@@ -249,7 +364,6 @@
     display: flex;
     flex-direction: column;
     padding: 10px 16px 8px;
-    max-height: 55%;
     min-height: 0;
   }
   .grid {
@@ -297,6 +411,7 @@
     color: var(--text-secondary);
   }
   .rows {
+    flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
     margin: 0 -16px;
@@ -332,7 +447,6 @@
   .swatch {
     width: 10px;
     height: 8px;
-    border-radius: 2px;
   }
   .swatch.running {
     background: var(--status-running);
@@ -344,6 +458,7 @@
     background: var(--activity-other);
   }
   .split {
+    position: relative;
     flex: 1 1 auto;
     min-height: 0;
     display: grid;
@@ -360,11 +475,43 @@
     padding: 12px 16px;
   }
   .viewer {
+    position: relative;
     min-width: 0;
     min-height: 0;
     display: flex;
     flex-direction: column;
     border-left: 1px solid var(--sidebar-divider);
+  }
+  .resize-handle {
+    position: absolute;
+    z-index: 10;
+  }
+  .resize-handle.rows {
+    top: -3px;
+    left: 0;
+    width: 100%;
+    height: 6px;
+    cursor: row-resize;
+  }
+  .resize-handle.columns {
+    top: 0;
+    left: -3px;
+    width: 6px;
+    height: 100%;
+    cursor: col-resize;
+  }
+  .resize-handle:hover,
+  .resize-handle.active {
+    background: var(--accent-dim);
+  }
+  .drag-shield {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    cursor: col-resize;
+  }
+  .drag-shield.rows {
+    cursor: row-resize;
   }
   .viewer > .nothing {
     margin: auto;

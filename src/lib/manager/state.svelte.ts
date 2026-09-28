@@ -214,7 +214,7 @@ function release(tab: Tab, pendingId: number): Promise<void> {
 }
 
 /**
- * Open a Tab in the default view (Tabs mode). A question its agent is waiting on moves to its
+ * Open a Tab in Tabs mode. A question its agent is waiting on moves to its
  * Terminal, where the user is about to look.
  */
 export function openTab(tab: Tab): void {

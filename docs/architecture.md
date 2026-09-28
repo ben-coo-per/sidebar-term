@@ -811,12 +811,14 @@ conversations (Resume records no entry for them, so nothing is rerun).
 
 ## Manager
 
-The window's second mode, for running several agents at once (the first, Tabs, is the sidebar
-and one Terminal). The Tabs / Manager switch sits in the window bar ("Window"), with Manager's
-zoom beside it while Manager shows; `Cmd-0`
-(Hotkey `view.manager`) toggles. The mode and Manager's zoom are per window, in the `sidebar`
-section of settings. Manager has no list of its own: it reads the same Tabs and Session facts as
-the sidebar, and a Tab it opens opens in Tabs mode.
+The mode the window opens in, for running several agents at once (the other, Tabs, is the
+sidebar and one Terminal). The Tabs / Manager switch sits in the window bar ("Window"), with
+Manager's zoom beside it while Manager shows; `Cmd-0`
+(Hotkey `view.manager`) toggles. The mode, Manager's zoom and the sizes of its areas are per
+window, in the `sidebar` section of settings: a window opens in the mode it was left in, and in
+Manager when none is saved (`DEFAULT_MODE`). Nothing shows until the saved mode is read.
+Manager has no list of its own: it reads the same Tabs and Session facts as the sidebar, and a
+Tab it opens opens in Tabs mode.
 
 - **Lanes**: every Tab whose Session runs an agent, one row each, across the window of time
   (15 min, 1 h, 4 h, or since the oldest lane began; ticks at the quarters, refreshed every 30 s).
@@ -842,6 +844,12 @@ the sidebar, and a Tab it opens opens in Tabs mode.
   Needs input, then fades. A screen-only agent's card shows the last 3 lines of its Terminal and
   "Answer in its Terminal", which selects its Tab and gives the Terminal the focus. Below: Tabs whose agent finished or stopped while nobody looked, with what
   its last turn changed. The column is the narrow one (34% of the window, 300 px at least).
+- **Sizes**: the edge under the lanes and the edge between Needs you and the Terminal drag
+  (`managerLanesHeight`, `managerNeedsWidth`, in px; null until dragged). Until then the lanes
+  are as tall as they are, up to 55% of Manager, and Needs you is 34% of the window. Dragged,
+  the lanes take 140 px to 75% of Manager's height and Needs you 240 px to 60% of its width, so
+  the Terminal keeps room; it refits as the edges move, as on a sidebar drag. A double click on
+  an edge gives its size back to Manager.
 - In Tabs mode a strip at the top of the Groups says how many agents wait, and opens Manager.
 
 **Hooks** (`core/src/agents/`). Every Session's `PATH` starts with `<data dir>/claude-hooks/bin`,

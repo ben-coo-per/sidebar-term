@@ -1,14 +1,25 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_MANAGER_ZOOM,
+  DEFAULT_MODE,
   DEFAULT_PANEL,
   DEFAULT_SIDEBAR_WIDTH,
+  MAX_MANAGER_NEEDS_WIDTH,
   MAX_PANEL_HEIGHT,
+  MIN_MANAGER_LANES_HEIGHT,
   MIN_SIDEBAR_WIDTH,
   parseSidebarSection,
 } from "./settings";
 
-const DEFAULTS = { width: DEFAULT_SIDEBAR_WIDTH, panel: DEFAULT_PANEL, unread: [], mode: "tabs", managerZoom: DEFAULT_MANAGER_ZOOM };
+const DEFAULTS = {
+  width: DEFAULT_SIDEBAR_WIDTH,
+  panel: DEFAULT_PANEL,
+  unread: [],
+  mode: DEFAULT_MODE,
+  managerZoom: DEFAULT_MANAGER_ZOOM,
+  managerLanesHeight: null,
+  managerNeedsWidth: null,
+};
 
 describe("parseSidebarSection", () => {
   it("reads what the Host moved out of a version-1 layout.json", () => {
@@ -16,8 +27,10 @@ describe("parseSidebarSection", () => {
       width: 300,
       panel: { view: "usage", collapsed: true, height: 200 },
       unread: ["t2"],
-      mode: "tabs",
+      mode: DEFAULT_MODE,
       managerZoom: DEFAULT_MANAGER_ZOOM,
+      managerLanesHeight: null,
+      managerNeedsWidth: null,
     });
   });
 
@@ -25,7 +38,28 @@ describe("parseSidebarSection", () => {
     const parsed = parseSidebarSection({ mode: "manager", managerZoom: "4h" });
     expect(parsed.mode).toBe("manager");
     expect(parsed.managerZoom).toBe("4h");
-    expect(parseSidebarSection({ mode: "lanes", managerZoom: "2h" })).toMatchObject({ mode: "tabs", managerZoom: DEFAULT_MANAGER_ZOOM });
+    expect(parseSidebarSection({ mode: "lanes", managerZoom: "2h" })).toMatchObject({ mode: DEFAULT_MODE, managerZoom: DEFAULT_MANAGER_ZOOM });
+  });
+
+  it("opens in Manager until the user picks a mode, and keeps the one picked", () => {
+    expect(DEFAULT_MODE).toBe("manager");
+    expect(parseSidebarSection({}).mode).toBe("manager");
+    expect(parseSidebarSection({ mode: "tabs" }).mode).toBe("tabs");
+  });
+
+  it("reads the sizes Manager's areas were dragged to, clamped, and none when never dragged", () => {
+    expect(parseSidebarSection({ managerLanesHeight: 300, managerNeedsWidth: 420 })).toMatchObject({
+      managerLanesHeight: 300,
+      managerNeedsWidth: 420,
+    });
+    expect(parseSidebarSection({ managerLanesHeight: 1, managerNeedsWidth: 99999 })).toMatchObject({
+      managerLanesHeight: MIN_MANAGER_LANES_HEIGHT,
+      managerNeedsWidth: MAX_MANAGER_NEEDS_WIDTH,
+    });
+    expect(parseSidebarSection({ managerLanesHeight: null, managerNeedsWidth: "wide" })).toMatchObject({
+      managerLanesHeight: null,
+      managerNeedsWidth: null,
+    });
   });
 
   it("falls back to the defaults for anything missing or malformed", () => {

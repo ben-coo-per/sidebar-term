@@ -1,6 +1,7 @@
-<!-- App shell: sidebar on the left, the active Tab's Terminal on the right (Tabs mode), or the
-     whole window as Manager (src/lib/manager/Manager.svelte, with the selected Tab's Terminal),
-     per the window's mode.
+<!-- App shell: the whole window as Manager (src/lib/manager/Manager.svelte, with the selected
+     Tab's Terminal), or the sidebar on the left and the active Tab's Terminal on the right (Tabs
+     mode), per the window's mode: Manager until the user picks. Neither shows until the saved
+     mode is read, so the window does not open in one and jump to the other.
      See docs/architecture.md "Window": titleBarStyle Overlay, hidden title, the sidebar carries
      the ~28px traffic-light inset and its own data-tauri-drag-region (src/lib/sidebar/Sidebar.svelte). -->
 <script lang="ts">
@@ -83,7 +84,9 @@
 <div class="window">
   <WindowBar />
   <main class="app">
-    {#if managerMode}
+    {#if !layout.ready}
+      <section class="main"></section>
+    {:else if managerMode}
       <section class="main">
         <Manager />
         {#if settingsPage.open}
