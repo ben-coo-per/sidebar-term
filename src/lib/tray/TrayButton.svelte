@@ -30,9 +30,9 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    min-width: 22px;
-    height: 20px;
-    padding: 0 4px;
+    min-width: 28px;
+    height: 26px;
+    padding: 0 6px;
     appearance: none;
     background: transparent;
     border: none;
@@ -44,6 +44,11 @@
     transition:
       color var(--duration-fast) var(--ease-standard),
       background var(--duration-fast) var(--ease-standard);
+  }
+  /* The window bar's scale: icons drawn at 14 read at 16. */
+  .tray-btn :global(svg) {
+    width: 16px;
+    height: 16px;
   }
   .tray-btn:hover {
     background: var(--sidebar-bg-raised);

@@ -1,5 +1,5 @@
-<!-- The Tray: a row of small icon buttons and indicators at the top of the sidebar, right of the
-     traffic lights. Each item is its own component, usually a TrayButton; list them here in order.
+<!-- The Tray: a row of small icon buttons and indicators at the right of the window bar
+     (src/lib/window/WindowBar.svelte), in both modes. Each item is its own component, usually a TrayButton; list them here in order.
      See docs/architecture.md "Tray". -->
 <script lang="ts">
   import CaffeinateButton from "./CaffeinateButton.svelte";
@@ -15,7 +15,7 @@
   .tray {
     display: flex;
     align-items: center;
-    gap: 2px;
+    gap: 4px;
     min-width: 0;
     overflow: hidden;
   }

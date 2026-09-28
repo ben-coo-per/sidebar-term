@@ -66,8 +66,8 @@
   --radius-md: 7px;
   --sidebar-min-width: 180px;
   --sidebar-max-width: 420px;
-  --titlebar-inset: 28px;
-  --traffic-lights-width: 78px; /* close / minimise / zoom, from the window's left edge */
+  --titlebar-inset: 40px; /* the window bar: traffic lights, mode, Usage, Tray */
+  --traffic-lights-width: 84px; /* close / minimise / zoom, from the window's left edge (tauri.conf.json trafficLightPosition) */
 
   /* Motion */
   --ease-standard: cubic-bezier(0.2, 0.6, 0.2, 1);

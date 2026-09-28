@@ -1,4 +1,4 @@
-<!-- A segmented control for the window's top bars: Tabs / Manager, and Manager's zoom. One
+<!-- A segmented control for the window bar: Tabs / Manager, and Manager's zoom. One
      segment is selected; a segment may end with a count (the Manager segment's waiting agents).
      It sits in a Tauri drag region, so it opts out of dragging. -->
 <script lang="ts" generics="T extends string">
@@ -7,15 +7,12 @@
     selected,
     onselect,
     label,
-    compact = false,
   }: {
     items: { id: T; label: string; count?: number; title?: string }[];
     selected: T;
     onselect: (id: T) => void;
     /** Accessible name of the group. */
     label: string;
-    /** Tighter segments (the zoom control). */
-    compact?: boolean;
   } = $props();
 </script>
 
@@ -24,7 +21,6 @@
     <button
       type="button"
       class="segment"
-      class:compact
       class:selected={item.id === selected}
       role="radio"
       aria-checked={item.id === selected}
@@ -40,10 +36,10 @@
   .segmented {
     flex: none;
     display: flex;
-    gap: 1px;
-    padding: 1px;
+    gap: 2px;
+    padding: 2px;
     border: 1px solid var(--sidebar-border);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-md);
     background: var(--term-bg);
     -webkit-app-region: no-drag;
   }
@@ -51,20 +47,17 @@
     appearance: none;
     display: flex;
     align-items: center;
-    gap: 4px;
-    height: 18px;
-    padding: 0 8px;
+    gap: 5px;
+    height: 24px;
+    padding: 0 12px;
     border: none;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     background: transparent;
     color: var(--text-tertiary);
     font: inherit;
-    font-size: 11px;
+    font-size: 12.5px;
     white-space: nowrap;
     cursor: default;
-  }
-  .segment.compact {
-    padding: 0 7px;
   }
   .segment:hover:not(.selected) {
     color: var(--text-secondary);
@@ -74,7 +67,7 @@
     color: var(--text-primary);
   }
   .count {
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 600;
     color: var(--status-needs-input);
     font-variant-numeric: tabular-nums;

@@ -19,6 +19,7 @@
   import { initDropGuard } from "$lib/terminal/drop";
   import SettingsPage from "$lib/settings/SettingsPage.svelte";
   import Manager from "$lib/manager/Manager.svelte";
+  import WindowBar from "$lib/window/WindowBar.svelte";
   import { initAgentFeed } from "$lib/manager/feed.svelte";
   import ResumeBanner from "$lib/resume/ResumeBanner.svelte";
   import { initResume } from "$lib/resume/resume.svelte";
@@ -78,29 +79,32 @@
   });
 </script>
 
-<main class="app">
-  {#if managerMode}
-    <section class="main">
-      <Manager />
-      {#if settingsPage.open}
-        <SettingsPage />
+<div class="window">
+  <WindowBar />
+  <main class="app">
+    {#if managerMode}
+      <section class="main">
+        <Manager />
+        {#if settingsPage.open}
+          <SettingsPage />
+        {/if}
+      </section>
+    {:else}
+      {#if layout.sidebarVisible}
+        <Sidebar />
       {/if}
-    </section>
-  {:else}
-    {#if layout.sidebarVisible}
-      <Sidebar />
+      <section class="main">
+        <div class="terminal">
+          <TerminalPane sessionKey={tabSessionKey(active)} />
+        </div>
+        <ResumeBanner />
+        {#if settingsPage.open}
+          <SettingsPage />
+        {/if}
+      </section>
     {/if}
-    <section class="main">
-      <div class="terminal">
-        <TerminalPane sessionKey={tabSessionKey(active)} />
-      </div>
-      <ResumeBanner />
-      {#if settingsPage.open}
-        <SettingsPage />
-      {/if}
-    </section>
-  {/if}
-</main>
+  </main>
+</div>
 
 <style>
   :global(html, body) {
@@ -109,9 +113,15 @@
     overflow: hidden;
     background: var(--term-bg);
   }
-  .app {
+  .window {
     display: flex;
+    flex-direction: column;
     height: 100vh;
+  }
+  .app {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
   }
   .main {
     position: relative;

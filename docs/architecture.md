@@ -373,9 +373,8 @@ with its last numbers dimmed. Closed, the header shows each agent's fullest wind
 
 ## Tray
 
-The Tray is a row of small icon buttons and indicators at the top of the sidebar, in the titlebar
-row, right of the traffic lights (which it never runs under: `--traffic-lights-width`). It shows
-whenever the sidebar does, whatever its width and the Panel's state. Items are listed in order in
+The Tray is a row of small icon buttons and indicators at the right of the window bar ("Window"),
+in both modes, whether or not the sidebar shows. Items are listed in order in
 `src/lib/tray/Tray.svelte`; a button is a `TrayButton` (muted, lit in `--tray-on` while a toggle is
 on). Items so far: Caffeinate, Memory Guard.
 
@@ -795,8 +794,8 @@ conversations (Resume records no entry for them, so nothing is rerun).
 ## Manager
 
 The window's second mode, for running several agents at once (the first, Tabs, is the sidebar
-and one Terminal). The Tabs / Manager switch sits in the sidebar's drag region when the sidebar is
-at least 260 px wide (narrower, the Tray needs the room), and in Manager's top bar; `Cmd-0`
+and one Terminal). The Tabs / Manager switch sits in the window bar ("Window"), with Manager's
+zoom beside it while Manager shows; `Cmd-0`
 (Hotkey `view.manager`) toggles. The mode and Manager's zoom are per window, in the `sidebar`
 section of settings. Manager has no list of its own: it reads the same Tabs and Session facts as
 the sidebar, and a Tab it opens opens in Tabs mode.
@@ -837,8 +836,12 @@ feed, and their cards open the Tab.
 
 ## Window
 
-`titleBarStyle: Overlay`, hidden title: the sidebar runs to the top of the window, leaves ~28 px for
-the traffic lights, and marks its header `data-tauri-drag-region`. `dragDropEnabled: false` so HTML5
+`titleBarStyle: Overlay`, hidden title. The window bar (`src/lib/window/WindowBar.svelte`) runs the
+width of the window, 40 px tall, the same in Tabs and Manager: right of the traffic lights
+(`trafficLightPosition` centres them in it; `--traffic-lights-width` keeps the bar's contents
+clear of them), the Tabs / Manager switch and, in Manager, the zoom; at the right, the Usage
+summary and the Tray. It is the `data-tauri-drag-region`; its controls opt out. The sidebar, the
+Terminal, Manager and the Settings page all sit under it. `dragDropEnabled: false` so HTML5
 drag-and-drop works in the sidebar: on macOS Tauri's handler claims every drag, including the
 webview's own. Files dropped on a Terminal therefore arrive as DOM `File`s; they paste as
 shell-escaped paths read off the drag pasteboard, or saved to a temp dir when they have none
