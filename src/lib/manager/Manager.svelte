@@ -1,6 +1,6 @@
 <!-- Manager: the full window, for running several agents at once (docs/architecture.md "Manager").
-     Top to bottom: the top bar (Tabs / Manager, the zoom, the Usage summary, the Tray; the window's
-     drag region), every agent Tab as a lane across the window of time, then two columns: what
+     Under the window bar (src/lib/window/WindowBar.svelte: Tabs / Manager, the zoom, Usage, the
+     Tray), top to bottom: every agent Tab as a lane across the window of time, then two columns: what
      needs the user (questions answered in place, the answers just sent, finished work not looked
      at) and every agent's events. A lane or card opens its Tab in Tabs mode.
 
@@ -8,17 +8,10 @@
      Shift-Tab move the card focus, ↑ / ↓ move a lane focus, ↵ opens the focused lane's Tab, else
      the focused card's, Esc drops the lane focus. -->
 <script lang="ts">
-  import { layout, setManagerZoom } from "../layout.svelte";
-  import { MANAGER_ZOOMS, type ManagerZoom } from "../sidebar/settings";
+  import { layout } from "../layout.svelte";
   import { settingsPage } from "../settings/visibility.svelte";
-  import Tray from "../tray/Tray.svelte";
-  import UsageSummary from "../panel/usage/UsageSummary.svelte";
-  import { watch as watchUsage } from "../panel/usage/usage.svelte";
-  import { usageSettings } from "../panel/usage/settings.svelte";
   import CheckIcon from "../sidebar/icons/CheckIcon.svelte";
   import SpinnerIcon from "../sidebar/icons/SpinnerIcon.svelte";
-  import ModeSwitch from "./ModeSwitch.svelte";
-  import Segmented from "./Segmented.svelte";
   import LaneRow from "./LaneRow.svelte";
   import QuestionCard from "./QuestionCard.svelte";
   import AgentFeed from "./AgentFeed.svelte";
@@ -36,7 +29,7 @@
     waiting,
     type Lane,
   } from "./state.svelte";
-  import { formatDuration, laneStart, ticks, windowSpan, ZOOM_LABELS } from "./model";
+  import { formatDuration, laneStart, ticks, windowSpan } from "./model";
 
   const shown = $derived(lanes());
   const span = $derived(
@@ -50,13 +43,9 @@
   const cards = $derived(waiting());
   const focused = $derived(focusedCard(cards));
   const done = $derived(finished());
-  const zoomItems = MANAGER_ZOOMS.map((id) => ({ id, label: ZOOM_LABELS[id] }));
 
   $effect(() => rememberOrder(shown.map((l) => l.tab.id)));
   $effect(() => runClock());
-  $effect(() => {
-    if (usageSettings.ready) return watchUsage([...usageSettings.agents]);
-  });
 
   let root: HTMLDivElement | undefined = $state();
   let lanesEl: HTMLDivElement | undefined = $state();
@@ -112,20 +101,6 @@
 <svelte:window {onkeydown} />
 
 <div class="manager" bind:this={root} tabindex="-1" role="application" aria-label="Manager">
-  <div class="topbar" data-tauri-drag-region>
-    <ModeSwitch />
-    <Segmented
-      label="Zoom"
-      compact
-      items={zoomItems}
-      selected={layout.managerZoom}
-      onselect={(z: ManagerZoom) => setManagerZoom(z)}
-    />
-    <span class="spacer" data-tauri-drag-region></span>
-    <UsageSummary />
-    <Tray />
-  </div>
-
   <section
     class="lanes"
     aria-label="Agents"
@@ -216,21 +191,6 @@
       "SF Pro Text",
       sans-serif;
     outline: none;
-  }
-  .topbar {
-    flex: none;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    height: var(--titlebar-inset);
-    padding: 0 6px 0 var(--traffic-lights-width);
-    background: var(--sidebar-bg);
-    border-bottom: 1px solid var(--sidebar-border);
-    -webkit-app-region: drag;
-  }
-  .spacer {
-    flex: 1 1 auto;
-    align-self: stretch;
   }
   .lanes {
     flex: none;

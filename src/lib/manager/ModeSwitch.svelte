@@ -1,4 +1,4 @@
-<!-- Tabs / Manager: the window's mode, in the sidebar's drag region and Manager's top bar. The
+<!-- Tabs / Manager: the window's mode, in the window bar (src/lib/window/WindowBar.svelte). The
      Manager segment carries how many agents wait on the user (hidden at 0). -->
 <script lang="ts">
   import { layout, setMode, type WindowMode } from "../layout.svelte";

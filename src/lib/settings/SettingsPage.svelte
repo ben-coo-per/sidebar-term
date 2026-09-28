@@ -136,8 +136,6 @@
   }}
   use:focusOnMount
 >
-  <div class="drag-region" data-tauri-drag-region></div>
-
   <div class="content">
     <header class="page-header">
       <h1>Settings</h1>
@@ -308,15 +306,10 @@
     outline: none;
     animation: fade var(--duration-fast) var(--ease-standard);
   }
-  .drag-region {
-    flex: none;
-    height: var(--titlebar-inset);
-    -webkit-app-region: drag;
-  }
   .content {
     flex: 1 1 auto;
     overflow-y: auto;
-    padding: 4px 32px 40px;
+    padding: 20px 32px 40px;
   }
   /* :global so the sections that are their own components (Remote, Hosts) get the column too. */
   .content > :global(*) {

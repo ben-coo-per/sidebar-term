@@ -53,7 +53,7 @@ The resizable area at the bottom of the sidebar, beneath the groups. An accordio
 _Avoid_: Drawer, dock, footer, pane
 
 **Tray**:
-The row of small icon buttons and indicators at the top of the sidebar, beside the traffic lights. Shown whenever the sidebar is.
+The row of small icon buttons and indicators at the right of the window bar, in Tabs and Manager alike.
 _Avoid_: Toolbar, titlebar buttons, status bar
 
 **Caffeinate**:
