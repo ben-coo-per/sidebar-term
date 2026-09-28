@@ -586,8 +586,9 @@ included) in `hello` and on every change, and drive it with the same commands as
 changes the port and keeps it in `remote.json`; `--web-root` names the built phone page (`pnpm
 build`'s `build/`; default `<data dir>/web`, and without it `/m` is 404 while pairing and `/ws`
 still work); `--pair` starts a pairing at launch and prints its code and link; SIGUSR1 starts
-one at any time, so on a headless box `systemctl --user kill -s USR1 sidebar-termd` puts a code
-in the journal. It logs to stderr (each layout change in one line). On SIGTERM (or SIGINT) it
+one at any time, so on a headless box `systemctl --user kill --kill-whom=main -s USR1 sidebar-termd`
+puts a code in the journal. `--kill-whom=main` matters: without it systemd signals every process
+in the unit's cgroup, every Session's shell and agent included, and SIGUSR1 kills them. It logs to stderr (each layout change in one line). On SIGTERM (or SIGINT) it
 writes the layout, records Resume entries a last time and hangs up every Session, as the app does
 on quit; it does not turn Remote off, so Tailscale's Serve rule stays for the next run. Not
 started, because a Host has no use for them yet: Activity and Memory Guard (their Linux reading

@@ -1,6 +1,6 @@
 <!-- The Settings page's Hosts section: the Hosts this Mac is paired with (each with its
      connection state, its repo-to-path map for Handoff and a Remove button), and pairing a new
-     one by its URL and the code its Settings page shows (or `sidebar-termd --pair` prints).
+     one by its URL and the code the Host shows (its Settings page, or the daemon's journal).
      State: src/lib/host/hosts.svelte.ts. -->
 <script lang="ts">
   import {
@@ -22,6 +22,8 @@
 
   /** A new override being typed per Host: repo name and path. */
   let newRepo = $state<Record<string, { repo: string; path: string }>>({});
+  /** Hosts whose "add an override" fields are open. */
+  let addingOverride = $state<Record<string, boolean>>({});
 
   function draft(id: string): { repo: string; path: string } {
     return newRepo[id] ?? { repo: "", path: "" };
@@ -41,6 +43,7 @@
     const d = draft(id);
     setHostRepoPath(id, d.repo, d.path);
     newRepo[id] = { repo: "", path: "" };
+    addingOverride[id] = false;
   }
 
   const ready = $derived(url.trim() !== "" && code.replace(/[^A-Za-z0-9]/g, "").length === 8 && !busy);
@@ -118,16 +121,16 @@
               class="field path"
               value={h.checkoutRoot ?? ""}
               onchange={(e) => setHostCheckoutRoot(h.id, e.currentTarget.value)}
-              placeholder="~/Dev"
+              placeholder="Not set: New Tab on Host opens in its home"
               autocomplete="off"
               autocorrect="off"
               spellcheck="false"
               aria-label="Checkout root on {hostName(h.id)}"
             />
           </label>
-          <span class="detail">
-            A Tab in repo <code>x</code> lands in <code>&lt;root&gt;/x</code> on this Host (New Tab on Host, Move Tab to Host).
-            Overrides below name a repo's checkout elsewhere.
+          <span class="detail map-hint">
+            Where this Host keeps its clones, e.g. <code>~/repos</code>: a Tab in repo <code>x</code> lands in
+            <code>&lt;root&gt;/x</code> there.
           </span>
           {#each Object.entries(h.repoPaths) as [repo, path] (repo)}
             <div class="map-row">
@@ -144,35 +147,44 @@
               <button type="button" class="text-btn small danger" onclick={() => setHostRepoPath(h.id, repo, "")}>Remove</button>
             </div>
           {/each}
-          <form
-            class="map-row"
-            onsubmit={(e) => {
-              e.preventDefault();
-              addOverride(h.id);
-            }}
-          >
-            <input
-              class="field repo"
-              value={draft(h.id).repo}
-              oninput={(e) => setDraft(h.id, "repo", e.currentTarget.value)}
-              placeholder="repo"
-              autocomplete="off"
-              autocorrect="off"
-              spellcheck="false"
-              aria-label="Repo to override on {hostName(h.id)}"
-            />
-            <input
-              class="field path"
-              value={draft(h.id).path}
-              oninput={(e) => setDraft(h.id, "path", e.currentTarget.value)}
-              placeholder="/srv/checkouts/repo"
-              autocomplete="off"
-              autocorrect="off"
-              spellcheck="false"
-              aria-label="Its checkout on {hostName(h.id)}"
-            />
-            <button type="submit" class="text-btn small" disabled={!draftReady(h.id)}>Add override</button>
-          </form>
+          {#if addingOverride[h.id]}
+            <form
+              class="map-row"
+              onsubmit={(e) => {
+                e.preventDefault();
+                addOverride(h.id);
+              }}
+            >
+              <input
+                class="field repo"
+                value={draft(h.id).repo}
+                oninput={(e) => setDraft(h.id, "repo", e.currentTarget.value)}
+                placeholder="repo"
+                autocomplete="off"
+                autocorrect="off"
+                spellcheck="false"
+                aria-label="Repo to override on {hostName(h.id)}"
+              />
+              <input
+                class="field path"
+                value={draft(h.id).path}
+                oninput={(e) => setDraft(h.id, "path", e.currentTarget.value)}
+                placeholder="its checkout on this Host"
+                autocomplete="off"
+                autocorrect="off"
+                spellcheck="false"
+                aria-label="Its checkout on {hostName(h.id)}"
+              />
+              <button type="submit" class="text-btn small" disabled={!draftReady(h.id)}>Add</button>
+              <button type="button" class="text-btn small" onclick={() => (addingOverride[h.id] = false)}>Cancel</button>
+            </form>
+          {:else}
+            <div class="map-row">
+              <button type="button" class="text-btn small add-override" onclick={() => (addingOverride[h.id] = true)}>
+                A repo lives somewhere else…
+              </button>
+            </div>
+          {/if}
         </div>
       </li>
     {/each}
@@ -186,8 +198,9 @@
         <span class="label">
           Add a Host
           <span class="detail">
-            On the Host, turn on Remote and start a pairing (Settings there, or <code>sidebar-termd --pair</code>); enter
-            its address and the code it shows.
+            Start a pairing on the Host, then enter its address and the code it shows. On a Mac: Settings › Remote.
+            On <code>sidebar-termd</code>: <code>systemctl --user kill --kill-whom=main -s USR1 sidebar-termd</code>, then
+            read the code in <code>journalctl --user -u sidebar-termd</code>.
           </span>
         </span>
         <div class="fields">
@@ -195,7 +208,7 @@
             class="field url"
             bind:value={url}
             oninput={onUrlInput}
-            placeholder="https://dell.tail1234.ts.net"
+            placeholder="https://<host>.<tailnet>.ts.net"
             autocomplete="off"
             autocorrect="off"
             spellcheck="false"
@@ -320,6 +333,12 @@
   .field:focus {
     border-color: var(--accent);
   }
+  .field::placeholder {
+    color: var(--text-tertiary);
+    opacity: 0.7;
+    letter-spacing: normal;
+    text-transform: none;
+  }
   .field.url {
     flex: 1 1 auto;
   }
@@ -336,6 +355,12 @@
     flex-direction: column;
     gap: 6px;
     padding: 4px 0 4px 14px;
+  }
+  .map-hint {
+    margin: -2px 0 2px 116px;
+  }
+  .add-override {
+    margin-left: 110px;
   }
   .map-row {
     display: flex;
