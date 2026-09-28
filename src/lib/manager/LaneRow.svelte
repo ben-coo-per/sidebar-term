@@ -1,5 +1,6 @@
-<!-- One agent Tab as a lane: its status icon, Title (bold while unread), a Host chip on a paired
-     Host, a "screen only" chip when the agent has no hooks, and where it runs; then its status
+<!-- One agent Tab as a lane: its status icon, its project (bold while unread) and a few words on
+     what it is at; under them a Host chip on a paired Host, a "screen only" chip when the agent has
+     no hooks, and its repo's dot with the branch; then its status
      history across the window; then what it is doing and for how long. Hover (or the lane focus)
      swaps that for "Open Tab ↵"; a click opens the Tab. -->
 <script lang="ts">
@@ -29,7 +30,7 @@
   class:focused
   role="button"
   tabindex="-1"
-  title="{AGENT_NAMES[lane.agent]}: {status}"
+  title="{lane.title} · {AGENT_NAMES[lane.agent]}: {status}"
   onclick={() => onopen(lane)}
   onkeydown={(e) => e.key === "Enter" && onopen(lane)}
 >
@@ -44,7 +45,10 @@
       {/if}
     </span>
     <span class="text">
-      <span class="title" class:unread={lane.unread}>{lane.title}</span>
+      <span class="name">
+        <span class="title" class:unread={lane.unread}>{lane.project}</span>
+        {#if lane.description}<span class="description">{lane.description}</span>{/if}
+      </span>
       <span class="meta">
         {#if lane.host}<span class="chip host">{lane.host}</span>{/if}
         {#if !lane.hooked}<span class="chip screen">screen only</span>{/if}
@@ -108,9 +112,27 @@
     flex-direction: column;
     gap: 1px;
   }
-  .title {
+  .name {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
     font-size: 12.5px;
+  }
+  .title {
+    flex: 0 1 auto;
+    min-width: 3ch;
     color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* A few loose words to jog the memory: the project gives up width last. */
+  .description {
+    flex: 0 3 auto;
+    min-width: 0;
+    color: var(--text-tertiary);
+    font-weight: 400;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

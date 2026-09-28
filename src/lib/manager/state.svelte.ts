@@ -7,19 +7,22 @@
 // given. See docs/architecture.md "Manager" and CONTEXT.md.
 
 import { activateTab, activeTab, layout, orderedTabIds, setMode, tabIdForSession, type Tab } from "../layout.svelte";
-import { sessionOf, tabIsUnread, tabTitle } from "../sessions.svelte";
+import { hostHome, sessionOf, tabIsUnread, tabTitle } from "../sessions.svelte";
 import { agentAnswer, agentRelease } from "../ipc";
 import { hostAnswer, hostName, hostRelease } from "../host/hosts.svelte";
 import { isLocal, sessionKey } from "../host/ids";
 import type { AgentKind, AgentStatus, GitInfo, Pending, StatusChange } from "../types";
 import { feed, newestFirst, type HostAgentEvent } from "./feed.svelte";
 import {
+  agentLabel,
   currentSince,
   holdOrder,
   laneKind,
   laneStart,
+  lastPrompt,
   sortLanes,
   turnSummary,
+  type AgentLabel,
   type LaneKind,
 } from "./model";
 
@@ -58,8 +61,9 @@ export const manager = $state({
 });
 
 /** One agent Tab, as a lane. */
-export interface Lane {
+export interface Lane extends AgentLabel {
   tab: Tab;
+  /** The Tab's Title, for tooltips; Manager shows `project` and `description`. */
   title: string;
   agent: AgentKind;
   kind: LaneKind;
@@ -90,6 +94,7 @@ function agentLanes(): Lane[] {
     out.push({
       tab,
       title: tabTitle(tab),
+      ...labelOf(tab),
       agent: info.agent,
       kind: laneKind(info.status),
       status: info.status,
@@ -155,7 +160,7 @@ export function moveLaneFocus(shown: Lane[], step: 1 | -1): void {
 }
 
 /** Tabs whose agent finished or stopped while nobody looked, newest first. */
-export interface Finished {
+export interface Finished extends AgentLabel {
   tab: Tab;
   title: string;
   summary: string;
@@ -174,6 +179,7 @@ export function finished(): Finished[] {
     out.push({
       tab,
       title: tabTitle(tab),
+      ...labelOf(tab),
       summary: turnSummary(sessionEvents(tab)) ?? (s.finished ? "Agent exited" : ""),
       since: currentSince(history, manager.now),
     });
@@ -187,19 +193,44 @@ function sessionEvents(tab: Tab): HostAgentEvent[] {
   return (feed.byHost[tab.host] ?? []).filter((e) => e.sessionId === tab.sessionId);
 }
 
-/** A feed row: the event, and the Title of its Tab (gone Tabs keep a plain name). */
-export interface FeedRow {
+/**
+ * What Manager calls a Tab's agent: its project and a few words on what it is at (`agentLabel`),
+ * from the Session's facts, its title and the last prompt in its events.
+ */
+function labelOf(tab: Tab): AgentLabel {
+  const s = sessionOf(tab);
+  const remote = s?.info?.remote ?? false;
+  return agentLabel({
+    customTitle: tab.customTitle,
+    git: remote ? null : (s?.info?.git ?? null),
+    cwd: remote ? null : (s?.info?.cwd ?? tab.lastCwd),
+    home: hostHome(tab.host),
+    oscTitle: s?.info?.title ?? s?.title ?? null,
+    agent: s?.info?.agent ?? null,
+    lastPrompt: lastPrompt(sessionEvents(tab)),
+  });
+}
+
+/** A feed row: the event, and what its Tab's agent is called (a gone Tab keeps a plain name). */
+export interface FeedRow extends AgentLabel {
   event: HostAgentEvent;
   title: string;
 }
 
 export function feedRows(): FeedRow[] {
+  const labels = new Map<string, AgentLabel & { title: string }>();
   return newestFirst()
     .slice(0, FEED_SHOWN)
     .map((event) => {
       const tabId = tabIdForSession(sessionKey(event.host, event.sessionId));
       const tab = tabId ? layout.tabs[tabId] : null;
-      return { event, title: tab ? tabTitle(tab) : "Closed Tab" };
+      if (!tab) return { event, title: "Closed Tab", project: "Closed Tab", description: null };
+      let label = labels.get(tab.id);
+      if (!label) {
+        label = { title: tabTitle(tab), ...labelOf(tab) };
+        labels.set(tab.id, label);
+      }
+      return { event, ...label };
     });
 }
 

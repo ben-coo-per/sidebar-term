@@ -160,7 +160,8 @@
         {#each done as f (f.tab.id)}
           <div class="finished" role="button" tabindex="-1" onclick={() => openTab(f.tab)} onkeydown={(e) => e.key === "Enter" && openTab(f.tab)}>
             <span class="finished-icon"><CheckIcon size={14} /></span>
-            <span class="finished-title">{f.title}</span>
+            <span class="finished-title" title={f.title}>{f.project}</span>
+            {#if f.description}<span class="finished-description">{f.description}</span>{/if}
             <span class="finished-summary">{f.summary}</span>
             <span class="finished-since">{formatDuration(manager.now - f.since)} ago</span>
             <span class="link">Open Tab</span>
@@ -384,6 +385,15 @@
     font-size: 12.5px;
     font-weight: 600;
     color: var(--text-primary);
+  }
+  .finished-description {
+    flex: 0 2 auto;
+    min-width: 0;
+    font-size: 12.5px;
+    color: var(--text-tertiary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .finished-summary {
     flex: 1 1 auto;

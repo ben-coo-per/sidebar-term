@@ -13,7 +13,7 @@
     <div class="row">
       <span class="time">{clockLabel(row.event.at)}</span>
       <span class="dot {EVENT_TONES[row.event.kind]}"></span>
-      <span class="text"><span class="who">{row.title}</span><span class="sep">{" · "}</span>{row.event.text}</span>
+      <span class="text"><span class="who" title={row.title}>{row.project}</span>{#if row.description}<span class="what">{" "}{row.description}</span>{/if}<span class="sep">{" · "}</span>{row.event.text}</span>
     </div>
   {:else}
     <p class="empty">Nothing yet. Agents' tool calls show here as they happen.</p>
@@ -59,6 +59,9 @@
   }
   .who {
     color: var(--text-primary);
+  }
+  .what {
+    color: var(--text-tertiary);
   }
   .sep {
     color: var(--text-tertiary);

@@ -47,7 +47,8 @@
 <div class="card" class:focused>
   <div class="head">
     <span class="robot"><RobotIcon size={14} /></span>
-    <span class="title">{lane.title}</span>
+    <span class="title" title={lane.title}>{lane.project}</span>
+    {#if lane.description}<span class="description">{lane.description}</span>{/if}
     <span class="agent">{AGENT_NAMES[lane.agent]}</span>
     {#if !lane.hooked}<span class="chip">screen only</span>{/if}
     <span class="spacer"></span>
@@ -115,6 +116,15 @@
     white-space: nowrap;
     font-size: 12.5px;
     font-weight: 600;
+  }
+  .description {
+    flex: 0 2 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12.5px;
+    color: var(--text-tertiary);
   }
   .agent {
     flex: none;
