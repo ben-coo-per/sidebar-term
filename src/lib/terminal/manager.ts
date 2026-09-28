@@ -92,6 +92,8 @@ export interface TerminalManager {
   /** Detach the Terminal from the DOM; the Session and its scrollback live on. */
   unmount(key: SessionKey): void;
   focus(key: SessionKey): void;
+  /** The lines on the Terminal's screen, top to bottom (Manager shows a screen-only agent's last ones). */
+  screenLines(key: SessionKey): string[];
   /** Paste text as if from the clipboard (bracket-wrapped when the app asked for it), and focus. */
   paste(key: SessionKey, text: string): void;
   /** Files dropped on the Terminal: paste their paths on the Session's Host, shell-escaped. */
@@ -379,6 +381,15 @@ export const terminals: TerminalManager = {
 
   focus(key) {
     entries.get(key)?.term.focus();
+  },
+
+  screenLines(key) {
+    const e = entries.get(key);
+    if (!e) return [];
+    const buffer = e.term.buffer.active;
+    const lines: string[] = [];
+    for (let y = 0; y < e.term.rows; y++) lines.push(buffer.getLine(buffer.baseY + y)?.translateToString(true) ?? "");
+    return lines;
   },
 
   paste(key, text) {

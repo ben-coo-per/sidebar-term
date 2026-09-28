@@ -1,7 +1,8 @@
 // The layout as the webview sees it: a mirror of every Host's snapshot (Groups, Tabs, order,
 // each Host's active Tab: src-tauri/core/src/layout/), changed only through the Hosts' `tab_*`
 // / `group_*` commands, plus what is this client's own: the Tab in view, the sidebar width and
-// visibility, the Panel, the user's unread marks. Those persist in the `sidebar` section of
+// visibility, the Panel, the user's unread marks, the window's mode (Tabs or Manager) and
+// Manager's zoom. Those persist in the `sidebar` section of
 // settings.json (debounced ~500 ms), never in a Host's layout.json.
 //
 // The local Host (this Mac's own, `LOCAL_HOST`) is read with `layout_get` and followed on the
@@ -39,14 +40,17 @@ import { hostCommands, hostTransport } from "./host/hosts.svelte";
 import {
   clampPanelHeight,
   clampWidth,
+  DEFAULT_MANAGER_ZOOM,
   DEFAULT_PANEL,
   DEFAULT_SIDEBAR_WIDTH,
   parseSidebarSection,
+  type ManagerZoom,
   type PanelState,
   type SidebarSettings,
+  type WindowMode,
 } from "./sidebar/settings";
 
-export type { PanelState };
+export type { ManagerZoom, PanelState, WindowMode };
 export { MAX_PANEL_HEIGHT, MAX_SIDEBAR_WIDTH, MIN_PANEL_HEIGHT, MIN_SIDEBAR_WIDTH } from "./sidebar/settings";
 
 /** A Tab as this client shows it: its Host's, plus which Host, and the user's unread mark. */
@@ -82,6 +86,9 @@ interface LayoutState {
   /** Cmd-B toggle. Not persisted: the sidebar is visible again on relaunch. */
   sidebarVisible: boolean;
   panel: PanelState;
+  /** Tabs (the sidebar and one Terminal) or Manager (every agent's lane). Per window, persisted. */
+  mode: WindowMode;
+  managerZoom: ManagerZoom;
   /** True once the local Host's first snapshot and the sidebar settings are in. Gates persistence. */
   ready: boolean;
 }
@@ -100,6 +107,8 @@ export const layout = $state<LayoutState>({
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   sidebarVisible: true,
   panel: { ...DEFAULT_PANEL },
+  mode: "tabs",
+  managerZoom: DEFAULT_MANAGER_ZOOM,
   ready: false,
 });
 
@@ -258,7 +267,13 @@ function scheduleSave(): void {
 }
 
 function serializeSidebar(): SidebarSettings {
-  return { width: layout.sidebarWidth, panel: { ...layout.panel }, unread: [...unreadMarks] };
+  return {
+    width: layout.sidebarWidth,
+    panel: { ...layout.panel },
+    unread: [...unreadMarks],
+    mode: layout.mode,
+    managerZoom: layout.managerZoom,
+  };
 }
 
 /**
@@ -271,6 +286,8 @@ export async function initLayout(): Promise<void> {
   const saved = parseSidebarSection(await loadSection(SIDEBAR_SECTION).catch(() => undefined));
   layout.sidebarWidth = saved.width;
   layout.panel = saved.panel;
+  layout.mode = saved.mode;
+  layout.managerZoom = saved.managerZoom;
   for (const id of saved.unread) unreadMarks.add(id);
 
   // Listen before the first read: nothing between the two is missed, and an older snapshot
@@ -512,6 +529,23 @@ export function togglePanelCollapsed(): void {
 
 export function setPanelHeight(px: number): void {
   layout.panel.height = clampPanelHeight(px);
+  scheduleSave();
+}
+
+/** Show Tabs (the sidebar and one Terminal) or Manager (every agent's lane) in this window. */
+export function setMode(mode: WindowMode): void {
+  if (layout.mode === mode) return;
+  layout.mode = mode;
+  scheduleSave();
+}
+
+export function toggleMode(): void {
+  setMode(layout.mode === "manager" ? "tabs" : "manager");
+}
+
+export function setManagerZoom(zoom: ManagerZoom): void {
+  if (layout.managerZoom === zoom) return;
+  layout.managerZoom = zoom;
   scheduleSave();
 }
 

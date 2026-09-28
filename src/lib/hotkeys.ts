@@ -30,6 +30,7 @@ export type ActionId =
   | "host.newTab"
   | "host.moveTab"
   | "sidebar.toggle"
+  | "view.manager"
   | "settings.toggle";
 
 export type ActionCategory = "Tabs" | "Groups" | "Hosts" | "App";
@@ -70,8 +71,9 @@ export const ACTIONS: readonly ActionDef[] = [
   })),
   // Handoff: the first paired Host that is online, the Group of its active Tab.
   { id: "host.newTab", label: "New Tab on Host", category: "Hosts", default: cmd("t", { shift: true }) },
-  { id: "host.moveTab", label: "Move Tab to Host", category: "Hosts", default: cmd("m", { shift: true }) },
+  { id: "host.moveTab", label: "Move Tab to Host", category: "Hosts", default: cmd("h", { shift: true }) },
   { id: "sidebar.toggle", label: "Toggle Sidebar", category: "App", default: cmd("b") },
+  { id: "view.manager", label: "Tabs / Manager", category: "App", default: cmd("m", { shift: true }) },
   { id: "settings.toggle", label: "Settings", category: "App", default: cmd(",") },
 ];
 

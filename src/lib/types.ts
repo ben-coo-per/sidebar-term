@@ -47,6 +47,57 @@ export interface SessionInfo {
   bells: number;
   /** Running / Needs input / Done for an Agent session; null otherwise. */
   status: AgentStatus | null;
+  /**
+   * Every change of `status` over the last few hours, oldest first (src-tauri/core/src/agents/):
+   * Manager's lane. The first may be older than the window, so the lane knows how it started.
+   */
+  history: StatusChange[];
+  /** The agent reports through its hooks (Claude Code started through sidebar-term's `claude`). */
+  hooked: boolean;
+  /** What the agent is asking right now, from its hooks; while set, `status` is Needs input. */
+  pending: Pending | null;
+}
+
+/** One change of a Session's Agent status: to `status` (null: the agent left), at `at` (epoch ms). */
+export interface StatusChange {
+  status: AgentStatus | null;
+  at: number;
+}
+
+export type PendingKind = "permission" | "question";
+
+/** One line of a question's detail: a diff's removal or addition, or plain. */
+export interface PendingLine {
+  text: string;
+  tone: "plain" | "add" | "remove";
+}
+
+/** A question a hooked agent is waiting on; the Host holds its hook open until answered or let go. */
+export interface Pending {
+  /** Names this question: an answer to one already gone is refused. */
+  id: number;
+  kind: PendingKind;
+  /** One line: "Make this edit to src/session.rs?". */
+  text: string;
+  /** What it is about: the diff of an edit, the command to run. */
+  detail: PendingLine[];
+  /** The answers on offer, the first the default. */
+  options: string[];
+  /** When it was asked, epoch ms. */
+  since: number;
+}
+
+/** What kind of thing an agent did, for Manager's feed. */
+export type AgentEventKind = "asked" | "answered" | "started" | "edit" | "read" | "command" | "failed" | "idle";
+
+/** What an agent did: from its hooks, or a screen-only agent's change of status. */
+export interface AgentEvent {
+  /** Epoch ms. */
+  at: number;
+  sessionId: SessionId;
+  kind: AgentEventKind;
+  /** One line: "Updated remote/pairing.rs (+61)". */
+  text: string;
 }
 
 /** A Host as its clients see it (`hello.host` in the Host protocol). */
@@ -323,3 +374,5 @@ export const EVENT_REMOTE = "remote";
 export const EVENT_MEMORY_GUARD = "memory-guard";
 /** The layout changed; payload LayoutSnapshot, the whole of it. */
 export const EVENT_LAYOUT = "layout";
+/** An agent did something; payload AgentEvent. */
+export const EVENT_AGENT_EVENT = "agent-event";

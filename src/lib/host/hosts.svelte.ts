@@ -1,7 +1,7 @@
 // The paired Hosts, as the Mac app drives them: one connection per Host (./client.ts, the Host
 // protocol over its socket, reconnecting with backoff), its connection state for the sidebar's
 // section header and the Settings page, its name and home from `hello`, each Session's CPU and
-// memory from its `activity` messages, and the token that lets this Mac in (settings.json,
+// memory from its `activity` messages, its agent events (src/lib/manager/feed.svelte.ts), and the token that lets this Mac in (settings.json,
 // section `hosts`: ./settings.ts). What a Host says about its layout and Sessions goes into the
 // same mirrors as the local Host's: src/lib/layout.svelte.ts (`applyHostSnapshot`) and
 // src/lib/sessions.svelte.ts (`applySessionInfo`); its Sessions' Terminals are the Terminal
@@ -12,6 +12,7 @@ import type { ActivitySession, ConversationFiles, HostInfo, PathExists, SessionI
 import type { SessionTransport, TerminalSink } from "../terminal/manager";
 import { applyHostSnapshot, dropHost, ensureHostSection, type LayoutCommands } from "../layout.svelte";
 import { applySessionInfo, forgetSession, setHostHome } from "../sessions.svelte";
+import { addAgentEvent, dropHostAgentEvents, setHostAgentEvents } from "../manager/feed.svelte";
 import type { ConnectionStatus, HostClient } from "./client";
 import { openHostClient, pairHost } from "./connect";
 import { sessionKey, type HostId } from "./ids";
@@ -105,7 +106,7 @@ function connect(state: HostState): void {
       state.status = status;
       state.detail = detail;
     }),
-    client.on("hello", (info, device, layout, sessions) => {
+    client.on("hello", (info, device, layout, sessions, agentEvents) => {
       state.info = info;
       state.device = device;
       if (state.name !== info.name) {
@@ -125,7 +126,9 @@ function connect(state: HostState): void {
       state.activity = {};
       applyHostSnapshot(id, layout, { fresh: true });
       for (const s of sessions) applySessionInfo(id, s);
+      setHostAgentEvents(id, agentEvents);
     }),
+    client.on("agentEvent", (event) => addAgentEvent(id, event)),
     client.on("layout", (layout) => applyHostSnapshot(id, layout)),
     client.on("session", (session) => applySessionInfo(id, session)),
     client.on("activity", (sessions) => {
@@ -239,6 +242,7 @@ export async function addHost(url: string, code: string): Promise<void> {
 export function removeHost(id: HostId): void {
   disconnect(id);
   dropHost(id);
+  dropHostAgentEvents(id);
   hosts.list = hosts.list.filter((h) => h.id !== id);
   persist();
 }
@@ -295,6 +299,16 @@ export async function hostPathExists(id: HostId, path: string): Promise<PathExis
   const answer = await (clientOf(id)?.command({ t: "path_exists", path }) ?? notConnected());
   if (!answer || !("exists" in answer)) throw new Error("The Host answered path_exists without an answer.");
   return answer;
+}
+
+/** Answer the question a Session's agent on the Host is waiting on (`answer`). */
+export async function hostAnswer(id: HostId, sessionId: SessionId, pendingId: number, option: number): Promise<void> {
+  await (clientOf(id)?.command({ t: "answer", sessionId, pendingId, option }) ?? notConnected());
+}
+
+/** Let the agent ask that question in its Terminal instead (`release`). */
+export async function hostRelease(id: HostId, sessionId: SessionId, pendingId: number): Promise<void> {
+  await (clientOf(id)?.command({ t: "release", sessionId, pendingId }) ?? notConnected());
 }
 
 /** Type into a Session on the Host (what a Terminal would send). */

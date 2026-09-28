@@ -1,4 +1,5 @@
-<!-- App shell: sidebar on the left, the active Tab's Terminal on the right.
+<!-- App shell: sidebar on the left, the active Tab's Terminal on the right (Tabs mode), or the
+     whole window as Manager (src/lib/manager/Manager.svelte), per the window's mode.
      See docs/architecture.md "Window": titleBarStyle Overlay, hidden title, the sidebar carries
      the ~28px traffic-light inset and its own data-tauri-drag-region (src/lib/sidebar/Sidebar.svelte). -->
 <script lang="ts">
@@ -17,6 +18,8 @@
   import { onMenuSettings } from "$lib/ipc";
   import { initDropGuard } from "$lib/terminal/drop";
   import SettingsPage from "$lib/settings/SettingsPage.svelte";
+  import Manager from "$lib/manager/Manager.svelte";
+  import { initAgentFeed } from "$lib/manager/feed.svelte";
   import ResumeBanner from "$lib/resume/ResumeBanner.svelte";
   import { initResume } from "$lib/resume/resume.svelte";
   import { initRemote } from "$lib/remote/remote.svelte";
@@ -40,6 +43,7 @@
     const stopCaffeinate = initCaffeinate();
     const stopRemote = initRemote();
     const stopMemoryGuard = initMemoryGuard();
+    const stopAgentFeed = initAgentFeed();
     const menuSettings = onMenuSettings(openSettings);
     return () => {
       stopped = true;
@@ -49,6 +53,7 @@
       stopCaffeinate();
       stopRemote();
       stopMemoryGuard();
+      stopAgentFeed();
       void menuSettings.then((stop) => stop());
     };
   });
@@ -61,9 +66,11 @@
 
   const active = $derived(activeTab());
 
+  const managerMode = $derived(layout.ready && layout.mode === "manager");
+
   // Memory Guard never freezes the Tab in view, and going to a frozen Tab thaws it. It is this
-  // Mac's: a paired Host's Tab in view leaves no local Session in view.
-  $effect(() => setVisibleSession(localSessionId(active)));
+  // Mac's: a paired Host's Tab in view leaves no local Session in view; Manager shows none.
+  $effect(() => setVisibleSession(managerMode ? null : localSessionId(active)));
 
   // Tabs show their CPU and memory from Activity samples, taken only while something shows them.
   $effect(() => {
@@ -72,18 +79,27 @@
 </script>
 
 <main class="app">
-  {#if layout.sidebarVisible}
-    <Sidebar />
-  {/if}
-  <section class="main">
-    <div class="terminal">
-      <TerminalPane sessionKey={tabSessionKey(active)} />
-    </div>
-    <ResumeBanner />
-    {#if settingsPage.open}
-      <SettingsPage />
+  {#if managerMode}
+    <section class="main">
+      <Manager />
+      {#if settingsPage.open}
+        <SettingsPage />
+      {/if}
+    </section>
+  {:else}
+    {#if layout.sidebarVisible}
+      <Sidebar />
     {/if}
-  </section>
+    <section class="main">
+      <div class="terminal">
+        <TerminalPane sessionKey={tabSessionKey(active)} />
+      </div>
+      <ResumeBanner />
+      {#if settingsPage.open}
+        <SettingsPage />
+      {/if}
+    </section>
+  {/if}
 </main>
 
 <style>

@@ -6,6 +6,7 @@ import { invoke, Channel, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   EVENT_ACTIVITY,
+  EVENT_AGENT_EVENT,
   EVENT_CAFFEINATE,
   EVENT_LAYOUT,
   EVENT_MEMORY_GUARD,
@@ -15,6 +16,7 @@ import {
   EVENT_SESSION_INFO,
   EVENT_USAGE,
   type ActivitySnapshot,
+  type AgentEvent,
   type AgentKind,
   type ClaudeConversation,
   type ConversationFiles,
@@ -180,6 +182,29 @@ export function onSessionInfo(cb: (info: SessionInfo) => void): Promise<Unlisten
 export function onSessionExit(cb: (exit: SessionExit) => void): Promise<UnlistenFn> {
   if (!inTauri) return mock.onSessionExit(cb);
   return listen<SessionExit>(EVENT_SESSION_EXIT, (e) => cb(e.payload));
+}
+
+/** The local Host's last agent events, oldest first; later ones arrive through `onAgentEvent`. */
+export function agentEvents(): Promise<AgentEvent[]> {
+  if (!inTauri) return mock.agentEvents();
+  return invoke("agent_events");
+}
+
+export function onAgentEvent(cb: (event: AgentEvent) => void): Promise<UnlistenFn> {
+  if (!inTauri) return mock.onAgentEvent(cb);
+  return listen<AgentEvent>(EVENT_AGENT_EVENT, (e) => cb(e.payload));
+}
+
+/** Answer the question a local Session's agent is waiting on with option `option` (0-based). */
+export function agentAnswer(sessionId: SessionId, pendingId: number, option: number): Promise<void> {
+  if (!inTauri) return mock.agentAnswer(sessionId, pendingId, option);
+  return invoke("agent_answer", { sessionId, pendingId, option });
+}
+
+/** Stop holding that question: the agent asks it in its Terminal instead. */
+export function agentRelease(sessionId: SessionId, pendingId: number): Promise<void> {
+  if (!inTauri) return mock.agentRelease(sessionId, pendingId);
+  return invoke("agent_release", { sessionId, pendingId });
 }
 
 /** Start or stop sampling Activity; while on, `onActivity` fires every ~2 s. Sampling runs `ps`. */

@@ -51,9 +51,10 @@ function ensure(key: SessionKey): SessionState {
   return s;
 }
 
+/** The Session's Tab is the one in view: Tabs mode, its Terminal showing (in Manager none is). */
 function isActiveTabForSession(key: SessionKey): boolean {
   const tabId = tabIdForSession(key);
-  return tabId !== null && tabId === layout.activeTabId;
+  return layout.mode === "tabs" && tabId !== null && tabId === layout.activeTabId;
 }
 
 // --- Wire up Session facts -----------------------------------------------------------------
@@ -97,9 +98,11 @@ terminals.on("exit", (key) => {
   forgetSession(key);
 });
 
-// Clear the sticky "finished"/"highlight" markers the moment a Tab is (re)activated.
+// Clear the sticky "finished"/"highlight" markers the moment a Tab is (re)activated, or shows
+// again as the window leaves Manager.
 $effect.root(() => {
   $effect(() => {
+    if (layout.mode !== "tabs") return;
     const tab = layout.activeTabId ? layout.tabs[layout.activeTabId] : null;
     if (!tab || tab.sessionId === null) return;
     const s = sessions[sessionKey(tab.host, tab.sessionId)];

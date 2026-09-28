@@ -14,6 +14,9 @@ function info(sessionId: number, over: Partial<SessionInfo> = {}): SessionInfo {
     title: null,
     bells: 0,
     status: null,
+    history: [],
+    hooked: false,
+    pending: null,
     ...over,
   };
 }

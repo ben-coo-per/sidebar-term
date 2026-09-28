@@ -2,7 +2,9 @@
      (its header, then its Groups and Tabs, greyed while the Host is not connected), resizable,
      with the Panel beneath them and the shared context menu and confirm dialog mounted once.
      Runs to the top of the window; its header is the Tauri drag region (see
-     docs/architecture.md "Window") and holds the Tray, right of the traffic lights. -->
+     docs/architecture.md "Window") and holds the Tabs / Manager switch (when the sidebar is wide
+     enough for it beside the Tray) and the Tray, right of the traffic lights. While agents wait
+     on the user, a strip at the top of the Groups says how many and opens Manager. -->
 <script lang="ts">
   import {
     layout,
@@ -17,6 +19,8 @@
   import { LOCAL_HOST } from "../host/ids";
   import Panel from "../panel/Panel.svelte";
   import Tray from "../tray/Tray.svelte";
+  import ModeSwitch from "../manager/ModeSwitch.svelte";
+  import WaitingStrip from "../manager/WaitingStrip.svelte";
   import GroupHeader from "./GroupHeader.svelte";
   import HostHeader from "./HostHeader.svelte";
   import TabRow from "./TabRow.svelte";
@@ -34,6 +38,9 @@
   }
 
   const localTabs = $derived(layout.groups.reduce((n, g) => n + g.tabIds.length, 0));
+
+  /** Below this sidebar width the Tabs / Manager switch and the Tray do not both fit; the Hotkey and the waiting strip still reach Manager. */
+  const MODE_SWITCH_MIN_WIDTH = 260;
 
   let resizing = $state(false);
 
@@ -58,10 +65,15 @@
 
 <aside class="sidebar" style:width="{layout.sidebarWidth}px">
   <div class="drag-region" data-tauri-drag-region>
+    {#if layout.sidebarWidth >= MODE_SWITCH_MIN_WIDTH}
+      <ModeSwitch />
+    {/if}
+    <span class="drag-spacer" data-tauri-drag-region></span>
     <Tray />
   </div>
 
   <div class="groups" role="tree" aria-label="Tabs">
+    <WaitingStrip />
     {#if !layout.ready}
       <!-- Startup: loading the persisted layout and respawning Sessions. -->
     {:else}
@@ -163,11 +175,15 @@
     flex: none;
     display: flex;
     align-items: center;
-    justify-content: flex-end;
+    gap: 10px;
     height: var(--titlebar-inset);
     /* The Tray never runs under the traffic lights. */
     padding: 0 6px 0 var(--traffic-lights-width);
     -webkit-app-region: drag;
+  }
+  .drag-spacer {
+    flex: 1 1 auto;
+    align-self: stretch;
   }
   .groups {
     flex: 1 1 auto;

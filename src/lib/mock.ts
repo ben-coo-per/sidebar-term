@@ -1,7 +1,10 @@
 // Browser-only fake backend so the UI runs under plain `vite dev` without Rust.
 // Each fake Session is a tiny line-echo "shell". Typing one of these commands changes what
 // the fake monitor reports, so every sidebar state can be exercised by hand:
-//   claude | codex | gemini   -> Agent session (type `exit` to return to the shell)
+//   claude | codex | gemini   -> Agent session (type `exit` to return to the shell); inside it,
+//                                anything "works" for 3 s, `ask` asks: Claude Code as a hooked
+//                                agent (a question Manager can answer, `ask q` one with options),
+//                                Codex and Gemini screen-only (a BEL)
 //   ssh                       -> remote hop
 //   npm | pnpm | uv ...       -> a long-running command (`exit` or Ctrl-C to stop it)
 //   cd <path>                 -> cwd; paths under the fake repos below get git info
@@ -30,6 +33,7 @@ import type {
   ActivityProcess,
   ActivitySession,
   ActivitySnapshot,
+  AgentEvent,
   AgentKind,
   AgentStatus,
   AgentUsage,
@@ -47,6 +51,8 @@ import type {
   SessionExit,
   SessionId,
   SessionInfo,
+  StatusChange,
+  Pending,
   Tab,
   UsageSnapshot,
 } from "./types";
@@ -55,6 +61,7 @@ type InfoCb = (i: SessionInfo) => void;
 type ExitCb = (e: SessionExit) => void;
 type ActivityCb = (a: ActivitySnapshot) => void;
 type LayoutCb = (s: LayoutSnapshot) => void;
+type AgentEventCb = (e: AgentEvent) => void;
 
 interface FakeSession {
   id: SessionId;
@@ -78,6 +85,10 @@ interface FakeSession {
   status: AgentStatus | null;
   /** The timer that ends a fake agent's "running" spell. */
   busy: ReturnType<typeof setTimeout> | null;
+  /** Every change of its status, as the Host keeps them (src-tauri/core/src/agents/). */
+  history: StatusChange[];
+  /** The question a fake hooked Claude Code is waiting on, and each option's effect. */
+  pending: Pending | null;
 }
 
 const HOME = "/Users/you";
@@ -108,6 +119,9 @@ function createFakeHost(opts: FakeHostOptions) {
   const infoCbs = new Set<InfoCb>();
   const exitCbs = new Set<ExitCb>();
   const layoutCbs = new Set<LayoutCb>();
+  const eventCbs = new Set<AgentEventCb>();
+  const feed: AgentEvent[] = [];
+  let nextPending = 1;
   let nextId = 1;
   let revision = 0;
 
@@ -134,6 +148,30 @@ function createFakeHost(opts: FakeHostOptions) {
     return null;
   }
 
+  /** As the Host's `agents::decorate`: a waiting question means Needs input; each change is history. */
+  function status(s: FakeSession): AgentStatus | null {
+    if (!s.agent) return null;
+    return s.pending ? "needs-input" : s.status;
+  }
+
+  function track(s: FakeSession) {
+    const now = status(s);
+    const last = s.history[s.history.length - 1];
+    if (last ? last.status === now : now === null) return;
+    s.history.push({ status: now, at: Date.now() });
+    if (s.agent && s.agent !== "claude" && now) {
+      const text = { running: "Working (screen only)", "needs-input": "Waiting on you (screen only)", done: "Idle at prompt (screen only)" }[now];
+      record(s, now === "needs-input" ? "asked" : now === "running" ? "command" : "idle", text);
+    }
+  }
+
+  function record(s: FakeSession, kind: AgentEvent["kind"], text: string) {
+    const e: AgentEvent = { at: Date.now(), sessionId: s.id, kind, text };
+    feed.push(e);
+    if (feed.length > 500) feed.shift();
+    setTimeout(() => eventCbs.forEach((cb) => cb(e)), 50);
+  }
+
   function info(s: FakeSession): SessionInfo {
     return {
       sessionId: s.id,
@@ -145,7 +183,10 @@ function createFakeHost(opts: FakeHostOptions) {
       git: s.remote ? null : gitFor(s.cwd),
       title: s.title,
       bells: s.bells,
-      status: s.agent ? s.status : null,
+      status: status(s),
+      history: [...s.history],
+      hooked: s.agent === "claude",
+      pending: s.agent === "claude" ? s.pending : null,
     };
   }
 
@@ -163,6 +204,7 @@ function createFakeHost(opts: FakeHostOptions) {
       s.busy = null;
       if (s.agent && s.status === "running") {
         s.status = "done";
+        if (s.agent === "claude") record(s, "idle", "Idle at prompt");
         if (s.agent === "codex") setTitle(s, "jack");
         if (s.agent === "gemini") setTitle(s, "◇ Ready (jack)");
         emit(s);
@@ -171,6 +213,7 @@ function createFakeHost(opts: FakeHostOptions) {
   }
 
   function emit(s: FakeSession) {
+    track(s);
     if (opts.resume) recordResume(sessions);
     const i = info(s);
     // As the Host does from the monitor: the Tab's last cwd follows its Session.
@@ -205,6 +248,7 @@ function createFakeHost(opts: FakeHostOptions) {
         s.remote = false;
         s.command = null;
         s.status = null;
+        s.pending = null;
         if (s.busy) clearTimeout(s.busy);
         s.busy = null;
         setTitle(s, "");
@@ -214,7 +258,33 @@ function createFakeHost(opts: FakeHostOptions) {
         if (s.agent === "codex") setTitle(s, "⠋ jack");
         if (s.agent === "gemini") setTitle(s, "✦ Working… (jack)");
         if (s.agent === "claude") setTitle(s, `◐ ${cmd.trim()}`);
-        if (head === "ask") {
+        if (head === "ask" && s.agent === "claude") {
+          // A hooked Claude Code: the question goes to Manager, the Terminal shows nothing yet.
+          if (s.busy) clearTimeout(s.busy);
+          s.busy = null;
+          s.pending =
+            rest[0] === "q"
+              ? {
+                  id: nextPending++,
+                  kind: "question",
+                  text: "moveTabToHost reads the Resume entry before its write lands. Which fix?",
+                  detail: [],
+                  options: ["Await the write in moveTabToHost", "Poll for the entry in the test"],
+                  since: Date.now(),
+                }
+              : {
+                  id: nextPending++,
+                  kind: "permission",
+                  text: "Make this edit to src-tauri/core/src/session.rs?",
+                  detail: [
+                    { text: "−   if token != self.expected { return Err(Denied) }", tone: "remove" },
+                    { text: "+   verify_pairing(token, &self.store)?;", tone: "add" },
+                  ],
+                  options: ["Yes", "Allow all edits this session", "No, tell Claude what to do"],
+                  since: Date.now(),
+                };
+          record(s, "asked", rest[0] === "q" ? "Asked which fix to use" : "Asked to edit session.rs");
+        } else if (head === "ask") {
           out(s, "\x07");
           s.bells += 1;
           if (s.busy) clearTimeout(s.busy);
@@ -224,7 +294,9 @@ function createFakeHost(opts: FakeHostOptions) {
           if (s.agent === "gemini") setTitle(s, "✋ Action Required (jack)");
           if (s.agent === "claude") setTitle(s, `✳ ${cmd.trim()}`);
         } else if (s.agent) {
+          if (s.agent === "claude") record(s, "started", `Started “${cmd.trim()}”`);
           busy(s, 3000);
+          if (s.agent === "claude") setTimeout(() => sessions.has(s.id) && record(s, "edit", "Updated src/lib/manager/model.ts (+12 −3)"), 1200);
         }
         emit(s);
       }
@@ -308,6 +380,8 @@ function createFakeHost(opts: FakeHostOptions) {
       bells: 0,
       status: null,
       busy: null,
+      history: [],
+      pending: null,
     };
     sessions.set(s.id, s);
     setTimeout(() => {
@@ -419,6 +493,41 @@ function createFakeHost(opts: FakeHostOptions) {
   async function onSessionExit(cb: ExitCb) {
     exitCbs.add(cb);
     return () => void exitCbs.delete(cb);
+  }
+
+  async function agentEvents(): Promise<AgentEvent[]> {
+    return [...feed];
+  }
+
+  async function onAgentEvent(cb: AgentEventCb) {
+    eventCbs.add(cb);
+    return () => void eventCbs.delete(cb);
+  }
+
+  /** As the Host: the hook gets its reply, and the fake agent picks up where it was. */
+  async function agentAnswer(id: SessionId, pendingId: number, option: number): Promise<void> {
+    const s = sessions.get(id);
+    if (!s?.pending || s.pending.id !== pendingId) throw new Error("That question is no longer waiting");
+    const label = s.pending.options[option];
+    if (label === undefined) throw new Error(`No option ${option + 1}`);
+    s.pending = null;
+    record(s, "answered", `You answered “${label}”`);
+    // A beat before the agent is back at it, as the real one takes to pick up.
+    setTimeout(() => {
+      if (!sessions.has(s.id)) return;
+      if (option === 0) busy(s, 3000);
+      else s.status = "done";
+      emit(s);
+    }, 800);
+  }
+
+  async function agentRelease(id: SessionId, pendingId: number): Promise<void> {
+    const s = sessions.get(id);
+    if (!s?.pending || s.pending.id !== pendingId) return;
+    s.pending = null;
+    s.status = "needs-input";
+    out(s, "\r\n\x1b[33m? Do you want to make this edit?\x1b[0m\r\n  1. Yes\r\n  2. No\r\n");
+    emit(s);
   }
 
   // --- The layout: the Host's model, in localStorage -------------------------------------------
@@ -654,6 +763,10 @@ function createFakeHost(opts: FakeHostOptions) {
     resolvePaths,
     onSessionInfo,
     onSessionExit,
+    agentEvents,
+    onAgentEvent,
+    agentAnswer,
+    agentRelease,
     layoutGet,
     onLayout,
     tabNew,
@@ -721,6 +834,10 @@ export const {
   resolvePaths,
   onSessionInfo,
   onSessionExit,
+  agentEvents,
+  onAgentEvent,
+  agentAnswer,
+  agentRelease,
   layoutGet,
   onLayout,
   tabNew,
@@ -1121,6 +1238,7 @@ export function hostClient(url: string, token: string): HostClient {
     layout: new Set(),
     session: new Set(),
     activity: new Set(),
+    agentEvent: new Set(),
     attached: new Set(),
     resized: new Set(),
     output: new Set(),
@@ -1184,14 +1302,15 @@ export function hostClient(url: string, token: string): HostClient {
       const info: HostInfo = { name: "dell", version: "0.1.0-mock", home: DELL_HOME };
       void host.onLayout((snap) => emit("layout", snap)).then((off) => offs.push(off));
       void host.onSessionInfo((i) => emit("session", i)).then((off) => offs.push(off));
+      void host.onAgentEvent((e) => emit("agentEvent", e)).then((off) => offs.push(off));
       void host
         .onSessionExit((e) => {
           if (wanted.delete(e.sessionId)) emit("exit", e.sessionId);
         })
         .then((off) => offs.push(off));
       emit("status", "online", null);
-      void host.layoutGet().then((layout) => {
-        emit("hello", info, "Mac app", layout, host.infos());
+      void Promise.all([host.layoutGet(), host.agentEvents()]).then(([layout, events]) => {
+        emit("hello", info, "Mac app", layout, host.infos(), events);
         for (const id of wanted) attachNow(host, id);
       });
       activityTimer = setInterval(() => emit("activity", host.activitySnapshot().sessions), 2000);
@@ -1252,6 +1371,10 @@ export function hostClient(url: string, token: string): HostClient {
           return void (await host.groupDelete(msg.groupId));
         case "group_set_collapsed":
           return void (await host.groupSetCollapsed(msg.groupId, msg.collapsed));
+        case "answer":
+          return void (await host.agentAnswer(msg.sessionId, msg.pendingId, msg.option));
+        case "release":
+          return void (await host.agentRelease(msg.sessionId, msg.pendingId));
         case "path_exists": {
           // The fake dell has `~/Dev/jack` (with `src`) and `~/Dev`; nothing else.
           const known = [DELL_HOME, `${DELL_HOME}/Dev`, `${DELL_HOME}/Dev/jack`, `${DELL_HOME}/Dev/jack/src`];

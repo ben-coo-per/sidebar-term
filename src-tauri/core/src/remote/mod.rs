@@ -21,6 +21,7 @@ mod server;
 mod tailscale;
 pub mod tap;
 
+use crate::agents::Agents;
 use crate::host::{Assets, Host};
 use crate::layout::{Layout, Update};
 use crate::model::{
@@ -57,6 +58,8 @@ pub(crate) enum HubMsg {
     Session(SessionId),
     /// An Activity sample: each Session's CPU and memory, while the Host samples.
     Activity(Arc<serde_json::Value>),
+    /// An agent did something (`agents/`): one `AgentEvent`.
+    AgentEvent(Arc<serde_json::Value>),
     /// Remote is turning off: every connection closes.
     Shutdown,
 }
@@ -66,6 +69,7 @@ pub(crate) struct Inner {
     sessions: Arc<SessionManager>,
     taps: Arc<Taps>,
     layout: Arc<Layout>,
+    agents: Agents,
     /// `remote.json`; `None` when the app data dir is unavailable (pairings then last one run).
     path: Option<PathBuf>,
     store: Mutex<Store>,
@@ -96,6 +100,7 @@ impl Remote {
         sessions: Arc<SessionManager>,
         taps: Arc<Taps>,
         layout: Arc<Layout>,
+        agents: Agents,
         path: Option<PathBuf>,
     ) -> Self {
         let store = path.as_deref().and_then(read_store).unwrap_or_default();
@@ -108,12 +113,19 @@ impl Remote {
                 Update::Session(id) => HubMsg::Session(id),
             });
         }));
+        let for_events = hub.clone();
+        agents.watch(Box::new(move |event| {
+            if let Ok(value) = serde_json::to_value(event) {
+                let _ = for_events.send(HubMsg::AgentEvent(Arc::new(value)));
+            }
+        }));
         Self {
             inner: Arc::new(Inner {
                 host,
                 sessions,
                 taps,
                 layout,
+                agents,
                 path,
                 store: Mutex::new(store),
                 pairing: Mutex::new(None),
@@ -343,6 +355,10 @@ impl Inner {
 
     pub(crate) fn hub_subscribe(&self) -> broadcast::Receiver<HubMsg> {
         self.hub.subscribe()
+    }
+
+    pub(crate) fn agents(&self) -> &Agents {
+        &self.agents
     }
 
     pub(crate) fn layout(&self) -> &Arc<Layout> {

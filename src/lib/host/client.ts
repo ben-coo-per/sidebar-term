@@ -5,7 +5,7 @@
 // origin it was loaded from) and the Mac app for each paired Host (./hosts.svelte.ts, against
 // the Host's URL). No DOM beyond WebSocket and fetch; the stores own what is shown.
 
-import type { ActivitySession, ConversationFiles, HostInfo, LayoutSnapshot, SessionId, SessionInfo } from "../types";
+import type { ActivitySession, AgentEvent, ConversationFiles, HostInfo, LayoutSnapshot, SessionId, SessionInfo } from "../types";
 import {
   CLOSE_GOING_AWAY,
   CLOSE_UNAUTHORIZED,
@@ -28,10 +28,13 @@ export type ConnectionStatus = "connecting" | "online" | "offline";
 export interface ClientEvents {
   /** `detail` says why we are offline, when the Host said. */
   status: (status: ConnectionStatus, detail: string | null) => void;
-  hello: (host: HostInfo, device: string, layout: LayoutSnapshot, sessions: SessionInfo[]) => void;
+  /** `agentEvents`: the Host's recent agent events, oldest first (none from an older Host). */
+  hello: (host: HostInfo, device: string, layout: LayoutSnapshot, sessions: SessionInfo[], agentEvents: AgentEvent[]) => void;
   layout: (layout: LayoutSnapshot) => void;
   session: (session: SessionInfo) => void;
   activity: (sessions: ActivitySession[]) => void;
+  /** An agent did something. */
+  agentEvent: (event: AgentEvent) => void;
   /** Attached; a replay of the Session's recent output follows, at this grid. */
   attached: (sessionId: SessionId, cols: number, rows: number) => void;
   resized: (sessionId: SessionId, cols: number, rows: number) => void;
@@ -101,6 +104,7 @@ export class RemoteClient implements HostClient {
     layout: new Set(),
     session: new Set(),
     activity: new Set(),
+    agentEvent: new Set(),
     attached: new Set(),
     resized: new Set(),
     output: new Set(),
@@ -268,7 +272,7 @@ export class RemoteClient implements HostClient {
       case "hello":
         this.attempts = 0;
         this.emit("status", "online", null);
-        this.emit("hello", msg.host, msg.device, msg.layout, msg.sessions);
+        this.emit("hello", msg.host, msg.device, msg.layout, msg.sessions, msg.agentEvents ?? []);
         // Back after a drop: pick up where we were.
         for (const id of this.wanted) this.send({ t: "attach", sessionId: id });
         break;
@@ -280,6 +284,9 @@ export class RemoteClient implements HostClient {
         break;
       case "activity":
         this.emit("activity", msg.sessions);
+        break;
+      case "agent_event":
+        this.emit("agentEvent", msg.event);
         break;
       case "attached":
         this.emit("attached", msg.sessionId, msg.cols, msg.rows);
