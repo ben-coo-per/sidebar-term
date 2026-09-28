@@ -1,12 +1,14 @@
-<!-- Where an agent runs, compactly: its repo's dot and repo (or repo/worktree, in italics for a
-     linked Worktree), as the Badge shows them without the branch. A remote hop reads "remote". -->
+<!-- Where a lane's agent runs, under its project: its repo's dot and the branch (or `@sha` when
+     detached), left out when it only repeats the linked Worktree's name. A remote hop reads
+     "remote". The repo itself is on the lane's first line. -->
 <script lang="ts">
   import type { GitInfo } from "../types";
   import { repoColorVar } from "../sidebar/repoColor";
 
   let { git, remote }: { git: GitInfo | null; remote: boolean } = $props();
 
-  const place = $derived(git ? (git.worktreeName ? `${git.repoName}/${git.worktreeName}` : git.repoName) : "");
+  const ref = $derived(git ? (git.branch ?? (git.headShort ? `@${git.headShort}` : "")) : "");
+  const showRef = $derived(!!ref && !(git?.worktreeName && git.branch === git.worktreeName));
 </script>
 
 {#if remote}
@@ -14,7 +16,7 @@
 {:else if git}
   <span class="place-badge" title={git.worktreeRoot}>
     <span class="dot" style:background={repoColorVar(git.commonDir)}></span>
-    <span class="name" class:linked={!!git.worktreeName}>{place}</span>
+    {#if showRef}<span class="name">{ref}</span>{/if}
   </span>
 {/if}
 
@@ -41,8 +43,5 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .name.linked {
-    font-style: italic;
   }
 </style>

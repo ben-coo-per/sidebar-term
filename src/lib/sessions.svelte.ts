@@ -153,6 +153,11 @@ async function initHome(): Promise<void> {
 }
 void initHome();
 
+/** A Host's home directory, when known (for the `~` in a name). */
+export function hostHome(host: HostId): string | null {
+  return homes.get(host) ?? null;
+}
+
 export function setHostHome(host: HostId, home: string | null): void {
   if (!isLocal(host)) homes.set(host, home);
 }

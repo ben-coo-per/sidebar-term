@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  agentLabel,
   formatDuration,
   holdOrder,
   lastLines,
+  lastPrompt,
   laneStart,
   segments,
   sortLanes,
@@ -114,5 +116,65 @@ describe("turnSummary", () => {
 describe("lastLines", () => {
   it("keeps the last non-empty lines", () => {
     expect(lastLines(["a", "", "b   ", "  ", "c", ""], 2)).toEqual(["b", "c"]);
+  });
+});
+
+describe("agentLabel", () => {
+  const git = (repoName: string, worktreeName: string | null = null) => ({
+    repoName,
+    commonDir: `/r/${repoName}/.git`,
+    worktreeRoot: `/r/${repoName}`,
+    worktreeName,
+    branch: "main",
+    headShort: null,
+  });
+  const base = { customTitle: null, git: null, cwd: null, home: "/Users/you", oscTitle: null, agent: "claude" as const, lastPrompt: null };
+
+  it("names the project, and takes Claude Code's own summary from its title", () => {
+    expect(agentLabel({ ...base, git: git("sidebar-term"), oscTitle: "◐ Fix the badge colours in the sidebar" })).toEqual({
+      project: "sidebar-term",
+      description: "fix the badge",
+    });
+    expect(agentLabel({ ...base, git: git("jack", "navbar"), oscTitle: "✳ Refactor moveTabToHost." })).toEqual({
+      project: "jack/navbar",
+      description: "refactor moveTabToHost",
+    });
+  });
+
+  it("falls back to the last prompt, then to nothing", () => {
+    expect(agentLabel({ ...base, agent: "codex", git: git("api"), oscTitle: "⠋ api", lastPrompt: "Move the API to Postgres 17" })).toEqual({
+      project: "api",
+      description: "move the API",
+    });
+    expect(agentLabel({ ...base, agent: "gemini", cwd: "/Users/you/notes", oscTitle: "◇ Ready (notes)" })).toEqual({
+      project: "notes",
+      description: null,
+    });
+  });
+
+  it("says nothing that only repeats the project or the agent", () => {
+    expect(agentLabel({ ...base, git: git("jig"), oscTitle: "✳ Claude Code" }).description).toBeNull();
+    expect(agentLabel({ ...base, git: git("jig"), oscTitle: "◐ jig" }).description).toBeNull();
+  });
+
+  it("keeps a rename as it is", () => {
+    expect(agentLabel({ ...base, customTitle: "auth refactor", git: git("jig"), oscTitle: "◐ Other" })).toEqual({
+      project: "auth refactor",
+      description: null,
+    });
+  });
+
+  it("uses the folder, ~ for home, or the agent's name", () => {
+    expect(agentLabel({ ...base, cwd: "/Users/you" }).project).toBe("~");
+    expect(agentLabel({ ...base, cwd: "/tmp/scratch/" }).project).toBe("scratch");
+    expect(agentLabel(base).project).toBe("Claude Code");
+  });
+});
+
+describe("lastPrompt", () => {
+  it("reads the last Started event", () => {
+    const e = (kind: AgentEvent["kind"], text: string): AgentEvent => ({ at: 0, sessionId: 1, kind, text });
+    expect(lastPrompt([e("started", "Started “one”"), e("edit", "Updated a"), e("started", "Started “two words”")])).toBe("two words");
+    expect(lastPrompt([e("edit", "Updated a")])).toBeNull();
   });
 });
