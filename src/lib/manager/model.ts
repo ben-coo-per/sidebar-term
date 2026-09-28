@@ -3,8 +3,7 @@
 // is passed in. See docs/architecture.md "Manager".
 
 import type { ManagerZoom } from "../sidebar/settings";
-import type { AgentEvent, AgentEventKind, AgentKind, AgentStatus, GitInfo, StatusChange } from "../types";
-import { AGENT_NAMES } from "../agentStatus";
+import type { AgentEvent, AgentEventKind, AgentStatus, StatusChange } from "../types";
 
 export const ZOOM_LABELS: Record<ManagerZoom, string> = { "15m": "15m", "1h": "1h", "4h": "4h", start: "Since start" };
 
@@ -156,100 +155,6 @@ export function turnSummary(events: AgentEvent[]): string | null {
 /** The last `n` non-empty lines of a screen, trailing blanks dropped. */
 export function lastLines(lines: string[], n: number): string[] {
   return lines.map((l) => l.replace(/\s+$/, "")).filter((l) => l.trim() !== "").slice(-n);
-}
-
-// --- What to call an agent -------------------------------------------------------------------
-
-/** Words a description keeps at most: enough to jog the memory, not to explain. */
-const DESCRIPTION_WORDS = 3;
-
-/** How each agent's name reads in its own title, which a description never merely repeats. */
-const AGENT_WORDS: Record<AgentKind, string[]> = {
-  claude: ["claude", "claude code"],
-  codex: ["codex"],
-  gemini: ["gemini"],
-};
-
-/** What Manager calls an agent: the project it works in, and a few words on what it is at. */
-export interface AgentLabel {
-  project: string;
-  description: string | null;
-}
-
-export interface AgentLabelInput {
-  /** A rename the user typed: it is the name, and nothing is added to it. */
-  customTitle: string | null;
-  git: GitInfo | null;
-  cwd: string | null;
-  home: string | null;
-  /** The Session's latest OSC title. */
-  oscTitle: string | null;
-  agent: AgentKind | null;
-  /** The last prompt the user gave the agent, from its events. */
-  lastPrompt: string | null;
-}
-
-/** The agent's own words in its title, status marker gone; null when the title says nothing of its own. */
-function titleWords(agent: AgentKind | null, title: string | null): string | null {
-  const t = title?.trim() ?? "";
-  if (!t) return null;
-  switch (agent) {
-    case "claude":
-      // "◐ Fix the badge", "✳ Fix the badge": Claude Code's summary of the conversation.
-      return t.replace(/^[◐◑✳]\s*/u, "") || null;
-    case "codex":
-    case "gemini":
-      // A spinner, "Working… (x)", "Action Required", "Ready (x)": status and project, no subject.
-      return null;
-    default:
-      return t;
-  }
-}
-
-/** Acronyms, camelCase, paths and identifiers keep their case: "API", "moveTabToHost", "v2". */
-function properLooking(word: string): boolean {
-  return /[A-Z].*[A-Z]|[a-z][A-Z]|[_./\d]/.test(word);
-}
-
-/** At most `DESCRIPTION_WORDS` words of `text`, lower-cased but for proper-looking ones, no trailing punctuation. */
-function shorten(text: string): string | null {
-  const words = text
-    .replace(/[“”"]/g, "")
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, DESCRIPTION_WORDS)
-    .map((w) => (properLooking(w) ? w : w.toLowerCase()));
-  return words.join(" ").replace(/[\s.,;:!?…—–-]+$/u, "") || null;
-}
-
-/** A rename, else the repo (with its linked Worktree), else the cwd's folder (`~` for home), else the agent. */
-function projectOf(input: AgentLabelInput): string {
-  if (input.customTitle) return input.customTitle;
-  if (input.git) return input.git.worktreeName ? `${input.git.repoName}/${input.git.worktreeName}` : input.git.repoName;
-  if (input.cwd) {
-    if (input.home && input.cwd.replace(/\/+$/, "") === input.home.replace(/\/+$/, "")) return "~";
-    const base = input.cwd.replace(/\/+$/, "").split("/").pop();
-    if (base) return base;
-  }
-  return input.agent ? AGENT_NAMES[input.agent] : "Agent";
-}
-
-/**
- * What Manager calls an agent: its project, and one to three words on what it is at, from the
- * agent's own title (Claude Code's summary of the conversation) or else the user's last prompt.
- * Loose on purpose: it jogs the memory, it does not report. No description after a rename, or
- * when the words would only repeat the project or the agent's name.
- */
-export function agentLabel(input: AgentLabelInput): AgentLabel {
-  const project = projectOf(input);
-  if (input.customTitle) return { project, description: null };
-  const source = titleWords(input.agent, input.oscTitle) ?? (input.lastPrompt?.trim() || null);
-  const description = source ? shorten(source) : null;
-  if (!description) return { project, description: null };
-  const repeats = [project, input.git?.repoName ?? "", ...(input.agent ? AGENT_WORDS[input.agent] : [])]
-    .filter(Boolean)
-    .map((s) => s.toLowerCase());
-  return { project, description: repeats.includes(description.toLowerCase()) ? null : description };
 }
 
 /** The prompt of the last "Started “…”" among a Session's events (oldest first); null without one. */

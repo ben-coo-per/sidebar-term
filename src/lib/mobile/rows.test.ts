@@ -28,15 +28,18 @@ function tab(id: string, over: Partial<Tab> = {}): Tab {
 const HOME = "/Users/you";
 
 describe("tabRow", () => {
-  it("derives the Title as the Mac does: a rename, the agent, the OSC title, the process, the cwd", () => {
+  it("derives the Title as the Mac does: a rename, the agent's project and doing, the OSC title, the process, the cwd", () => {
     const facts: Facts = { 1: info(1) };
     expect(tabRow(tab("t", { customTitle: "Build" }), facts, HOME).title).toBe("Build");
     expect(tabRow(tab("t"), facts, HOME).title).toBe("jack");
     expect(tabRow(tab("t"), { 1: info(1, { agent: "claude", status: "running" }) }, HOME)).toMatchObject({
-      title: "Claude Code",
+      title: "jack",
       agent: "claude",
       status: "running",
     });
+    expect(tabRow(tab("t"), { 1: info(1, { agent: "claude", title: "◐ Fix the pairing handshake" }) }, HOME).title).toBe(
+      "jack · fix the pairing",
+    );
     expect(
       tabRow(tab("t"), { 1: info(1, { shellIsForeground: false, foreground: "vim", title: "vim: notes.md" }) }, HOME).title,
     ).toBe("vim: notes.md");
@@ -71,7 +74,7 @@ describe("groupRows and findRow", () => {
   it("lists every Group's Tabs in order, skipping ids the layout does not know", () => {
     const rows = groupRows(layout, facts, HOME);
     expect(rows.map((g) => g.name)).toEqual(["Work", "Empty"]);
-    expect(rows[0].tabs.map((t) => t.title)).toEqual(["Codex", "Two"]);
+    expect(rows[0].tabs.map((t) => t.title)).toEqual(["jack", "Two"]);
     expect(rows[0].tabs[0].status).toBe("needs-input");
     expect(rows[1].tabs).toEqual([]);
   });

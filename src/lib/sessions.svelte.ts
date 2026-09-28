@@ -11,7 +11,9 @@
 import { inTauri, onSessionInfo } from "./ipc";
 import { terminals } from "./terminal/manager";
 import type { AgentStatus, SessionInfo } from "./types";
-import { computeAutomaticTitle } from "./agentStatus";
+import { agentLabel, computeAutomaticTitle, type AgentLabel } from "./agentStatus";
+import { feed } from "./manager/feed.svelte";
+import { lastPrompt } from "./manager/model";
 import { recordStatus } from "./manager/history";
 import { isLocal, LOCAL_HOST, sessionKey, type HostId, type SessionKey } from "./host/ids";
 import { layout, setTabUnread, tabIdForSession, type Tab } from "./layout.svelte";
@@ -168,13 +170,42 @@ export function setHostHome(host: HostId, home: string | null): void {
   if (!isLocal(host)) homes.set(host, home);
 }
 
+/** The prompt the Tab's agent was last given, from its Host's agent events (a hooked agent's). */
+function lastPromptOf(tab: Tab): string | null {
+  if (tab.sessionId === null) return null;
+  return lastPrompt((feed.byHost[tab.host] ?? []).filter((e) => e.sessionId === tab.sessionId));
+}
+
+/**
+ * What a Tab's agent is called (`agentLabel`): its project and a few words on what it is at; the
+ * Tab's rename, with nothing added, once it has one. Null while the Tab runs no agent.
+ */
+export function tabAgentLabel(tab: Tab): AgentLabel | null {
+  const s = sessionOf(tab);
+  const agent = s?.info?.agent ?? null;
+  if (!agent) return null;
+  const remote = s?.info?.remote ?? false;
+  return agentLabel({
+    customTitle: tab.customTitle,
+    git: remote ? null : (s?.info?.git ?? null),
+    cwd: remote ? null : (s?.info?.cwd ?? tab.lastCwd),
+    home: homes.get(tab.host) ?? null,
+    oscTitle: s?.title || s?.info?.title || null,
+    agent,
+    lastPrompt: lastPromptOf(tab),
+  });
+}
+
 /** The Title shown on a Tab: a user rename if set, else the automatic Title. */
 export function tabTitle(tab: Tab): string {
   if (tab.customTitle) return tab.customTitle;
   const s = sessionOf(tab);
+  const remote = s?.info?.remote ?? false;
   return computeAutomaticTitle({
     agent: s?.info?.agent ?? null,
-    oscTitle: s?.title ?? null,
+    git: remote ? null : (s?.info?.git ?? null),
+    lastPrompt: lastPromptOf(tab),
+    oscTitle: s?.title || s?.info?.title || null,
     foreground: s?.info?.foreground ?? null,
     shellIsForeground: s?.info?.shellIsForeground ?? true,
     cwd: s?.info?.cwd ?? tab.lastCwd,

@@ -32,6 +32,7 @@ export function tabRow(tab: Tab, facts: Facts, home: string | null): TabRow {
     tab.customTitle ||
     computeAutomaticTitle({
       agent: info?.agent ?? null,
+      git: info?.remote ? null : (info?.git ?? null),
       oscTitle: info?.title ?? null,
       foreground: info?.foreground ?? null,
       shellIsForeground: info?.shellIsForeground ?? true,

@@ -1,12 +1,13 @@
 <!-- A Tab row, local or linked: Agent/plain icon, Agent status (or a snowflake while Memory Guard
-     has it frozen), Title (inline rename; bold while unread), Badge, the Session's CPU and memory
+     has it frozen), Title (inline rename; bold while unread; an agent's reads as its project, then
+     a few muted words on what it is at), Badge, the Session's CPU and memory
      (Settings), close button. Everything shown comes from the Tab's Host's SessionInfo, so a
      linked Tab reads exactly as a local one, plus a chip with its Host's name by the Badge
      (greyed, like the row, while that Host is not connected). -->
 <script lang="ts">
   import type { Tab } from "../layout.svelte";
   import { activateTab, hostGroups, layout, moveTab, newGroupFromTab, newTab, renameTab } from "../layout.svelte";
-  import { sessionOf, setTabRead, tabIsUnread, tabTitle } from "../sessions.svelte";
+  import { sessionOf, setTabRead, tabAgentLabel, tabIsUnread, tabTitle } from "../sessions.svelte";
   import { AGENT_NAMES } from "../agentStatus";
   import { isLocal, LOCAL_HOST } from "../host/ids";
   import { hostActivity, hostState } from "../host/hosts.svelte";
@@ -43,6 +44,7 @@
   const remote = $derived(session?.info?.remote ?? false);
   const git = $derived(session?.info?.git ?? null);
   const title = $derived(tabTitle(tab));
+  const label = $derived(tabAgentLabel(tab));
   const isActive = $derived(layout.activeTabId === tab.id);
   // Memory Guard is this Mac's: a paired Host's Tabs are never frozen from here.
   const frozen = $derived(local ? frozenSession(tab.sessionId) : undefined);
@@ -242,7 +244,9 @@
         onclick={(e) => e.stopPropagation()}
       />
     {:else}
-      <span class="title" role="button" tabindex="-1" ondblclick={startEdit}>{title}</span>
+      <span class="title" role="button" tabindex="-1" ondblclick={startEdit}
+        >{#if label}{label.project}{#if label.description}<span class="description">{" "}{label.description}</span>{/if}{:else}{title}{/if}</span
+      >
     {/if}
     {#if git || remote || !local}
       <span class="badge-line">
@@ -350,6 +354,11 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: 12.5px;
+  }
+  /* An agent's few words on what it is at: after its project, quieter, never bold. */
+  .description {
+    font-weight: 400;
+    color: var(--text-tertiary);
   }
   .title-input {
     flex: 1 1 auto;

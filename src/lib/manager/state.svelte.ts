@@ -7,22 +7,20 @@
 // given. See docs/architecture.md "Manager" and CONTEXT.md.
 
 import { activateTab, activeTab, layout, orderedTabIds, setMode, tabIdForSession, type Tab } from "../layout.svelte";
-import { hostHome, sessionOf, tabIsUnread, tabTitle } from "../sessions.svelte";
+import { sessionOf, tabAgentLabel, tabIsUnread, tabTitle } from "../sessions.svelte";
 import { agentAnswer, agentRelease } from "../ipc";
 import { hostAnswer, hostName, hostRelease } from "../host/hosts.svelte";
 import { isLocal, sessionKey } from "../host/ids";
 import type { AgentKind, AgentStatus, GitInfo, Pending, StatusChange } from "../types";
 import { feed, newestFirst, type HostAgentEvent } from "./feed.svelte";
+import type { AgentLabel } from "../agentStatus";
 import {
-  agentLabel,
   currentSince,
   holdOrder,
   laneKind,
   laneStart,
-  lastPrompt,
   sortLanes,
   turnSummary,
-  type AgentLabel,
   type LaneKind,
 } from "./model";
 
@@ -193,22 +191,9 @@ function sessionEvents(tab: Tab): HostAgentEvent[] {
   return (feed.byHost[tab.host] ?? []).filter((e) => e.sessionId === tab.sessionId);
 }
 
-/**
- * What Manager calls a Tab's agent: its project and a few words on what it is at (`agentLabel`),
- * from the Session's facts, its title and the last prompt in its events.
- */
+/** What Manager calls a Tab's agent, as the sidebar does (`tabAgentLabel`); its Title once no agent runs. */
 function labelOf(tab: Tab): AgentLabel {
-  const s = sessionOf(tab);
-  const remote = s?.info?.remote ?? false;
-  return agentLabel({
-    customTitle: tab.customTitle,
-    git: remote ? null : (s?.info?.git ?? null),
-    cwd: remote ? null : (s?.info?.cwd ?? tab.lastCwd),
-    home: hostHome(tab.host),
-    oscTitle: s?.info?.title ?? s?.title ?? null,
-    agent: s?.info?.agent ?? null,
-    lastPrompt: lastPrompt(sessionEvents(tab)),
-  });
+  return tabAgentLabel(tab) ?? { project: tabTitle(tab), description: null };
 }
 
 /** A feed row: the event, and what its Tab's agent is called (a gone Tab keeps a plain name). */

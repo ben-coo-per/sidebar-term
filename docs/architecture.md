@@ -231,8 +231,12 @@ answers it (see "Host daemon" for the daemon's answer).
   linked Tab's link) and the active Tab persist in the Host's `layout.json`; the sidebar width, the Panel (view,
   collapsed, height) and the user's unread marks in the webview's `settings.json` (`sidebar`).
   On relaunch the Host respawns every Tab's shell at its last cwd.
-- **Naming** (#10): automatic Title priority: agent name ("Claude Code", "Codex", "Gemini") when an
-  Agent session; else the OSC title if the Foreground process set one; else the Foreground process
+- **Naming** (#10): automatic Title priority: for an Agent session, its project and one to three
+  words on what it is at, `jack · fix the pairing` (`agentLabel` in `src/lib/agentStatus.ts`: the
+  repo, `repo/worktree` or cwd folder, then Claude Code's own summary from its title with the
+  status marker stripped, else the user's last prompt from the agent events; loose on purpose, it
+  jogs the memory; the sidebar shows the words muted after the project, and the agent's name stays
+  in the row's tooltip); else the OSC title if the Foreground process set one; else the Foreground process
   name when it is not the shell; else the cwd basename (`~` for home). A rename sticks until the
   user clears it (renaming to empty restores the automatic Title). New Tabs join the active Tab's
   Group, directly after it. A fresh install has one Group named "Tabs". Double-click or context menu
