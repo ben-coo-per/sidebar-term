@@ -1,12 +1,13 @@
 <!-- App shell: sidebar on the left, the active Tab's Terminal on the right (Tabs mode), or the
-     whole window as Manager (src/lib/manager/Manager.svelte), per the window's mode.
+     whole window as Manager (src/lib/manager/Manager.svelte, with the selected Tab's Terminal),
+     per the window's mode.
      See docs/architecture.md "Window": titleBarStyle Overlay, hidden title, the sidebar carries
      the ~28px traffic-light inset and its own data-tauri-drag-region (src/lib/sidebar/Sidebar.svelte). -->
 <script lang="ts">
   import "$lib/theme.css";
   import Sidebar from "$lib/sidebar/Sidebar.svelte";
   import TerminalPane from "$lib/terminal/TerminalPane.svelte";
-  import { activeTab, initLayout, layout, localSessionId, tabSessionKey } from "$lib/layout.svelte";
+  import { activeTab, initLayout, layout, localSessionId, managerTab, tabSessionKey } from "$lib/layout.svelte";
   import { initHosts } from "$lib/host/hosts.svelte";
   import { initShortcuts } from "$lib/shortcuts";
   import { initHotkeys } from "$lib/hotkeys.svelte";
@@ -70,8 +71,8 @@
   const managerMode = $derived(layout.ready && layout.mode === "manager");
 
   // Memory Guard never freezes the Tab in view, and going to a frozen Tab thaws it. It is this
-  // Mac's: a linked Tab in view leaves no local Session in view; Manager shows none.
-  $effect(() => setVisibleSession(managerMode ? null : localSessionId(active)));
+  // Mac's: a linked Tab in view leaves no local Session in view; Manager shows the selected Tab's.
+  $effect(() => setVisibleSession(localSessionId(managerMode ? managerTab() : active)));
 
   // Tabs show their CPU and memory from Activity samples, taken only while something shows them.
   $effect(() => {

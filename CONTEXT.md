@@ -112,11 +112,11 @@ A machine running the sidebar-term core, whose Sessions, Tabs and Groups can be 
 _Avoid_: Server, remote machine, node, peer
 
 **Manager**:
-The window's second mode, beside Tabs: every Agent session as a Lane, the questions agents wait on (answered in place when the agent is Hooked), finished work not looked at, and every agent's Agent events. Its Tabs are the sidebar's; opening one goes back to Tabs.
+The window's second mode, beside Tabs: every Agent session as a Lane, the questions agents wait on (answered in place when the agent is Hooked), finished work not looked at, and the selected Tab's Terminal, to type into. Its Tabs are the sidebar's; opening one goes back to Tabs.
 _Avoid_: Dashboard, overview, mission control
 
 **Lane**:
-One Agent session's row in Manager: its Title, then its Agent status over time (working, waiting on you, idle at prompt), then what it is doing now.
+One Agent session's row in Manager: its Title, then its Agent status over time (working, waiting on you, idle at prompt), then what it is doing now. Selecting one shows its Tab's Terminal in Manager; it does not open its Tab.
 _Avoid_: Track, timeline, swimlane
 
 **Hooked**:
@@ -124,7 +124,7 @@ An Agent session whose agent reports to its Host through hooks (a Claude Code st
 _Avoid_: Integrated, instrumented, connected
 
 **Agent event**:
-One thing an agent did, as its Host recorded it: a tool it used, a question it asked, an answer given, or (for a screen-only agent) a change of its Agent status. Manager lists every agent's, newest first.
+One thing an agent did, as its Host recorded it: a tool it used, a question it asked, an answer given, or (for a screen-only agent) a change of its Agent status. An agent's name and what its last turn changed come from them.
 _Avoid_: Log, activity (that is CPU and memory), history (that is a Lane's status over time)
 
 **Handoff**:

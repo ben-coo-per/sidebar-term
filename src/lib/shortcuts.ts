@@ -16,6 +16,7 @@ import {
   setTabUnread,
   toggleMode,
   toggleSidebarVisible,
+  tabInView,
 } from "./layout.svelte";
 import { requestCloseTab } from "./sidebar/closeTabFlow";
 import { actionFor, comboFromEvent, isMac, isModifierOnly, type ActionId } from "./hotkeys";
@@ -60,10 +61,13 @@ function run(action: ActionId): void {
     case "tab.new":
       void newTab();
       return;
-    case "tab.close":
+    case "tab.close": {
+      // The Tab in view: in Manager the selected one, never the active Tab out of sight.
       // Asks for confirmation when the Tab's Foreground process isn't the shell.
-      if (layout.activeTabId) void requestCloseTab(layout.activeTabId);
+      const tab = tabInView();
+      if (tab) void requestCloseTab(tab.id);
       return;
+    }
     case "tab.next":
       stepThrough(orderedTabIds(), 1);
       return;
@@ -82,9 +86,11 @@ function run(action: ActionId): void {
     case "tab.moveDown":
       moveActiveTab(1);
       return;
-    case "tab.markUnread":
-      if (layout.activeTabId) setTabUnread(layout.activeTabId, true);
+    case "tab.markUnread": {
+      const tab = tabInView();
+      if (tab) setTabUnread(tab.id, true);
       return;
+    }
     case "group.new":
       void newGroup();
       return;

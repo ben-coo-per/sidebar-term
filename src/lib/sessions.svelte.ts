@@ -16,7 +16,7 @@ import { feed } from "./manager/feed.svelte";
 import { lastPrompt } from "./manager/model";
 import { recordStatus } from "./manager/history";
 import { isLocal, LOCAL_HOST, sessionKey, type HostId, type SessionKey } from "./host/ids";
-import { layout, setTabUnread, tabIdForSession, type Tab } from "./layout.svelte";
+import { setTabUnread, tabIdForSession, tabInView, type Tab } from "./layout.svelte";
 
 export interface SessionState {
   info: SessionInfo | null;
@@ -54,10 +54,10 @@ function ensure(key: SessionKey): SessionState {
   return s;
 }
 
-/** The Session's Tab is the one in view: Tabs mode, its Terminal showing (in Manager none is). */
+/** The Session's Tab is the one in view, its Terminal showing: the active Tab, or Manager's. */
 function isActiveTabForSession(key: SessionKey): boolean {
   const tabId = tabIdForSession(key);
-  return layout.mode === "tabs" && tabId !== null && tabId === layout.activeTabId;
+  return tabId !== null && tabId === tabInView()?.id;
 }
 
 // --- Wire up Session facts -----------------------------------------------------------------
@@ -106,12 +106,11 @@ terminals.on("exit", (key) => {
   forgetSession(key);
 });
 
-// Clear the sticky "finished"/"highlight" markers the moment a Tab is (re)activated, or shows
-// again as the window leaves Manager.
+// Clear the sticky "finished"/"highlight" markers the moment a Tab comes into view: activated,
+// selected in Manager, or showing again as the window changes mode.
 $effect.root(() => {
   $effect(() => {
-    if (layout.mode !== "tabs") return;
-    const tab = layout.activeTabId ? layout.tabs[layout.activeTabId] : null;
+    const tab = tabInView();
     if (!tab || tab.sessionId === null) return;
     const s = sessions[sessionKey(tab.host, tab.sessionId)];
     if (s) {

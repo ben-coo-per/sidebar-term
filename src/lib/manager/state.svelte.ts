@@ -1,18 +1,19 @@
 // Manager: the window mode that shows every agent Tab as a lane, the questions agents are
-// waiting on (answered in place from their hooks, or "Open Tab" for a screen-only agent), the
-// finished work not looked at yet, and every agent's events. It has no list of its own: it reads
-// the same Tabs (src/lib/layout.svelte.ts) and Session facts (src/lib/sessions.svelte.ts) as the
-// sidebar. This module holds what Manager adds: the clock, the lane order it holds while the
-// pointer is over the lanes, which card and lane have focus, and the "Sent" rows of answers
-// given. See docs/architecture.md "Manager" and CONTEXT.md.
+// waiting on (answered in place from their hooks, or in its Terminal for a screen-only agent), the
+// finished work not looked at yet, and the selected Tab's Terminal. It has no list of its own:
+// it reads the same Tabs (src/lib/layout.svelte.ts) and Session facts
+// (src/lib/sessions.svelte.ts) as the sidebar. This module holds what Manager adds: the clock,
+// the lane order it holds while the pointer is over the lanes, which card has focus, and the
+// "Sent" rows of answers given. The selected Tab is the layout's (`layout.managerTabId`): it is
+// the Tab in view while Manager shows. See docs/architecture.md "Manager" and CONTEXT.md.
 
-import { activateTab, activeTab, layout, orderedTabIds, setMode, tabIdForSession, type Tab } from "../layout.svelte";
+import { activateTab, activeTab, layout, orderedTabIds, setMode, showInManager, type Tab } from "../layout.svelte";
 import { sessionOf, tabAgentLabel, tabIsUnread, tabTitle } from "../sessions.svelte";
 import { agentAnswer, agentRelease } from "../ipc";
 import { hostAnswer, hostName, hostRelease } from "../host/hosts.svelte";
-import { isLocal, sessionKey } from "../host/ids";
+import { isLocal } from "../host/ids";
 import type { AgentKind, AgentStatus, GitInfo, Pending, StatusChange } from "../types";
-import { feed, newestFirst, type HostAgentEvent } from "./feed.svelte";
+import { feed, type HostAgentEvent } from "./feed.svelte";
 import type { AgentLabel } from "../agentStatus";
 import {
   currentSince,
@@ -28,8 +29,6 @@ import {
 export const CLOCK_MS = 30_000;
 /** How long a Sent row stays once its agent is back at work. */
 export const SENT_LINGER_MS = 4_000;
-/** Feed rows shown at most. */
-const FEED_SHOWN = 200;
 
 /** An answer given from a card, shown in the card's place until its agent picks up again. */
 export interface Sent {
@@ -51,11 +50,9 @@ export const manager = $state({
   shown: [] as string[],
   /** The card with the focus ring (Tab id); null: the oldest. */
   cardFocus: null as string | null,
-  /** The lane with the focus ring (↑ / ↓), if any. */
-  laneFocus: null as string | null,
   sent: [] as Sent[],
   /** Where Manager's columns were scrolled, restored when it shows again. */
-  scroll: { lanes: 0, needs: 0, feed: 0 },
+  scroll: { lanes: 0, needs: 0 },
 });
 
 /** One agent Tab, as a lane. */
@@ -141,20 +138,28 @@ export function focusedCard(cards: Lane[]): Lane | null {
   return cards.find((c) => c.tab.id === manager.cardFocus) ?? cards[0] ?? null;
 }
 
-/** Move the card focus by `step`, wrapping. */
+/**
+ * Select a Tab (null: none): Manager shows its Terminal, and its card, if it has one, takes the
+ * card focus, so the keys answer the agent in view.
+ */
+export function select(tabId: string | null): void {
+  showInManager(tabId);
+  if (tabId !== null && waiting().some((c) => c.tab.id === tabId)) manager.cardFocus = tabId;
+}
+
+/** Move the card focus by `step`, wrapping. The selection follows it. */
 export function moveCardFocus(cards: Lane[], step: 1 | -1): void {
   if (cards.length === 0) return;
   const at = Math.max(0, cards.indexOf(focusedCard(cards)!));
-  manager.cardFocus = cards[(at + step + cards.length) % cards.length].tab.id;
-  manager.laneFocus = null;
+  select(cards[(at + step + cards.length) % cards.length].tab.id);
 }
 
-/** Move the lane focus by `step`, stopping at the ends. */
-export function moveLaneFocus(shown: Lane[], step: 1 | -1): void {
+/** Select the lane `step` from the selected one, stopping at the ends. */
+export function moveSelection(shown: Lane[], step: 1 | -1): void {
   if (shown.length === 0) return;
-  const at = shown.findIndex((l) => l.tab.id === manager.laneFocus);
+  const at = shown.findIndex((l) => l.tab.id === layout.managerTabId);
   const next = at === -1 ? (step === 1 ? 0 : shown.length - 1) : Math.min(shown.length - 1, Math.max(0, at + step));
-  manager.laneFocus = shown[next].tab.id;
+  select(shown[next].tab.id);
 }
 
 /** Tabs whose agent finished or stopped while nobody looked, newest first. */
@@ -192,31 +197,8 @@ function sessionEvents(tab: Tab): HostAgentEvent[] {
 }
 
 /** What Manager calls a Tab's agent, as the sidebar does (`tabAgentLabel`); its Title once no agent runs. */
-function labelOf(tab: Tab): AgentLabel {
+export function labelOf(tab: Tab): AgentLabel {
   return tabAgentLabel(tab) ?? { project: tabTitle(tab), description: null };
-}
-
-/** A feed row: the event, and what its Tab's agent is called (a gone Tab keeps a plain name). */
-export interface FeedRow extends AgentLabel {
-  event: HostAgentEvent;
-  title: string;
-}
-
-export function feedRows(): FeedRow[] {
-  const labels = new Map<string, AgentLabel & { title: string }>();
-  return newestFirst()
-    .slice(0, FEED_SHOWN)
-    .map((event) => {
-      const tabId = tabIdForSession(sessionKey(event.host, event.sessionId));
-      const tab = tabId ? layout.tabs[tabId] : null;
-      if (!tab) return { event, title: "Closed Tab", project: "Closed Tab", description: null };
-      let label = labels.get(tab.id);
-      if (!label) {
-        label = { title: tabTitle(tab), ...labelOf(tab) };
-        labels.set(tab.id, label);
-      }
-      return { event, ...label };
-    });
 }
 
 // --- Actions -----------------------------------------------------------------------------------
