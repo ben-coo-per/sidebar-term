@@ -1,6 +1,6 @@
 // Whether the Settings page (./SettingsPage.svelte) is showing over the Terminal.
 
-import { activeTab } from "../layout.svelte";
+import { activeTab, tabSessionKey } from "../layout.svelte";
 import { terminals } from "../terminal/manager";
 
 export const settingsPage = $state<{ open: boolean }>({ open: false });
@@ -13,8 +13,8 @@ export function openSettings(): void {
 export function closeSettings(): void {
   if (!settingsPage.open) return;
   settingsPage.open = false;
-  const sessionId = activeTab()?.sessionId ?? null;
-  if (sessionId !== null) terminals.focus(sessionId);
+  const key = tabSessionKey(activeTab());
+  if (key !== null) terminals.focus(key);
 }
 
 export function toggleSettings(): void {

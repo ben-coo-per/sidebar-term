@@ -1,11 +1,13 @@
-<!-- App shell: sidebar on the left, the active Tab's Terminal on the right.
+<!-- App shell: sidebar on the left, the active Tab's Terminal on the right (Tabs mode), or the
+     whole window as Manager (src/lib/manager/Manager.svelte), per the window's mode.
      See docs/architecture.md "Window": titleBarStyle Overlay, hidden title, the sidebar carries
      the ~28px traffic-light inset and its own data-tauri-drag-region (src/lib/sidebar/Sidebar.svelte). -->
 <script lang="ts">
   import "$lib/theme.css";
   import Sidebar from "$lib/sidebar/Sidebar.svelte";
   import TerminalPane from "$lib/terminal/TerminalPane.svelte";
-  import { activeTab, initLayout, layout } from "$lib/layout.svelte";
+  import { activeTab, initLayout, layout, localSessionId, tabSessionKey } from "$lib/layout.svelte";
+  import { initHosts } from "$lib/host/hosts.svelte";
   import { initShortcuts } from "$lib/shortcuts";
   import { initHotkeys } from "$lib/hotkeys.svelte";
   import { initUsageSettings } from "$lib/panel/usage/settings.svelte";
@@ -16,27 +18,43 @@
   import { onMenuSettings } from "$lib/ipc";
   import { initDropGuard } from "$lib/terminal/drop";
   import SettingsPage from "$lib/settings/SettingsPage.svelte";
+  import Manager from "$lib/manager/Manager.svelte";
+  import WindowBar from "$lib/window/WindowBar.svelte";
+  import { initAgentFeed } from "$lib/manager/feed.svelte";
   import ResumeBanner from "$lib/resume/ResumeBanner.svelte";
   import { initResume } from "$lib/resume/resume.svelte";
+  import { initRemote } from "$lib/remote/remote.svelte";
   import { closeSettings, openSettings, settingsPage } from "$lib/settings/visibility.svelte";
   import { untrack } from "svelte";
 
   $effect(() => {
-    // Resume needs the Tabs: it drops entries whose Tab is gone.
-    void initLayout().then(initResume);
+    // Resume needs the Tabs: it drops entries whose Tab is gone. Paired Hosts join once the
+    // local Host's layout is in: their Tabs are linked into it.
+    let stopHosts: (() => void) | null = null;
+    let stopped = false;
+    void initLayout().then(() => {
+      void initResume();
+      if (!stopped) stopHosts = initHosts();
+    });
     void initHotkeys();
     void initUsageSettings();
     void initActivitySettings();
     const stopShortcuts = initShortcuts();
     const stopDropGuard = initDropGuard();
     const stopCaffeinate = initCaffeinate();
+    const stopRemote = initRemote();
     const stopMemoryGuard = initMemoryGuard();
+    const stopAgentFeed = initAgentFeed();
     const menuSettings = onMenuSettings(openSettings);
     return () => {
+      stopped = true;
+      stopHosts?.();
       stopShortcuts();
       stopDropGuard();
       stopCaffeinate();
+      stopRemote();
       stopMemoryGuard();
+      stopAgentFeed();
       void menuSettings.then((stop) => stop());
     };
   });
@@ -49,8 +67,11 @@
 
   const active = $derived(activeTab());
 
-  // Memory Guard never freezes the Tab in view, and going to a frozen Tab thaws it.
-  $effect(() => setVisibleSession(active?.sessionId ?? null));
+  const managerMode = $derived(layout.ready && layout.mode === "manager");
+
+  // Memory Guard never freezes the Tab in view, and going to a frozen Tab thaws it. It is this
+  // Mac's: a linked Tab in view leaves no local Session in view; Manager shows none.
+  $effect(() => setVisibleSession(managerMode ? null : localSessionId(active)));
 
   // Tabs show their CPU and memory from Activity samples, taken only while something shows them.
   $effect(() => {
@@ -58,20 +79,32 @@
   });
 </script>
 
-<main class="app">
-  {#if layout.sidebarVisible}
-    <Sidebar />
-  {/if}
-  <section class="main">
-    <div class="terminal">
-      <TerminalPane sessionId={active?.sessionId ?? null} />
-    </div>
-    <ResumeBanner />
-    {#if settingsPage.open}
-      <SettingsPage />
+<div class="window">
+  <WindowBar />
+  <main class="app">
+    {#if managerMode}
+      <section class="main">
+        <Manager />
+        {#if settingsPage.open}
+          <SettingsPage />
+        {/if}
+      </section>
+    {:else}
+      {#if layout.sidebarVisible}
+        <Sidebar />
+      {/if}
+      <section class="main">
+        <div class="terminal">
+          <TerminalPane sessionKey={tabSessionKey(active)} />
+        </div>
+        <ResumeBanner />
+        {#if settingsPage.open}
+          <SettingsPage />
+        {/if}
+      </section>
     {/if}
-  </section>
-</main>
+  </main>
+</div>
 
 <style>
   :global(html, body) {
@@ -80,9 +113,15 @@
     overflow: hidden;
     background: var(--term-bg);
   }
-  .app {
+  .window {
     display: flex;
+    flex-direction: column;
     height: 100vh;
+  }
+  .app {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
   }
   .main {
     position: relative;

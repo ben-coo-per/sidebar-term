@@ -1,6 +1,9 @@
 // Shared HTML5 drag-and-drop state for Tabs (within/across Groups, onto collapsed Group
 // headers) and Groups. dataTransfer.getData() only reliably reads during `drop` in most
 // browsers, so hover/insertion state is tracked here instead and dataTransfer is a fallback.
+//
+// Local and linked Tabs move freely among this Mac's Groups: a move places a Tab and never
+// moves its Session (Handoff does that, ADR 0003).
 
 import { layout, moveGroup, moveTab } from "../layout.svelte";
 
@@ -54,13 +57,11 @@ export function overTabRow(e: DragEvent, tabId: string): void {
 export function dropOnTabRow(e: DragEvent, groupId: string, tabId: string): void {
   e.preventDefault();
   const draggedId = e.dataTransfer?.getData(TAB_MIME) || dnd.draggingTabId;
-  if (draggedId) {
-    const group = layout.groups.find((g) => g.id === groupId);
-    if (group) {
-      const idx = group.tabIds.indexOf(tabId);
-      const insertAt = dnd.overPosition === "after" ? idx + 1 : idx;
-      moveTab(draggedId, groupId, insertAt);
-    }
+  const group = layout.groups.find((g) => g.id === groupId);
+  if (draggedId && group) {
+    const idx = group.tabIds.indexOf(tabId);
+    const insertAt = dnd.overPosition === "after" ? idx + 1 : idx;
+    moveTab(draggedId, groupId, insertAt);
   }
   endDrag();
 }

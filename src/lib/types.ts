@@ -1,4 +1,4 @@
-// Mirror of src-tauri/src/model.rs. CONTRACT: owned by the tech lead; keep in sync with Rust.
+// Mirror of src-tauri/core/src/model.rs. CONTRACT: owned by the tech lead; keep in sync with Rust.
 
 /** Identity of one Session (one shell on one pty). Never reused within an app run. */
 export type SessionId = number;
@@ -22,7 +22,14 @@ export interface GitInfo {
   headShort: string | null;
 }
 
-/** Everything the sidebar knows about a Session. Pushed by Rust on the `session-info` event. */
+/** What an Agent session is doing, derived on the Host (src-tauri/core/src/status.rs). */
+export type AgentStatus = "running" | "needs-input" | "done";
+
+/**
+ * Everything the sidebar knows about a Session: what the Host probes, what it read in the
+ * Session's output (the OSC title, BELs) and the Agent status derived from both. Pushed by Rust
+ * on the `session-info` event; sent whole by a Host over the Host protocol.
+ */
 export interface SessionInfo {
   sessionId: SessionId;
   /** comm of the process describing the Foreground process group, e.g. "zsh", "vim", "claude". */
@@ -34,6 +41,73 @@ export interface SessionInfo {
   /** Foreground is ssh/mosh/docker/kubectl...: cwd and git describe this Mac, show a remote marker. */
   remote: boolean;
   git: GitInfo | null;
+  /** The latest OSC 0/2 title the Session's output set ("" once cleared); null before the first. */
+  title: string | null;
+  /** BELs in the Session's output so far. */
+  bells: number;
+  /** Running / Needs input / Done for an Agent session; null otherwise. */
+  status: AgentStatus | null;
+  /**
+   * Every change of `status` over the last few hours, oldest first (src-tauri/core/src/agents/):
+   * Manager's lane. The first may be older than the window, so the lane knows how it started.
+   */
+  history: StatusChange[];
+  /** The agent reports through its hooks (Claude Code started through sidebar-term's `claude`). */
+  hooked: boolean;
+  /** What the agent is asking right now, from its hooks; while set, `status` is Needs input. */
+  pending: Pending | null;
+}
+
+/** One change of a Session's Agent status: to `status` (null: the agent left), at `at` (epoch ms). */
+export interface StatusChange {
+  status: AgentStatus | null;
+  at: number;
+}
+
+export type PendingKind = "permission" | "question";
+
+/** One line of a question's detail: a diff's removal or addition, or plain. */
+export interface PendingLine {
+  text: string;
+  tone: "plain" | "add" | "remove";
+}
+
+/** A question a hooked agent is waiting on; the Host holds its hook open until answered or let go. */
+export interface Pending {
+  /** Names this question: an answer to one already gone is refused. */
+  id: number;
+  kind: PendingKind;
+  /** One line: "Make this edit to src/session.rs?". */
+  text: string;
+  /** What it is about: the diff of an edit, the command to run. */
+  detail: PendingLine[];
+  /** The answers on offer, the first the default. */
+  options: string[];
+  /** When it was asked, epoch ms. */
+  since: number;
+}
+
+/** What kind of thing an agent did, for Manager's feed. */
+export type AgentEventKind = "asked" | "answered" | "started" | "edit" | "read" | "command" | "failed" | "idle";
+
+/** What an agent did: from its hooks, or a screen-only agent's change of status. */
+export interface AgentEvent {
+  /** Epoch ms. */
+  at: number;
+  sessionId: SessionId;
+  kind: AgentEventKind;
+  /** One line: "Updated remote/pairing.rs (+61)". */
+  text: string;
+}
+
+/** A Host as its clients see it (`hello.host` in the Host protocol). */
+export interface HostInfo {
+  /** The machine's hostname. */
+  name: string;
+  /** The core's version. */
+  version: string;
+  /** The Host's home directory, for the `~` in automatic Titles; null when unknown. */
+  home: string | null;
 }
 
 export interface SessionExit {
@@ -153,6 +227,157 @@ export interface ResumeEntry {
   cwd: string | null;
 }
 
+/** A running Claude Code conversation's files on this Mac, for Handoff (`handoff_probe`). */
+export interface ClaudeConversation {
+  /** The conversation's session id (`claude --resume <id>`). */
+  id: string;
+  /** The directory the conversation runs in. */
+  cwd: string;
+  /** The transcript's path, `<config dir>/projects/<key>/<id>.jsonl`. */
+  transcript: string;
+  /** The project's `memory/` directory beside the transcript, when there is one. */
+  memory: string | null;
+}
+
+/** One memory file shipped with a conversation: its path under `memory/`, and its text. */
+export interface ConversationFile {
+  name: string;
+  content: string;
+}
+
+/** A conversation's files as they travel to another Host. */
+export interface ConversationFiles {
+  transcript: string;
+  memory: ConversationFile[];
+}
+
+/** What would not move with a Tab: its checkout's state (`handoff_probe`). */
+export interface GitStatus {
+  /** The branch checked out; null when detached. */
+  branch: string | null;
+  /** Its upstream (`origin/main`), when it has one. */
+  upstream: string | null;
+  /** Commits the upstream lacks; 0 without an upstream. */
+  ahead: number;
+  /** Changed or untracked paths. */
+  changes: number;
+  /** `origin`'s URL, for a `git clone` typed on the Host; null without an `origin`. */
+  remoteUrl: string | null;
+}
+
+/** What Handoff needs to know about a local Session before moving its Tab. From `handoff_probe`. */
+export interface HandoffProbe {
+  /** The Session's facts, freshly probed. */
+  info: SessionInfo;
+  /** What the Session is running, as Resume would record it; null at a prompt. */
+  entry: ResumeEntry | null;
+  /** The Claude Code conversation running in it, with its files located; null otherwise. */
+  conversation: ClaudeConversation | null;
+  /** The checkout's git status when the cwd is in a repo; null otherwise. */
+  git: GitStatus | null;
+}
+
+/** Whether a path exists on a Host (the Host protocol's `path_exists`). */
+export interface PathExists {
+  exists: boolean;
+  /** True when it exists and is a directory. */
+  dir: boolean;
+}
+
+/** A Group as the Host holds it: user-named, user-ordered, its Tabs in display order. */
+export interface Group {
+  id: string;
+  name: string;
+  collapsed: boolean;
+  /** Tab ids, in display order. */
+  tabIds: string[];
+}
+
+/** A Tab as the Host holds it: the entry for one Session, in exactly one Group. */
+export interface Tab {
+  id: string;
+  groupId: string;
+  /** null while the Tab has no Session (its shell failed to spawn, or the Tab is linked). */
+  sessionId: SessionId | null;
+  /** A rename that sticks; null means "the automatic Title". */
+  customTitle: string | null;
+  /** Last known non-remote cwd, where the Tab's Session respawns at the next launch. */
+  lastCwd: string | null;
+  /** Only on a linked Tab (the Mac's layout, ADR 0003): the paired Host's Tab it places. */
+  link?: TabLink;
+}
+
+/** What a linked Tab points at: a Tab on a paired Host, which owns it and its Session. */
+export interface TabLink {
+  /** This client's id for the Host (src/lib/host/ids.ts `HostId`). */
+  hostId: string;
+  /** The Tab's id on that Host. */
+  tabId: string;
+}
+
+/** The whole layout, from `layout_get` and the `layout` event; the webview mirrors it. */
+export interface LayoutSnapshot {
+  /** Counts up on every change: a snapshot older than the one shown is ignored. */
+  revision: number;
+  /** In sidebar order. */
+  groups: Group[];
+  /** Every Tab, by id. */
+  tabs: Record<string, Tab>;
+  activeTabId: string | null;
+}
+
+/** What Tailscale says about this Mac, read from its CLI. */
+export interface TailscaleState {
+  /** The Tailscale CLI was found (the app or a Homebrew install). */
+  installed: boolean;
+  /** Tailscale is up and logged in. */
+  running: boolean;
+  /** This Mac's MagicDNS name, `bens-mac.tail1234.ts.net`, once running. */
+  dnsName: string | null;
+  /** Why Serve could not be set up, or the last CLI error, if any. */
+  error: string | null;
+}
+
+/** A phone that paired with Remote: it holds a token this Mac accepts. */
+export interface RemoteDevice {
+  id: string;
+  /** The name the phone gave itself when pairing. */
+  name: string;
+  /** Epoch ms. */
+  createdAt: number;
+  /** Epoch ms of its last connection, if it connected since pairing. */
+  lastSeenAt: number | null;
+  /** The Tailscale login the pairing came through, when it came through Serve. */
+  login: string | null;
+}
+
+/** A pairing in progress: the code a phone must present, shown as a QR code in Settings. */
+export interface Pairing {
+  /** As shown for typing: `ABCD EFGH`. */
+  code: string;
+  /** The page to open on the phone, code included, or null while there is no URL to reach. */
+  url: string | null;
+  /** Epoch ms. */
+  expiresAt: number;
+}
+
+/** The state of Remote. From `remote_state` / `remote_set` and the `remote` event. */
+export interface RemoteSnapshot {
+  /** Remote is on: the server listens and Tailscale Serve is asked to publish it. */
+  on: boolean;
+  /** The port the server listens on, on 127.0.0.1 only. */
+  port: number;
+  /** The phone's page, `https://<dns name>/m`, once Tailscale Serve publishes the server. */
+  url: string | null;
+  /** Why the server is not listening although Remote is on. */
+  error: string | null;
+  tailscale: TailscaleState;
+  /** Phones connected right now. */
+  clients: number;
+  devices: RemoteDevice[];
+  pairing: Pairing | null;
+}
+
 export const EVENT_SESSION_INFO = "session-info";
 export const EVENT_SESSION_EXIT = "session-exit";
 export const EVENT_ACTIVITY = "activity";
@@ -161,5 +386,11 @@ export const EVENT_USAGE = "usage";
 export const EVENT_MENU_SETTINGS = "menu-settings";
 /** Caffeinate turned off on its own (its `caffeinate` run ended); payload `false`. */
 export const EVENT_CAFFEINATE = "caffeinate";
+/** Remote's state changed (turned on or off, a phone connected or paired, a pairing expired). */
+export const EVENT_REMOTE = "remote";
 /** Memory Guard froze or thawed a Session, or was turned on or off; payload GuardSnapshot. */
 export const EVENT_MEMORY_GUARD = "memory-guard";
+/** The layout changed; payload LayoutSnapshot, the whole of it. */
+export const EVENT_LAYOUT = "layout";
+/** An agent did something; payload AgentEvent. */
+export const EVENT_AGENT_EVENT = "agent-event";

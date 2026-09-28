@@ -27,10 +27,14 @@ export type ActionId =
   | "tab.markUnread"
   | "group.new"
   | GroupJumpAction
+  | "host.newTab"
+  | "host.moveTab"
+  | "host.newLocalTab"
   | "sidebar.toggle"
+  | "view.manager"
   | "settings.toggle";
 
-export type ActionCategory = "Tabs" | "Groups" | "App";
+export type ActionCategory = "Tabs" | "Groups" | "Hosts" | "App";
 
 export interface ActionDef {
   id: ActionId;
@@ -66,7 +70,13 @@ export const ACTIONS: readonly ActionDef[] = [
     category: "Groups",
     default: cmd(String(i + 1)),
   })),
+  // Handoff: the first paired Host that is online, the Group of its active Tab.
+  { id: "host.newTab", label: "New Tab on Host", category: "Hosts", default: cmd("t", { shift: true }) },
+  { id: "host.moveTab", label: "Move Tab to Host", category: "Hosts", default: cmd("h", { shift: true }) },
+  // A plain new Tab on this Mac right after the Tab in view, whichever Host that Tab is on.
+  { id: "host.newLocalTab", label: "New Local Tab", category: "Hosts", default: null },
   { id: "sidebar.toggle", label: "Toggle Sidebar", category: "App", default: cmd("b") },
+  { id: "view.manager", label: "Tabs / Manager", category: "App", default: cmd("0") },
   { id: "settings.toggle", label: "Settings", category: "App", default: cmd(",") },
 ];
 
