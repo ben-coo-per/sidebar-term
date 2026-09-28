@@ -101,7 +101,7 @@ Letting one phone in: Settings shows a code (as a QR link, or to type); the phon
 _Avoid_: Login, sign-in, registration
 
 **Paired phone**:
-A phone that holds a token this Mac accepts; listed in Settings, where it can be removed. Removing it makes its next connection fail, and it must pair again.
+A phone that holds a token this Mac accepts; listed in Settings, where it can be removed. Removing it makes its next connection fail, and it must pair again. A phone pairs with each Host whose Tabs it shows: with the one its page came from, then with every Host that one's linked Tabs point at, which it reaches itself.
 _Avoid_: Device, client (except in code, where it is any connection)
 
 **Attach**:
@@ -112,7 +112,7 @@ A machine running the sidebar-term core, whose Sessions, Tabs and Groups can be 
 _Avoid_: Server, remote machine, node, peer
 
 **Manager**:
-The mode the window opens in, beside Tabs: every Agent session as a Lane, the questions agents wait on (answered in place when the agent is Hooked), finished work not looked at, and the selected Tab's Terminal, to type into. The edges between the three drag. Its Tabs are the sidebar's; opening one goes to Tabs.
+The mode the window opens in, beside Tabs (and the view the phone's page opens in, as three lists: waiting on you, working, idle): every Agent session as a Lane, the questions agents wait on (answered in place when the agent is Hooked), finished work not looked at, and the selected Tab's Terminal, to type into. The edges between the three drag. Its Tabs are the sidebar's; opening one goes to Tabs.
 _Avoid_: Dashboard, overview, mission control
 
 **Lane**:

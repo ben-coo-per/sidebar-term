@@ -1330,6 +1330,7 @@ export function hostClient(url: string, token: string): HostClient {
   const old = dellIsOld();
   const facts = (i: SessionInfo) => (old ? beforeManager(i) : i);
   const listeners: { [K in keyof ClientEvents]: Set<ClientEvents[K]> } = {
+    hosts: new Set(),
     status: new Set(),
     hello: new Set(),
     layout: new Set(),

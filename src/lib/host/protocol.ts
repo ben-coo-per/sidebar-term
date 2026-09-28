@@ -6,7 +6,7 @@
 // status included) whole; a client derives what a row shows from them (src/lib/mobile/rows.ts
 // on the phone, src/lib/sessions.svelte.ts on the Mac).
 
-import type { AgentEvent, HostInfo, LayoutSnapshot, PathExists, SessionId, SessionInfo, ActivitySession, Tab, Group } from "../types";
+import type { AgentEvent, HostInfo, LayoutSnapshot, LinkedHost, PathExists, SessionId, SessionInfo, ActivitySession, Tab, Group } from "../types";
 
 // --- Messages -----------------------------------------------------------------------------------
 
@@ -41,7 +41,8 @@ export type CommandResult = Tab | Group | PathExists | undefined;
 
 /** Text frames a client sends. */
 export type ClientMessage =
-  | { t: "auth"; token: string }
+  /** `links`: send this Host's linked Tabs too, and the Hosts they point at (the phone, which reaches those itself). */
+  | { t: "auth"; token: string; links?: boolean }
   | { t: "attach"; sessionId: SessionId }
   | { t: "detach"; sessionId: SessionId }
   | { t: "input"; sessionId: SessionId; data: string }
@@ -50,7 +51,9 @@ export type ClientMessage =
 
 /** Text frames the Host sends. Output comes as binary frames (see `decodeOutputFrame`). */
 export type ServerMessage =
-  | { t: "hello"; host: HostInfo; device: string; layout: LayoutSnapshot; sessions: SessionInfo[]; agentEvents?: AgentEvent[] }
+  | { t: "hello"; host: HostInfo; device: string; layout: LayoutSnapshot; sessions: SessionInfo[]; agentEvents?: AgentEvent[]; hosts?: LinkedHost[] }
+  /** The Hosts this one's linked Tabs point at changed (to a client that asked for `links`). */
+  | { t: "hosts"; hosts: LinkedHost[] }
   /** An agent did something. */
   | { t: "agent_event"; event: AgentEvent }
   | { t: "layout"; layout: LayoutSnapshot }

@@ -1,5 +1,5 @@
-<!-- One Tab's Session on the phone: an xterm.js Terminal at the Mac's grid (the pty is never
-     resized from here), font scaled to fit the width, fed by the Remote connection; typing and
+<!-- One Tab's Session on the phone: an xterm.js Terminal at its Host's grid (the pty is never
+     resized from here), font scaled to fit the width, fed by the connection to its Host; typing and
      the key bar go back as input. The whole screen tracks the visual viewport so the key bar
      sits right above the on-screen keyboard. -->
 <script lang="ts">
@@ -13,7 +13,7 @@
   import StatusBanner from "./StatusBanner.svelte";
   import { fontSizeGuess, fontSizeToFit } from "./fit";
   import type { TabRow } from "./rows";
-  import { closeTerminal, remoteClient } from "./store.svelte";
+  import { clientOf, closeTerminal } from "./store.svelte";
 
   let { tab }: { tab: TabRow } = $props();
 
@@ -25,7 +25,11 @@
   let ctrl = $state(false);
   let grid = $state({ cols: 0, rows: 0 });
 
-  const subtitle = $derived(
+  // The row is made anew whenever its Host says anything: the Terminal follows what it is of.
+  const sessionId = $derived(tab.sessionId);
+  const hostId = $derived(tab.host);
+
+  const what = $derived(
     ended
       ? "Session ended"
       : tab.agent
@@ -34,6 +38,7 @@
           ? `${grid.cols}×${grid.rows}`
           : "",
   );
+  const subtitle = $derived(tab.hostName && !ended ? [tab.hostName, what].filter(Boolean).join(" · ") : what);
 
   /** Ctrl-<key>: the control code of a letter or of @ [ \ ] ^ _ ; anything else passes through. */
   function withCtrl(data: string): string {
@@ -75,9 +80,9 @@
   });
 
   $effect(() => {
-    const sessionId = tab.sessionId;
-    const client = remoteClient();
-    if (sessionId === null || !client) {
+    const id = sessionId;
+    const client = clientOf(hostId);
+    if (id === null || !client) {
       ended = true;
       return;
     }
@@ -96,8 +101,8 @@
     let webgl: WebglRenderer | null = attachWebgl(t, () => refit(t));
 
     const offs = [
-      client.on("attached", (id, cols, rows) => {
-        if (id !== sessionId) return;
+      client.on("attached", (sid, cols, rows) => {
+        if (sid !== id) return;
         // A replay follows (also after a reconnect): start from a clean grid.
         t.reset();
         t.resize(cols, rows);
@@ -105,30 +110,30 @@
         ended = false;
         requestAnimationFrame(() => refit(t));
       }),
-      client.on("resized", (id, cols, rows) => {
-        if (id !== sessionId) return;
+      client.on("resized", (sid, cols, rows) => {
+        if (sid !== id) return;
         t.resize(cols, rows);
         grid = { cols, rows };
         requestAnimationFrame(() => refit(t));
       }),
-      client.on("output", (id, bytes) => {
-        if (id !== sessionId) return;
+      client.on("output", (sid, bytes) => {
+        if (sid !== id) return;
         const follow = nearBottom();
         t.write(bytes, () => {
           if (follow) scroller.scrollTop = scroller.scrollHeight;
         });
       }),
-      client.on("exit", (id) => {
-        if (id === sessionId) ended = true;
+      client.on("exit", (sid) => {
+        if (sid === id) ended = true;
       }),
     ];
     const data = t.onData((d) => {
       if (ended) return;
       if (ctrl) {
         ctrl = false;
-        client.input(sessionId, withCtrl(d));
+        client.input(id, withCtrl(d));
       } else {
-        client.input(sessionId, d);
+        client.input(id, d);
       }
     });
     // Text the keyboard inserts without a keypress (iOS autocorrect, predictive text, dictation)
@@ -137,21 +142,21 @@
     const onInput = (ev: Event) => {
       const ie = ev as InputEvent;
       if (ended || ie.inputType !== "insertText" || !ie.data || ie.isComposing) return;
-      client.input(sessionId, ctrl ? withCtrl(ie.data) : ie.data);
+      client.input(id, ctrl ? withCtrl(ie.data) : ie.data);
       ctrl = false;
       (ie.target as HTMLTextAreaElement).value = "";
     };
     host.addEventListener("input", onInput);
     const ro = new ResizeObserver(() => refit(t));
     ro.observe(scroller);
-    client.attach(sessionId);
+    client.attach(id);
 
     return () => {
       host.removeEventListener("input", onInput);
       ro.disconnect();
       for (const off of offs) off();
       data.dispose();
-      client.detach(sessionId);
+      client.detach(id);
       webgl?.release();
       webgl = null;
       t.dispose();
@@ -177,7 +182,7 @@
 
 <div class="screen" bind:this={screen}>
   <header>
-    <button type="button" class="back" onclick={closeTerminal} aria-label="Back to the Tabs">‹</button>
+    <button type="button" class="back" onclick={closeTerminal} aria-label="Back to the lists">‹</button>
     <div class="titles">
       <span class="title">{tab.title}</span>
       {#if subtitle}
@@ -186,7 +191,7 @@
     </div>
     <button type="button" class="kbd" onclick={focusTerminal} aria-label="Show the keyboard">⌨</button>
   </header>
-  <StatusBanner />
+  <StatusBanner host={tab.host} />
   <div class="scroller" bind:this={scroller} style:--terminal-bg={TERMINAL_BACKGROUND}>
     <div class="host" bind:this={host}></div>
     {#if ended}

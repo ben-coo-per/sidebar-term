@@ -1,17 +1,18 @@
-<!-- The sidebar as the phone lists it: the Host's Groups of Tabs with the Agent status and
-     Badge each row shows on the Mac, derived here from the Host's layout and Session facts
-     (./rows.ts). Tap a Tab to drive its Session. -->
+<!-- The sidebar as the phone lists it: the Groups of the page's Host with each Tab's Agent
+     status and Badge, as the rows show them on the Mac, derived here from the Hosts' layouts and
+     Session facts (./rows.ts). A Tab whose Session runs on another Host carries a chip with that
+     Host's name, and is greyed while the Host is not connected. Tap a Tab to drive its Session. -->
 <script lang="ts">
   import Badge from "../sidebar/Badge.svelte";
   import RobotIcon from "../sidebar/icons/RobotIcon.svelte";
   import TerminalIcon from "../sidebar/icons/TerminalIcon.svelte";
   import SpinnerIcon from "../sidebar/icons/SpinnerIcon.svelte";
   import { AGENT_NAMES } from "../agentStatus";
-  import StatusBanner from "./StatusBanner.svelte";
-  import { mobile, openTab, rows, unpair } from "./store.svelte";
+  import { homeHost, openTab, rows, unpair } from "./store.svelte";
   import type { TabRow } from "./rows";
 
   const groups = $derived(rows());
+  const home = $derived(homeHost());
 
   function stateLabel(tab: TabRow): string {
     if (tab.agent) {
@@ -23,22 +24,14 @@
 
   function confirmUnpair() {
     // A plain confirm is fine on the phone: nothing else is running in this page.
-    if (window.confirm("Forget this Host? You will need to pair again.")) unpair();
+    if (window.confirm("Forget this Host, and the Hosts its Tabs run on? You will need to pair again.")) unpair();
   }
 </script>
 
-<main class="list">
-  <header>
-    <h1>{mobile.host?.name ?? "sidebar-term"}</h1>
-    {#if mobile.device}
-      <span class="device">{mobile.device}</span>
-    {/if}
-  </header>
-  <StatusBanner />
-
-  {#if !mobile.layout}
+<div class="list">
+  {#if !home?.layout}
     <p class="empty">
-      {mobile.status === "online" ? "Waiting for the Host's layout…" : "The Host is not reachable right now."}
+      {home?.status === "online" ? "Waiting for the Host's layout…" : "The Host is not reachable right now."}
     </p>
   {:else}
     {#each groups as group (group.id)}
@@ -48,8 +41,9 @@
           <button
             type="button"
             class="tab"
-            class:active={mobile.layout.activeTabId === tab.id}
-            disabled={tab.sessionId === null}
+            class:active={home.layout.activeTabId === tab.id}
+            class:away={!tab.reachable}
+            disabled={tab.sessionId === null || !tab.reachable}
             onclick={() => openTab(tab)}
           >
             <span class="icon {tab.agent ? (tab.status ?? 'done') : ''}" aria-label={stateLabel(tab)}>
@@ -63,8 +57,11 @@
             </span>
             <span class="text">
               <span class="title">{tab.title}</span>
-              {#if tab.git || tab.remote}
-                <span class="badge-line"><Badge git={tab.git} remote={tab.remote} /></span>
+              {#if tab.hostName || tab.git || tab.remote}
+                <span class="badge-line">
+                  {#if tab.hostName}<span class="chip">{tab.hostName}</span>{/if}
+                  <Badge git={tab.git} remote={tab.remote} />
+                </span>
               {/if}
             </span>
             <span class="chevron" aria-hidden="true">›</span>
@@ -78,32 +75,13 @@
   {/if}
 
   <footer>
-    <button type="button" class="link" onclick={confirmUnpair}>Forget this Mac</button>
+    <button type="button" class="link" onclick={confirmUnpair}>Forget this Host</button>
   </footer>
-</main>
+</div>
 
 <style>
   .list {
-    box-sizing: border-box;
-    height: 100%;
-    overflow-y: auto;
-    padding: env(safe-area-inset-top) 0 calc(16px + env(safe-area-inset-bottom));
-    -webkit-overflow-scrolling: touch;
-  }
-  header {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    padding: 18px 20px 8px;
-  }
-  h1 {
-    margin: 0;
-    font-size: 22px;
-    font-weight: 700;
-  }
-  .device {
-    font-size: 13px;
-    color: var(--text-tertiary);
+    padding-bottom: 16px;
   }
   .empty,
   .none {
@@ -152,6 +130,9 @@
   .tab:disabled {
     opacity: 0.4;
   }
+  .tab.away .chip {
+    border-style: dashed;
+  }
   .tab.active .title {
     color: var(--accent-strong);
   }
@@ -181,9 +162,21 @@
   }
   .badge-line {
     display: flex;
+    align-items: center;
+    gap: 6px;
     min-width: 0;
     overflow: hidden;
     font-size: 12px;
+  }
+  .chip {
+    flex: none;
+    padding: 0 6px;
+    border: 1px solid var(--sidebar-border);
+    border-radius: 4px;
+    font-size: 11px;
+    line-height: 16px;
+    color: var(--text-secondary);
+    white-space: nowrap;
   }
   .chevron {
     flex: none;

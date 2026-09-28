@@ -230,10 +230,11 @@ answers it (see "Host daemon" for the daemon's answer).
   section is `src/lib/settings/RemoteSection.svelte`.
 - `src/lib/host/protocol.ts` — the Host protocol's message types, output framing and reply
   correlation (`Replies`), pure and tested; every client of a Host imports from here.
-- `src/lib/mobile/*` + `src/routes/m` — the phone's page: its state (`store.svelte.ts`: the
-  connection from `src/lib/host/client.ts`, the Host's layout and Session facts, mirrored), what
-  a row shows (`rows.ts`, pure), font fitting (`fit.ts`) and the screens (pairing, Tab list,
-  `TerminalScreen` with `KeyBar`). `src/service-worker.ts` caches it.
+- `src/lib/mobile/*` + `src/routes/m` — the phone's page: its state (`store.svelte.ts`: a
+  connection from `src/lib/host/client.ts` to each Host it reaches, their layouts, Session facts
+  and agent events, mirrored), what a row shows (`rows.ts`, pure), Manager's lists (`lanes.ts`,
+  pure), font fitting (`fit.ts`) and the screens (pairing, `Lists` with `ManagerScreen` and
+  `TabList`, `TerminalScreen` with `KeyBar`). `src/service-worker.ts` caches it.
 - `src/lib/panel/*` — the Panel (`Panel.svelte`), its view list (`views.ts`), the Activity view
   (`activity/`: snapshot store, the Tab stats setting, pure sorting / formatting / meter maths,
   components) and the Usage
@@ -599,8 +600,10 @@ attached by path as `drop.rs` does locally; 64 MiB at most. `POST /api/conversat
 `memory` file part per memory file (its file name is its path under `memory/`); it answers
 `{path}`, the transcript's path here, or `{error}` with 400 for anything it refuses (see
 "Handoff"). All three answer CORS preflights for the
-Mac app's webview only (`tauri://localhost`, and `http://localhost:1420` in dev), since its page
-is another origin than the Host; what admits a client is still the code, then the token. `GET
+Mac app's webview (`tauri://localhost`, and `http://localhost:1420` in dev), since its page
+is another origin than the Host, and for a page served by a machine on the Host's own tailnet
+(`https://<machine>.<tailnet>.ts.net`: the phone's page, loaded from the Mac, pairing with this
+Host too; ADR 0005); what admits a client is still the code, then the token. `GET
 /ws` is the connection.
 
 **Messages** (`src/lib/host/protocol.ts` mirrors `remote/server.rs`). Text frames are JSON
@@ -609,7 +612,7 @@ five seconds, or the Host closes with 4408 (4401 for a token it does not know).
 
 | From the client | Fields | The Host answers |
 |---|---|---|
-| `auth` | `token` | `hello`, or a close |
+| `auth` | `token, links?` | `hello`, or a close. With `links: true` the client is sent this Host's linked Tabs and the Hosts they point at (the phone; ADR 0005) |
 | `attach` | `sessionId` | `attached {sessionId, cols, rows}`, then a binary replay of the Session's recent output; `exit` for a Session that is gone |
 | `detach` | `sessionId` | - |
 | `input` | `sessionId, data` | `error {message}` if the write failed |
@@ -629,9 +632,10 @@ arrives as `layout` like any other change, to every client.
 
 | From the Host | Fields | When |
 |---|---|---|
-| `hello` | `host {name, version, home}, device, layout, sessions, agentEvents` | right after `auth`: the whole layout (`LayoutSnapshot`), every live Session's facts (`SessionInfo[]`) and the last agent events (`AgentEvent[]`, oldest first); `device` is this client's name as the Host knows it; `home` is for the `~` in automatic Titles |
+| `hello` | `host {name, version, home}, device, layout, sessions, agentEvents, hosts` | right after `auth`: the whole layout (`LayoutSnapshot`), every live Session's facts (`SessionInfo[]`) and the last agent events (`AgentEvent[]`, oldest first); `device` is this client's name as the Host knows it; `home` is for the `~` in automatic Titles; `hosts` (`LinkedHost[]`: `{id, url, name}`) are the Hosts this one's linked Tabs point at, empty unless the client asked for `links` |
+| `hosts` | `hosts` | those Hosts changed (the Mac paired with one, removed one, heard one's name); only to a client that asked for `links` |
 | `agent_event` | `event` | an agent did something (`AgentEvent`: see "Manager") |
-| `layout` | `layout` | the layout changed; the whole `LayoutSnapshot`, with its revision (an older one is ignored) |
+| `layout` | `layout` | the layout changed; the whole `LayoutSnapshot`, with its revision (an older one is ignored); without this Host's linked Tabs unless the client asked for `links` |
 | `session` | `session` | a Session's facts changed: `SessionInfo` whole (Foreground process, agent, cwd, git, remote, the OSC title, the BEL count, Agent status) |
 | `activity` | `sessions` | each Session's CPU and memory (`ActivitySession[]`), every sample while the Host samples Activity (the Mac's Panel or Memory Guard on; the daemon does not yet) |
 | `attached` / `resized` | `sessionId, cols, rows` | after `attach`; the pty was resized |
@@ -666,15 +670,49 @@ local process could set it, so it is never what admits a client. The pairing end
 page are reachable without a token by design (the page has no secrets).
 
 **The phone** (`src/routes/m`, `src/lib/mobile/`). `store.svelte.ts`: paired or not (token in
-`localStorage`), the connection (`src/lib/host/client.ts`, shared with the Mac app's Hosts: one
+`localStorage`), and one mirror per Host the phone reaches: its connection
+(`src/lib/host/client.ts`, shared with the Mac app's Hosts: one
 WebSocket to the Host's `/ws`, backoff 1–15 s, re-attaches what was attached, tries at once when
 the page returns to the foreground, pairs each command with its reply, uploads to the Host's
-`/api/upload`), the Host's layout and Session facts mirrored as the Mac's webview mirrors its local
-Host's, the open Tab. What a row shows is derived from those (`rows.ts`): the Title as the Mac
+`/api/upload`), its layout, Session facts and agent events, mirrored as the Mac's webview mirrors
+its Hosts'; then the view (Manager or Tabs) and the open Tab.
+
+*Hosts* (ADR 0005). The page's own Host (the origin it was loaded from, `LOCAL_HOST` in the
+store) is asked for its linked Tabs (`auth {links: true}`) and says which Hosts they point at.
+The phone reaches each of those itself: a token per Host, kept by the Host's URL
+(`localStorage`), got by presenting that Host's pairing code to its `/api/pair` from the page
+(the list shows "<Host> has N Tabs of yours" with a Pair button until then; the Host's linked
+Tabs are left out meanwhile). A Host that refuses the token (the phone was removed there) goes
+back behind its pairing; the page's own Host refusing forgets everything. What the page's Host
+last said (layout, facts, Hosts) is kept in `localStorage` and shown until it answers, so with
+the Mac asleep the Groups are there, its own Tabs greyed, and the other Hosts' Tabs open.
+
+*Rows* (`rows.ts`, pure). The Groups are the page's Host's. What a row shows is derived from the
+layout and facts of the Host its Session runs on: the Title as the Mac
 derives it (a rename, else the agent's name, the OSC title of a running program, the Foreground
 process, the cwd's basename with `~` for the Host's home), the agent and its status from the
-Host, the Badge. Unread is per client and the phone keeps none. Screens: pairing (code prefilled
-from the QR link), the Tab list (same icons and Badge as the Mac's rows, the Host's name as its
+Host, the Badge; a linked Tab takes all of it from the Tab it points at, and carries a chip with
+that Host's name. It is greyed while its Host is not connected, a placeholder before its Host
+was ever heard, and left out once its Host no longer has the Tab. A Tab another Host has that no
+link places goes to the end of the Group named after the Host (made on the phone when the Mac
+has none), as the Mac will link it. Session ids are per Host: a row is a Host and a Session.
+Unread is per client and the phone keeps none.
+
+*Manager* (`lanes.ts`, pure; `ManagerScreen`, `AskCard`, `LaneItem`). Every Agent session among
+the rows, across the Hosts, by the Mac's rules (`src/lib/manager/model.ts`), in three lists:
+waiting on you, the oldest question first, each a card (a hooked agent's question with its
+detail and its answers as buttons, sent as `answer` to the Tab's Host; the card gives way to a
+"Sent" row until the agent leaves Needs input; any other waiting agent is answered in its
+Terminal, which the card opens); working (what it last did, from its agent events, questions
+aside); idle, the one that stopped last first (what its last turn changed). Each row has its
+status over the last hour. Opening the Terminal of an agent that holds a question sends
+`release` first, so it asks there. The switch at the bottom counts the agents waiting; the view
+last shown is kept. Not on the phone: Usage (not in the Host protocol), the feed of agent
+events, and the Mac's keys.
+
+Screens: pairing (the page's Host, code prefilled
+from the QR link; then any Host from the list), the lists (Manager, and the Tabs with the same
+icons and Badge as the Mac's rows; the page's Host's name as the
 title), and `TerminalScreen`: an xterm.js Terminal at the Host's grid, `t.reset()` before each
 replay, font size chosen so the Host's columns fit the width (`fit.ts`, from a measured cell;
 below 6 px the grid scrolls sideways), the screen sized to the visual viewport so the key bar
@@ -805,10 +843,14 @@ start Activity yet). A linked Tab carries a chip with its Host's name by the Bad
 the row are greyed while the Host is not connected. Not on a linked Tab: Freeze (Memory Guard is
 this Mac's; the protocol has no freeze), Resume, the Panel's Activity.
 
-**Remote on the Mac.** A phone paired to the Mac sees the Mac's layout without linked Tabs
-(`client_snapshot`): it reaches the Mac, not the Mac's Hosts, so it could not drive them. A
+**Remote on the Mac.** A client of the Mac sees the Mac's layout without linked Tabs
+(`client_snapshot`) unless it asks for them (`auth {links: true}`, the phone): it reaches the
+Mac, not the Mac's Hosts, so nothing of theirs is served through the Mac. A
 command naming a linked Tab is refused as if it did not exist, and a `tab_move` index counts the
-Tabs the phone sees. To see the Dell's Tabs, a phone pairs with the Dell.
+Tabs a client without linked Tabs sees. The phone reaches the Dell itself, with a pairing of its
+own (ADR 0005): the webview tells the core which Hosts there are and where (`remote_hosts_set`:
+id, URL and name, never the token, at launch and on every change to the pairings), and Remote
+passes that on as `hello.hosts` and `hosts`.
 
 **Terminals** (`src/lib/terminal/manager.ts`). A linked Tab's Session gets the same xterm.js
 Terminal as a local one, through its Host's transport: `attach` (the Host replays its recent

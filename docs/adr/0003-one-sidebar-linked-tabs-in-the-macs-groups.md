@@ -2,7 +2,8 @@
 
 Status: **accepted** (issue #49, epic #24). Supersedes the sidebar part of 0002 ("Clients own
 presentation": a remote Host's snapshot mirrored "under a Host section") and #29's Host sections;
-the rest of 0002 stands.
+the rest of 0002 stands. Its own last paragraph (the phone does not see linked Tabs) is
+superseded by 0005: the phone shows them, and reaches their Hosts itself.
 
 ## Context
 
