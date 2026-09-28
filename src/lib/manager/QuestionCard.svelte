@@ -4,7 +4,7 @@
      the last lines of its screen and one way on: open its Tab to answer there. The oldest card
      has the focus ring: its keys answer. -->
 <script lang="ts">
-  import type { Lane } from "./manager.svelte";
+  import type { Lane } from "./state.svelte";
   import { formatDuration, lastLines } from "./model";
   import { AGENT_NAMES } from "../agentStatus";
   import { terminals } from "../terminal/manager";

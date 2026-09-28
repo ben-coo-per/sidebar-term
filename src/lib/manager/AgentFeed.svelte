@@ -2,7 +2,7 @@
      kind of thing (asked amber, worked blue, failed red, the rest muted), the Tab's Title and the
      event. A hooked agent reports its tools; a screen-only one only its changes of status. -->
 <script lang="ts">
-  import { feedRows } from "./manager.svelte";
+  import { feedRows } from "./state.svelte";
   import { clockLabel, EVENT_TONES } from "./model";
 
   const rows = $derived(feedRows());
