@@ -3,9 +3,9 @@
 //! a smoke test, and serves its Sessions over Remote. See docs/architecture.md "Host daemon".
 //!
 //! It starts the Session core, the layout (its own `layout.json`: every Tab's Session is spawned
-//! at launch, one Tab on a fresh install), the monitor, Resume and the Remote server, exactly as
-//! the app does, and stops on SIGTERM after writing the layout, recording Resume entries and
-//! killing every Session, as the app does on quit. Phones list its Tabs and drive their
+//! at launch, one Tab on a fresh install), the monitor, the Journal, Resume and the Remote server,
+//! exactly as the app does, and stops on SIGTERM after writing the layout, writing the Journal's
+//! tallies, recording Resume entries and killing every Session, as the app does on quit. Phones list its Tabs and drive their
 //! Sessions, and create, close, rename and move its Tabs and Groups over the Host protocol.
 //! Process facts and Activity on Linux come from `/proc`.
 //!
@@ -17,6 +17,7 @@
 
 use sidebar_term_core::agents::Agents;
 use sidebar_term_core::host::{Asset, Assets, Events, Host, Paths};
+use sidebar_term_core::journal::{self, Journal};
 use sidebar_term_core::layout::Layout;
 use sidebar_term_core::model::{
     LayoutSnapshot, RemoteSnapshot, SessionExit, EVENT_LAYOUT, EVENT_REMOTE, EVENT_SESSION_EXIT,
@@ -330,6 +331,16 @@ fn main() {
     sessions.set_env_hook(Box::new(move |env| for_env.extend_env(env)));
     let for_exit = agents.clone();
     sessions.on_exit(Arc::new(move |id| for_exit.forget(id)));
+    // The Journal: what each Agent session does from here on, kept for Rewind.
+    let journal_dir = store::path(&*host.paths, store::JOURNAL)
+        .inspect_err(|e| log(&format!("journal: no data dir ({e}); not kept")))
+        .ok();
+    let journal = Journal::open(journal_dir);
+    let for_exit = journal.clone();
+    sessions.on_exit(Arc::new(move |id| for_exit.end(id)));
+    let for_steps = journal.clone();
+    agents.watch_steps(Box::new(move |id, step, at| for_steps.step(id, step, at)));
+    journal::spawn(journal.clone());
     // Resume first: what the last run left running becomes leftover before the Tabs respawn.
     let resume_file = store::path(&*host.paths, store::RESUME)
         .inspect_err(|e| log(&format!("resume: no data dir ({e}); not persisted")))
@@ -352,12 +363,16 @@ fn main() {
         ));
     }
     let (for_monitor, for_marks, for_observe) = (sessions.clone(), sessions.clone(), layout.clone());
+    let for_journal = journal.clone();
     monitor::spawn(
         host.events.clone(),
         agents.clone(),
         move || for_monitor.probe_targets(),
         move |id| for_marks.marks(id),
-        move |infos| for_observe.observe(infos),
+        move |infos| {
+            for_observe.observe(infos);
+            for_journal.observe(infos);
+        },
     );
     let (for_recorder, recorder) = (sessions.clone(), resume.clone());
     resume::spawn(move || recorder.record(resume::entries(&for_recorder.keyed_targets())));
@@ -390,10 +405,11 @@ fn main() {
     if let Err(e) = &outcome {
         log(e);
     }
-    // As the app on quit: write the layout, record what was running before killing it, so the
-    // next run can resume it.
+    // As the app on quit: write the layout and the Journal's tallies, record what was running
+    // before killing it, so the next run can resume it.
     log("stopping: writing the layout, recording Resume entries, then killing every Session");
     layout.flush();
+    journal.finish();
     resume.finish(resume::entries(&sessions.keyed_targets()));
     sessions.kill_all();
     if outcome.is_err() {

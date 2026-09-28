@@ -90,6 +90,12 @@ answers it (see "Host daemon" for the daemon's answer).
 - `host.rs` — what the core takes from its binary: `Events` (emit a named JSON event), `Paths`
   (the data dir), `Assets` (the phone page's files), an `OutputSink` per Session, and a tokio
   runtime handle, bundled as `Host`.
+- `journal.rs` — the Journal (see "Journal", ADR 0004): `Journal` takes each Session's facts
+  from the monitor after the layout (`observe`), hears of every Session's exit and of a hooked
+  agent's prompts and edits (`step`, from `Agents::watch_steps`), reads Claude Code's totals of
+  tokens and cost from each hooked agent's transcript, keeps a tally per hour and Context,
+  writes it to `journal/<year>-<month>.jsonl` when the hour is over, and reads tallies back
+  (`read`).
 - `layout/` — the layout, owned by the Host (ADR 0002). `mod.rs`: `Layout`, the owner: loads
   `layout.json`, spawns each Tab's Session at launch (Tab id as Resume key) and on `tab_new`,
   kills it on `tab_close`, drops the Tab when its Session exits, emits `layout` on every change
@@ -146,7 +152,8 @@ answers it (see "Host daemon" for the daemon's answer).
 - `resume.rs` — `Resume`: a thread records every keyed Session's Resume entry to `resume.json`
   each second it changes, and a last time on exit (see "Resume").
 - `store.rs` — atomic JSON read/write of `layout.json`, `settings.json`, `resume.json`,
-  `remote.json`, `frozen.json` and `usage.json` in the Host's data dir (`Paths`).
+  `remote.json`, `frozen.json` and `usage.json` in the Host's data dir (`Paths`); the Journal's
+  directory is named here and written by `journal.rs`.
 - `paths.rs` — which paths printed in a Terminal name a file on this Host.
 - `model.rs` — the types every event and command carries; mirrored by `src/lib/types.ts`.
 
@@ -490,6 +497,79 @@ and never types into one that is not at its prompt: that row stays, marked Busy.
 dropped once its Tab closes or becomes an Agent session (resumed by hand). Other jobs do not
 count, since shell startup files run commands too.
 
+## Journal
+
+How much agent time each repo and branch on a Host had, hour by hour, kept on disk so Rewind
+can look back over a day or a week (`core/src/journal.rs`, ADR 0004; the epic is #63). The
+status history in `agents/` covers five hours and is gone at quit; the Journal is what stays.
+Each Host keeps its own, in its data dir, and nothing in it leaves the machine.
+
+**A tally an hour.** Nothing is written as it happens. For each hour and each Context (the
+agent, and the repo, `GitInfo.common_dir` with its name, and branch; the cwd outside a repo;
+over a remote hop neither, only `remote`) the Journal keeps one tally in memory and writes it
+as one row when the hour is over. So the Journal grows with the hours agents were at work and
+the repos they were in, never with how much they did or how often their status changed: a day
+of twelve hours in five repos is sixty rows whatever happened in it. No words are kept, only
+counts. The Tab and the Worktree are not part of a Context.
+
+| Field | What it counts | From |
+|---|---|---|
+| `run` | Seconds agents worked (Agent status Running); two at once for an hour are 7200 | the monitor's facts |
+| `wait` | Seconds agents waited on the user (Needs input) | the monitor's facts |
+| `turns` | Prompts the user gave | hooks (`UserPromptSubmit`) |
+| `add`, `del` | Lines edits added and removed | hooks (`PostToolUse` of Edit, MultiEdit, Write) |
+| `m` | Output tokens (`out`) and millionths of a dollar (`usd`) per model | Claude Code's totals |
+
+Time idle at the prompt is not counted. `turns`, `add`, `del` and `m` are of hooked agents
+only; a screen-only agent has `run` and `wait`. An agent's time is counted when its status or
+Context changes, when its Session exits, every minute, and as the Host stops (`finish`, before
+the Sessions are killed, so their dying is not counted).
+
+**Cost.** Claude Code keeps running totals of the tokens it used and what they cost, per model,
+and writes them into the conversation's transcript as a `cost-state` line (`startTime`,
+`modelUsage`): when it exits and at some idle moments, not at every turn. Every hook names the
+transcript (`transcript_path`); `Agents` says so once per transcript (`Step::Transcript`), and
+the Journal watches the file from then on, whether or not its Session lives. Every minute it
+reads what each watched transcript gained, and what the totals moved by goes into the tally of
+the hour the file was written in, under the Context its Session was last in. So a
+conversation's cost lands in a few hours, the last as the agent exits, not in the hours it
+was spent in: right over a day or a week, not hour by hour.
+
+What was counted is kept per transcript in `journal/meters.json`, which makes what is counted a
+difference and lets the next launch count what Claude Code wrote as the Host killed it. What a
+transcript held before it was first looked at is not counted. Totals are taken to carry on
+within one run of Claude Code (`startTime`) across transcripts (`/clear`), and across runs in
+one transcript when they are what it held and more (a resume); otherwise a new run is counted
+from nothing. A transcript whose totals have not moved for 30 days, in no live Session, is
+let go.
+
+The token counts on a transcript's messages are not used: over a finished conversation they
+add up to well under the totals (246k output tokens against 315k in one, subagents included).
+Codex is not read.
+
+**Files.** `journal/<year>-<month>.jsonl`, appended, one JSON object per line:
+
+```
+{"k":"ctx","id":1,"agent":"claude","repo":"/r/.git","name":"r","br":"fix"}
+{"k":"hour","h":497376,"c":1,"run":1800,"wait":240,"turns":3,"add":120,"del":30,"m":{"claude-opus-5-5":{"out":9100,"usd":1420000}}}
+```
+
+A `ctx` row gives a Context a number and the rows after it name that number, so a repo's path
+is written once per file and run. A number holds until a later `ctx` row gives it to something
+else; each run starts again at 1, so a file is read from the top. `h` is the hour, counted from
+the epoch; a row is in the file of the month (UTC) its hour began in. What is zero is not
+written, and an hour row is under 100 bytes without `m`. An hour and a Context may have several
+rows (the Host stopped and started within the hour): they add up. A line that does not parse is
+skipped (a crash can cut the last one short; the next write starts on a new line).
+
+**A crash.** The tallies not yet written would go with the process, so every minute they are
+written to `journal/open.json`; the next launch writes them as rows and removes the file. A
+crash costs at most a minute.
+
+**Reading.** `Journal::read(from, to)` gives every hour that began in the range in which
+something was counted, one per hour and Context, with what is not yet written. No client
+reads it yet: Rewind, the IPC command and the Host protocol message are later slices of #63.
+
 ## Host protocol
 
 How a Host serves its Sessions, Tabs and Groups to a client (ADR 0002; vocabulary in
@@ -629,7 +709,7 @@ one Mac never read each other's `remote.json`, `resume.json` or `layout.json`.
 
 **What it does at this stage (#25, #20).** At launch it starts the Session core, Resume, the
 layout (its own `layout.json`: a Session is spawned for every Tab at its last cwd, or one Tab in
-one Group on a fresh install, exactly as the app does), the monitor, loads `remote.json`, and
+one Group on a fresh install, exactly as the app does), the monitor, the Journal, loads `remote.json`, and
 turns Remote on exactly as `remote_set(true)` does in the app: binds `127.0.0.1:<port>` and asks
 Tailscale Serve to publish it. Clients get its layout and every Session's facts (Agent status
 included) in `hello` and on every change, and drive it with the same commands as the app. `--port`
