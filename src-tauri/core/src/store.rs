@@ -20,6 +20,9 @@ pub const REMOTE: &str = "remote.json";
 pub const FROZEN: &str = "frozen.json";
 /// The last durations of each test suite, for a Suite's ETA (`suite/history.rs`).
 pub const HISTORY: &str = "history.json";
+/// Claude Code's last usage answer and when it was read, so a launch shows it without a request
+/// (`usage.rs`).
+pub const USAGE: &str = "usage.json";
 
 pub fn path(paths: &dyn Paths, file: &str) -> Result<PathBuf, String> {
     Ok(paths.data_dir()?.join(file))

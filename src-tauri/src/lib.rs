@@ -558,7 +558,7 @@ pub fn run() {
                     .state::<resume::Resume>()
                     .record(resume::entries(&targets));
             });
-            app.manage(usage::spawn(events.clone()));
+            app.manage(usage::spawn(events.clone(), &*host.paths));
             let remote_file = store::path(&*host.paths, store::REMOTE)
                 .inspect_err(|e| eprintln!("remote: no app data dir ({e}); pairings not persisted"))
                 .ok();

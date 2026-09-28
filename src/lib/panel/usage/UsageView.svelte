@@ -7,17 +7,15 @@
   import {
     currentPercent,
     fillFraction,
-    formatAgo,
     formatPercent,
     formatResetsIn,
+    freshnessNote,
     usageLevel,
+    waitingNote,
   } from "./model";
   import { AGENT_NAMES } from "../../agentStatus";
   import { openSettings } from "../../settings/visibility.svelte";
   import type { AgentUsage, UsageWindow } from "../../types";
-
-  /** Older numbers than this say how old they are (Codex's are as old as its last turn). */
-  const STALE_MS = 5 * 60_000;
 
   const snapshot = $derived(usage.snapshot);
   const now = $derived(usage.now);
@@ -27,12 +25,6 @@
     if (w.resetsAt === null) return used;
     const at = new Date(w.resetsAt).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
     return w.resetsAt <= now ? `${used}; reset ${at}` : `${used}; resets ${at}`;
-  }
-
-  function note(a: AgentUsage): string {
-    const parts = [a.plan ?? ""];
-    if (a.updatedAt !== null && now - a.updatedAt > STALE_MS) parts.push(formatAgo(a.updatedAt, now));
-    return parts.filter(Boolean).join(" · ");
   }
 </script>
 
@@ -49,9 +41,13 @@
       {#each snapshot.agents as a (a.agent)}
         <div class="agent">
           <span class="name">{AGENT_NAMES[a.agent]}</span>
-          <span class="note">{note(a)}</span>
+          <span class="note">{freshnessNote(a, now)}</span>
         </div>
-        {#if a.error}
+        {#if a.rateLimitedUntil !== null}
+          <p class="waiting" title="api.anthropic.com rate-limited the usage read; the numbers shown are the last read">
+            {waitingNote(a, now)}
+          </p>
+        {:else if a.error}
           <p class="error" title={a.error}>{a.error}</p>
         {/if}
         {#each a.windows as w (w.label)}
@@ -139,7 +135,9 @@
     font-size: 10px;
     color: var(--text-tertiary);
   }
-  .error {
+  /* A rate limit is waited out quietly: the same muted line as a real failure, not an alarm. */
+  .error,
+  .waiting {
     grid-column: 1 / -1;
     margin: 0;
     overflow: hidden;
