@@ -112,7 +112,7 @@ A machine running the sidebar-term core, whose Sessions, Tabs and Groups can be 
 _Avoid_: Server, remote machine, node, peer
 
 **Manager**:
-The window's second mode, beside Tabs: every Agent session as a Lane, the questions agents wait on (answered in place when the agent is Hooked), finished work not looked at, and the selected Tab's Terminal, to type into. Its Tabs are the sidebar's; opening one goes back to Tabs.
+The mode the window opens in, beside Tabs: every Agent session as a Lane, the questions agents wait on (answered in place when the agent is Hooked), finished work not looked at, and the selected Tab's Terminal, to type into. The edges between the three drag. Its Tabs are the sidebar's; opening one goes to Tabs.
 _Avoid_: Dashboard, overview, mission control
 
 **Lane**:

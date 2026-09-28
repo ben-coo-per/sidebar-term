@@ -1,8 +1,8 @@
 // The layout as the webview sees it: a mirror of this Mac's layout (the local Host's snapshot:
 // Groups, Tabs, order, the active Tab: src-tauri/core/src/layout/), changed only through its
 // `tab_*` / `group_*` commands, plus what is this client's own: the sidebar width and
-// visibility, the Panel, the user's unread marks, the window's mode (Tabs or Manager) and
-// Manager's zoom. Those persist in the `sidebar` section of
+// visibility, the Panel, the user's unread marks, the window's mode (Manager or Tabs),
+// Manager's zoom and the sizes of its areas. Those persist in the `sidebar` section of
 // settings.json (debounced ~500 ms), never in layout.json.
 //
 // One set of Groups (ADR 0003). A Tab in them is local (its Session is this Mac's) or linked:
@@ -44,9 +44,12 @@ import { isLocal, LOCAL_HOST, sessionKey, type HostId, type SessionKey } from ".
 import { hostCommands, hostName, hostState, hostTransport } from "./host/hosts.svelte";
 import { hostTabOrder, linksOutOfLine } from "./host/links";
 import {
+  clampManagerLanesHeight,
+  clampManagerNeedsWidth,
   clampPanelHeight,
   clampWidth,
   DEFAULT_MANAGER_ZOOM,
+  DEFAULT_MODE,
   DEFAULT_PANEL,
   DEFAULT_SIDEBAR_WIDTH,
   parseSidebarSection,
@@ -57,7 +60,16 @@ import {
 } from "./sidebar/settings";
 
 export type { ManagerZoom, PanelState, WindowMode };
-export { MAX_PANEL_HEIGHT, MAX_SIDEBAR_WIDTH, MIN_PANEL_HEIGHT, MIN_SIDEBAR_WIDTH } from "./sidebar/settings";
+export {
+  MAX_MANAGER_LANES_HEIGHT,
+  MAX_MANAGER_NEEDS_WIDTH,
+  MAX_PANEL_HEIGHT,
+  MAX_SIDEBAR_WIDTH,
+  MIN_MANAGER_LANES_HEIGHT,
+  MIN_MANAGER_NEEDS_WIDTH,
+  MIN_PANEL_HEIGHT,
+  MIN_SIDEBAR_WIDTH,
+} from "./sidebar/settings";
 
 /**
  * A Tab as this client shows it. For a linked Tab, `sessionId`, `customTitle` and `lastCwd` are
@@ -86,9 +98,12 @@ interface LayoutState {
   /** Cmd-B toggle. Not persisted: the sidebar is visible again on relaunch. */
   sidebarVisible: boolean;
   panel: PanelState;
-  /** Tabs (the sidebar and one Terminal) or Manager (every agent's lane). Per window, persisted. */
+  /** Manager (every agent's lane) or Tabs (the sidebar and one Terminal). Per window, persisted. */
   mode: WindowMode;
   managerZoom: ManagerZoom;
+  /** Manager's lanes' height and its Needs you column's width, as dragged; null: automatic. Persisted. */
+  managerLanesHeight: number | null;
+  managerNeedsWidth: number | null;
   /** The Tab whose Terminal Manager shows (the selected one), if any. Not persisted. */
   managerTabId: string | null;
   /** True once the local Host's first snapshot and the sidebar settings are in. Gates persistence. */
@@ -108,8 +123,10 @@ export const layout = $state<LayoutState>({
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   sidebarVisible: true,
   panel: { ...DEFAULT_PANEL },
-  mode: "tabs",
+  mode: DEFAULT_MODE,
   managerZoom: DEFAULT_MANAGER_ZOOM,
+  managerLanesHeight: null,
+  managerNeedsWidth: null,
   managerTabId: null,
   ready: false,
 });
@@ -349,6 +366,8 @@ function serializeSidebar(): SidebarSettings {
     unread: [...unreadMarks],
     mode: layout.mode,
     managerZoom: layout.managerZoom,
+    managerLanesHeight: layout.managerLanesHeight,
+    managerNeedsWidth: layout.managerNeedsWidth,
   };
 }
 
@@ -365,6 +384,8 @@ export async function initLayout(): Promise<void> {
   layout.panel = saved.panel;
   layout.mode = saved.mode;
   layout.managerZoom = saved.managerZoom;
+  layout.managerLanesHeight = saved.managerLanesHeight;
+  layout.managerNeedsWidth = saved.managerNeedsWidth;
   for (const id of saved.unread) unreadMarks.add(id);
 
   // Listen before the first read: nothing between the two is missed, and an older snapshot
@@ -675,7 +696,7 @@ export function setPanelHeight(px: number): void {
   scheduleSave();
 }
 
-/** Show Tabs (the sidebar and one Terminal) or Manager (every agent's lane) in this window. */
+/** Show Manager (every agent's lane) or Tabs (the sidebar and one Terminal) in this window. */
 export function setMode(mode: WindowMode): void {
   if (layout.mode === mode) return;
   layout.mode = mode;
@@ -699,6 +720,18 @@ export function toggleMode(): void {
 export function setManagerZoom(zoom: ManagerZoom): void {
   if (layout.managerZoom === zoom) return;
   layout.managerZoom = zoom;
+  scheduleSave();
+}
+
+/** Size Manager's lanes (null: as tall as the lanes, up to a share of the window). */
+export function setManagerLanesHeight(px: number | null): void {
+  layout.managerLanesHeight = px === null ? null : clampManagerLanesHeight(px);
+  scheduleSave();
+}
+
+/** Size Manager's Needs you column (null: a share of the window). */
+export function setManagerNeedsWidth(px: number | null): void {
+  layout.managerNeedsWidth = px === null ? null : clampManagerNeedsWidth(px);
   scheduleSave();
 }
 
