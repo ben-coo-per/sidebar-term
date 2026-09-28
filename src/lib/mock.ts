@@ -56,6 +56,7 @@ import type {
   SessionExit,
   SessionId,
   SessionInfo,
+  SessionResized,
   StatusChange,
   Pending,
   Tab,
@@ -930,6 +931,11 @@ export const {
 } = local;
 
 export async function resizeSession(_id: SessionId, _c: number, _r: number): Promise<void> {}
+
+/** No phone shows the mock's Sessions: nothing takes their size. */
+export async function onSessionResized(_cb: (resized: SessionResized) => void): Promise<() => void> {
+  return () => {};
+}
 
 export async function openPath(path: string): Promise<void> {
   console.info("[mock] open", path);

@@ -1,10 +1,12 @@
 <!-- One Tab's Session on the phone: an xterm.js Terminal at a text size the phone can read, fed
      by the connection to its Host; the keyboard (the page's own, or the phone's under the key
      bar) goes back as input. The phone asks the Host to size the pty to what fits the screen at
-     that size, and gives the size back when it leaves; while another client shows the Session
-     the Host refuses, and the phone pans across the Host's grid instead (fit.ts). Drags scroll
-     the screen and the scrollback as one, two fingers change the text size. The whole screen
-     tracks the visual viewport so the key bar sits right above the phone's keyboard. -->
+     that size, taking the size from any other client that shows the Session, and gives it back
+     when it leaves (ADR 0007). Once another client has taken the size, the phone pans across
+     that grid (fit.ts) until it is touched, and takes it again; so it does under a Host that
+     knows no taking, while another client shows the Session. Drags scroll the screen and the
+     scrollback as one, two fingers change the text size. The whole screen tracks the visual
+     viewport so the key bar sits right above the phone's keyboard. -->
 <script lang="ts">
   import { untrack } from "svelte";
   import { Terminal } from "@xterm/xterm";
@@ -47,6 +49,11 @@
   let grid = $state<Grid>({ cols: 0, rows: 0 });
   /** The Host would not size the pty for this phone: another client shows the Session. */
   let refused = $state(false);
+  /**
+   * What this phone asks for, it takes: its user opened the Terminal or touched it, and no
+   * other client has sized the pty since.
+   */
+  let mine = $state(true);
   /** Refused: shrink the text until the Host's columns fit the width, rather than pan. */
   let fitWidth = $state(false);
   let options = $state(false);
@@ -58,6 +65,8 @@
   let follow = true;
   /** Asks the Host for a grid; set while a Session is attached. */
   let ask: ((want: Grid) => void) | null = null;
+  /** The user is at this phone: it takes the size another client took. Set while a Session is attached. */
+  let take: (() => void) | null = null;
   /** Two fingers are changing the text size: the Host is asked once they lift. */
   let pinching = false;
   let frame = 0;
@@ -188,11 +197,24 @@
 
     /** The pty's size before this phone sized it: given back when the phone leaves. */
     let found: Grid | null = null;
+    /** The grid this phone last asked for: a `resized` to any other is another client's doing. */
+    let ours: Grid | null = null;
     let asking = false;
     let queued = false;
     /** The grid the Host last refused, and when: not asked for again at once. */
     let denied: { want: Grid; at: number } | null = null;
-    const size = (want: Grid) => client.command({ t: "resize", sessionId: id, cols: want.cols, rows: want.rows });
+    // Opening a Terminal is the user at this phone.
+    mine = true;
+    const size = (want: Grid, taking: boolean) => {
+      ours = want;
+      return client.command({ t: "resize", sessionId: id, cols: want.cols, rows: want.rows, take: taking });
+    };
+    take = () => {
+      if (mine) return;
+      mine = true;
+      denied = null;
+      layout();
+    };
     ask = (want) => {
       if (asking) {
         queued = true;
@@ -201,7 +223,7 @@
       if (denied && sameGrid(denied.want, want) && Date.now() - denied.at < ASK_AGAIN_MS - 1000) return;
       asking = true;
       const before = { ...grid };
-      size(want)
+      size(want, mine)
         .then(() => {
           found ??= before;
           denied = null;
@@ -211,6 +233,7 @@
         .catch(() => {
           denied = { want, at: Date.now() };
           refused = true;
+          ours = null;
         })
         .finally(() => {
           asking = false;
@@ -223,11 +246,13 @@
       if (!found || ended) return;
       const to = found;
       found = null;
-      size(to).catch(() => {});
+      size(to, true).catch(() => {});
     };
     const onVisibility = () => {
-      if (document.visibilityState === "hidden") giveBack();
-      else layout();
+      if (document.visibilityState === "hidden") return giveBack();
+      // Back on the page: the user is at this phone.
+      take?.();
+      layout();
     };
     document.addEventListener("visibilitychange", onVisibility);
     const again = setInterval(() => {
@@ -250,7 +275,14 @@
         sized(cols, rows);
       }),
       client.on("resized", (sid, cols, rows) => {
-        if (sid === id) sized(cols, rows);
+        if (sid !== id) return;
+        // Another client took the size: it is not this phone's to give back, nor to take
+        // again until it is touched.
+        if (!sameGrid(ours, { cols, rows })) {
+          mine = false;
+          found = null;
+        }
+        sized(cols, rows);
       }),
       client.on("output", (sid, bytes) => {
         if (sid === id) t.write(bytes, () => reveal());
@@ -276,11 +308,15 @@
     const onInput = (ev: Event) => {
       const ie = ev as InputEvent;
       if (ended || ie.inputType !== "insertText" || !ie.data || ie.isComposing) return;
+      take?.();
       client.input(id, ctrl ? withCtrl(ie.data) : ie.data);
       ctrl = false;
       (ie.target as HTMLTextAreaElement).value = "";
     };
     host.addEventListener("input", onInput);
+    // A key of the phone's keyboard (not what the Terminal answers a program by itself): the
+    // user is at this phone. The page's own keys are touches on the screen.
+    const typed = t.onKey(() => take?.());
     const ro = new ResizeObserver(layout);
     ro.observe(scroller);
     client.attach(id);
@@ -293,8 +329,10 @@
       ro.disconnect();
       for (const off of offs) off();
       data.dispose();
+      typed.dispose();
       client.detach(id);
       ask = null;
+      take = null;
       if (frame) cancelAnimationFrame(frame);
       frame = 0;
       cell = null;
@@ -303,6 +341,16 @@
       t.dispose();
       term = null;
     };
+  });
+
+  // A finger anywhere on the screen but on the way out of it: the user is at this phone.
+  $effect(() => {
+    const el = screen;
+    const touched = (e: PointerEvent) => {
+      if (!(e.target instanceof Element && e.target.closest(".back"))) take?.();
+    };
+    el.addEventListener("pointerdown", touched, { capture: true });
+    return () => el.removeEventListener("pointerdown", touched, { capture: true });
   });
 
   // The text size, or how a refused grid is shown, changed.
@@ -548,7 +596,7 @@
   {#if refused && !ended}
     <div class="shared" role="status">
       {grid.cols}×{grid.rows}, as another client shows it.
-      {fitWidth ? "Shrunk to fit." : "Drag sideways to read."}
+      {!mine ? "Touch to fit it to this phone." : fitWidth ? "Shrunk to fit." : "Drag sideways to read."}
     </div>
   {/if}
   <div class="scroller" bind:this={scroller} style:--terminal-bg={TERMINAL_BACKGROUND} style:--pad="{PAD}px">

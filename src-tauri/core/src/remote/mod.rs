@@ -414,19 +414,21 @@ impl Inner {
         Ok(dir)
     }
 
-    /// Size Session `id`'s pty for a client, when that client is the only one showing it: no
-    /// other client on the socket (`others` counts them, this one excluded) and no Terminal
-    /// attached in process (the Mac webview's).
+    /// Size Session `id`'s pty for a client: when that client is the only one showing it (no
+    /// other client on the socket, `others` counts them, this one excluded, and no Terminal
+    /// attached in process, the Mac webview's), or when it takes the size (`take`): its user is
+    /// at it, and every other client follows the pty (`resized`; ADR 0007).
     pub(crate) fn resize(
         &self,
         id: SessionId,
         cols: u16,
         rows: u16,
         others: usize,
+        take: bool,
     ) -> Result<(), String> {
-        if others > 0 || self.layout.is_attached(id) {
+        if !may_size(take, others, self.layout.is_attached(id)) {
             return Err(format!(
-                "Session {id} is shown by another client; only the only client attached may size it"
+                "Session {id} is shown by another client; only a client that takes the size may size it"
             ));
         }
         if cols == 0 || rows == 0 {
@@ -534,6 +536,12 @@ fn same_tailnet(dns_name: &str, origin: &str) -> bool {
     tailnet.contains('.') && label(machine) && rest.eq_ignore_ascii_case(tailnet)
 }
 
+/// Whether a client may size a pty: it takes the size, or no other client shows the Session
+/// (`others`: on the socket; `in_process`: the Mac webview's Terminal).
+fn may_size(take: bool, others: usize, in_process: bool) -> bool {
+    take || (others == 0 && !in_process)
+}
+
 pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -548,6 +556,16 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_client_sizes_a_pty_it_alone_shows_or_takes() {
+        assert!(may_size(false, 0, false), "the only client showing it");
+        assert!(!may_size(false, 1, false), "another client on the socket shows it");
+        assert!(!may_size(false, 0, true), "the Mac webview shows it");
+        assert!(may_size(true, 1, false), "taken from another client");
+        assert!(may_size(true, 0, true), "taken from the Mac webview");
+        assert!(may_size(true, 2, true));
+    }
 
     #[test]
     fn a_page_from_another_machine_on_this_tailnet_may_call_the_api() {

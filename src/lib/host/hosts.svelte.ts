@@ -161,6 +161,7 @@ function connect(state: HostState): void {
       state.activity = next;
     }),
     client.on("attached", (sid, cols, rows) => conn.sinks.get(sid)?.replay(cols, rows)),
+    client.on("resized", (sid, cols, rows) => conn.sinks.get(sid)?.resized(cols, rows)),
     client.on("output", (sid, bytes) => conn.sinks.get(sid)?.data(bytes)),
     client.on("exit", (sid) => {
       const sink = conn.sinks.get(sid);
@@ -350,7 +351,8 @@ export function hostPutConversation(id: HostId, cwd: string, sessionId: string, 
 /**
  * A Host's Sessions for the Terminal manager: attach (the Host replays its recent output on
  * every attach, so the sink is told to clear first), input, resize (the Mac sends it; the Host
- * refuses while another client shows the Session, which the manager ignores), and dropped
+ * refuses while another client shows the Session, unless the Mac takes the size) and the
+ * Host's word that the pty was sized, by whichever client (ADR 0007), and dropped
  * files uploaded to the Host. No flow control: the Host's ring and drop-behind rules stand in.
  */
 export function hostTransport(id: HostId): SessionTransport {
@@ -370,8 +372,8 @@ export function hostTransport(id: HostId): SessionTransport {
     async write(sid, data) {
       clientOf(id)?.input(sid, data);
     },
-    async resize(sid, cols, rows) {
-      await (clientOf(id)?.command({ t: "resize", sessionId: sid, cols, rows }) ?? notConnected());
+    async resize(sid, cols, rows, take) {
+      await (clientOf(id)?.command({ t: "resize", sessionId: sid, cols, rows, take }) ?? notConnected());
     },
     async pause() {},
     async resume() {},

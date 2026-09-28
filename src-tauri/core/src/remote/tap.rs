@@ -225,15 +225,17 @@ impl Taps {
         lock(&self.taps).get(&id).map_or(0, |t| t.subs.len())
     }
 
-    pub fn resized(&self, id: SessionId, cols: u16, rows: u16) {
+    /// The pty was sized: tell every subscriber, if the size is another. Whether it is.
+    pub fn resized(&self, id: SessionId, cols: u16, rows: u16) -> bool {
         let mut taps = lock(&self.taps);
-        let Some(tap) = taps.get_mut(&id) else { return };
+        let Some(tap) = taps.get_mut(&id) else { return false };
         if tap.cols == cols && tap.rows == rows {
-            return;
+            return false;
         }
         tap.cols = cols;
         tap.rows = rows;
         fan_out(tap, id, || Frame::Resized { cols, rows });
+        true
     }
 
     /// The Session ended: tell every subscriber and drop the tap.
@@ -328,8 +330,8 @@ mod tests {
         assert_eq!((a.cols, a.rows), (120, 40));
 
         taps.push(7, b"after");
-        taps.resized(7, 100, 30);
-        taps.resized(7, 100, 30); // no change: no frame
+        assert!(taps.resized(7, 100, 30));
+        assert!(!taps.resized(7, 100, 30)); // no change: no frame
         assert_eq!(
             drain(&mut rx),
             [
