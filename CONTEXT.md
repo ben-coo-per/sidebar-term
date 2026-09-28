@@ -85,7 +85,7 @@ The panel view showing the Mac's CPU and memory, split between sessions (each in
 _Avoid_: Activity monitor (that is Apple's app), stats, usage
 
 **Usage**:
-The panel view showing how much of each chosen coding agent's usage limits is spent: one bar per limit window (Claude Code's 5 hours and week, Codex's), with the time until it resets. Which agents it shows is chosen on the Settings page.
+The panel view showing how much of each chosen coding agent's usage limits is spent: one bar per limit window (Claude Code's 5 hours and week, Codex's), with the time until it resets. Manager shows it too, at the bottom of Needs you. Which agents it shows is chosen on the Settings page.
 _Avoid_: Quota, credits, stats, Activity (that is CPU and memory)
 
 **Remote**:

@@ -844,6 +844,10 @@ Tab it opens opens in Tabs mode.
   Needs input, then fades. A screen-only agent's card shows the last 3 lines of its Terminal and
   "Answer in its Terminal", which selects its Tab and gives the Terminal the focus. Below: Tabs whose agent finished or stopped while nobody looked, with what
   its last turn changed. The column is the narrow one (34% of the window, 300 px at least).
+- **Usage**: the Panel's Usage view (`UsageView.svelte`: every chosen agent's limits as bars,
+  "Panel"), held at the bottom of the Needs you column, as tall as its bars and 45% of the
+  column at most; Needs you scrolls above it. Its bars are square, as the lanes'. The window
+  bar's Usage summary does not show in Manager.
 - **Sizes**: the edge under the lanes and the edge between Needs you and the Terminal drag
   (`managerLanesHeight`, `managerNeedsWidth`, in px; null until dragged). Until then the lanes
   are as tall as they are, up to 55% of Manager, and Needs you is 34% of the window. Dragged,
@@ -876,7 +880,7 @@ feed, and their cards are answered in the Terminal.
 width of the window, 40 px tall, the same in Tabs and Manager: right of the traffic lights
 (`trafficLightPosition` centres them in it; `--traffic-lights-width` keeps the bar's contents
 clear of them), the Tabs / Manager switch and, in Manager, the zoom; at the right, the Usage
-summary and the Tray. It is the `data-tauri-drag-region`; its controls opt out. The sidebar, the
+summary (in Tabs only: Manager shows Usage whole) and the Tray. It is the `data-tauri-drag-region`; its controls opt out. The sidebar, the
 Terminal, Manager and the Settings page all sit under it. `dragDropEnabled: false` so HTML5
 drag-and-drop works in the sidebar: on macOS Tauri's handler claims every drag, including the
 webview's own. Files dropped on a Terminal therefore arrive as DOM `File`s; they paste as
