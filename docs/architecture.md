@@ -617,7 +617,7 @@ five seconds, or the Host closes with 4408 (4401 for a token it does not know).
 | `detach` | `sessionId` | - |
 | `input` | `sessionId, data` | `error {message}` if the write failed |
 | `ping` | - | `pong` |
-| `resize` | `id, sessionId, cols, rows` | `ok` / `error`: sizes the pty, only for a client attached to the Session with no other client on the socket attached and no Terminal attached in process (the Mac webview's); the phone never sends it |
+| `resize` | `id, sessionId, cols, rows` | `ok` / `error`: sizes the pty, only for a client attached to the Session with no other client on the socket attached and no Terminal attached in process (the Mac webview's). The phone sends it too (ADR 0006), and gives the size back when it leaves |
 | `tab_new` | `id, groupId?, afterTabId?, cwd?, cols?, rows?` | `ok {result: Tab}` |
 | `tab_close` / `tab_rename` / `tab_move` / `tab_activate` | `id, tabId` (+ `title` / `groupId, index?`) | `ok` |
 | `group_new` | `id, name?, tabId?` | `ok {result: Group}` |
@@ -682,7 +682,10 @@ store) is asked for its linked Tabs (`auth {links: true}`) and says which Hosts 
 The phone reaches each of those itself: a token per Host, kept by the Host's URL
 (`localStorage`), got by presenting that Host's pairing code to its `/api/pair` from the page
 (the list shows "<Host> has N Tabs of yours" with a Pair button until then; the Host's linked
-Tabs are left out meanwhile). A Host that refuses the token (the phone was removed there) goes
+Tabs are left out meanwhile). The pairing screen names the Host the code must come from (the
+page's own by the machine in its address, before it has said its name) and shows both ways to a
+code, the Mac app's Settings and the daemon's SIGUSR1: nothing in the Host protocol says which
+a Host is, and before pairing the phone has heard nothing from it. A Host that refuses the token (the phone was removed there) goes
 back behind its pairing; the page's own Host refusing forgets everything. What the page's Host
 last said (layout, facts, Hosts) is kept in `localStorage` and shown until it answers, so with
 the Mac asleep the Groups are there, its own Tabs greyed, and the other Hosts' Tabs open.
@@ -713,11 +716,21 @@ events, and the Mac's keys.
 Screens: pairing (the page's Host, code prefilled
 from the QR link; then any Host from the list), the lists (Manager, and the Tabs with the same
 icons and Badge as the Mac's rows; the page's Host's name as the
-title), and `TerminalScreen`: an xterm.js Terminal at the Host's grid, `t.reset()` before each
-replay, font size chosen so the Host's columns fit the width (`fit.ts`, from a measured cell;
-below 6 px the grid scrolls sideways), the screen sized to the visual viewport so the key bar
-(Esc, Tab, Shift-Tab, a one-shot Ctrl, arrows, ^C, Return; DECCKM-aware arrows) sits above the
-keyboard. The phone never resizes the pty. `service-worker.ts` caches the page and assets
+title), and `TerminalScreen`: an xterm.js Terminal at a text size the phone reads (12 px unless
+changed under "Aa" or with two fingers; `prefs.svelte.ts`), `t.reset()` before each replay. It
+asks the Host for the grid that fits the screen at that size (`resize`; `fit.ts`, from a measured
+cell) on attach and whenever the size of the text or of the screen changes, and gives the pty the
+size it found when the Terminal is left or the page hidden (ADR 0006). Refused, because another
+client shows the Session, it keeps the Host's grid at the readable size, says so, pans across it,
+and asks again every 15 s; "Fit the width" shrinks the font instead until the Host's columns fit (
+below 6 px the grid still pans). Fingers move the view (`drag`): across the grid, and down the
+screen and the scrollback as one (`shareDrag`); in an alternate screen the program gets a wheel,
+a line at a time. The keyboard is the page's own (`Keyboard.svelte`, `keys.ts`: Esc, Tab,
+Shift-Tab, one-shot Ctrl and Alt, ^C and arrows, a row of what a shell is typed with, then
+letters, numbers or symbols; held keys repeat; paste reads the clipboard) and the phone's stays
+down, its text area taking none (`inputmode="none"`); or, chosen under "Aa", the phone's, under
+the key bar (Esc, Tab, Shift-Tab, a one-shot Ctrl, arrows, ^C, Return; DECCKM-aware arrows), the
+screen sized to the visual viewport so the bar sits above it. `service-worker.ts` caches the page and assets
 (registered only on `/m` over HTTPS; the Mac's webview never has it) and `manifest.webmanifest`
 makes "Add to Home Screen" a full-screen app with its own icon; an installed page keeps its
 storage, so the pairing lasts. The phone sends no layout command yet (UI: #16).

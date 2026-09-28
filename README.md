@@ -40,8 +40,10 @@ reachable only over your Tailscale network. Once:
    the pairing is kept. (The installed page keeps its own storage: a pairing made in Safari does
    not carry over, so pair from the installed page, typing the code.)
 5. Tabs on a paired Host (Settings > Hosts): the list says "<Host> has N Tabs of yours". Press
-   **Pair**, and type a pairing code from that Host (on the daemon: see "Host daemon"). The phone
-   talks to that Host directly from then on, so its Tabs stay in reach while the Mac sleeps.
+   **Pair**, and type a pairing code from that Host: the screen names the Host and says how to
+   get a code from it, in its Settings on a Mac, in a terminal on the daemon (see "Host daemon").
+   Type the code; that Host's QR code and link open its own page instead. The phone talks to
+   that Host directly from then on, so its Tabs stay in reach while the Mac sleeps.
 
 Nothing listens while Remote is off. On, the server binds 127.0.0.1 only; Tailscale publishes it
 to your tailnet (never the internet) with a real certificate. Each phone needs a one-time pairing
@@ -56,7 +58,7 @@ Still to do, in order:
    turn Remote on, pair, and check the page installs from Safari. If `tailscale serve` refuses,
    Settings shows its message; HTTPS certificates must be enabled in the admin console.
 2. Try it with a real Claude Code prompt: answer a permission question from the phone, use the
-   key bar's Esc / Shift-Tab, and see whether the fit-to-width font is readable in portrait.
+   keyboard's Esc / Shift-Tab, and see how the Terminal reads in portrait (text size: "Aa").
 3. Passkey / Face ID re-lock after idle (WebAuthn; the page is on a real HTTPS origin, so it is
    cheap to add). Not built yet: today the token alone admits a paired phone.
 4. Full control from the phone (create, close, rename, move Tabs): the Host protocol carries
@@ -84,9 +86,11 @@ loginctl enable-linger "$USER"        # keep it running with no one logged in
 ```
 
 It needs Tailscale running on that machine (with Serve available) for `https://<host>.<tailnet>.ts.net/m`;
-without it the server still listens on `127.0.0.1:47611`. To pair a phone:
-`systemctl --user kill --kill-whom=main -s USR1 sidebar-termd`, then read the code and link in
-`journalctl --user -u sidebar-termd -n 3`. Flags (`sidebar-termd --help`): `--data-dir`, `--port`,
+without it the server still listens on `127.0.0.1:47611`. To pair a phone, in a terminal on that
+machine: `systemctl --user kill --kill-whom=main -s USR1 sidebar-termd`, then read the code and link in
+`journalctl --user -u sidebar-termd -n 3` (the line with "pairing code"; the code lasts ten
+minutes). A phone that opens this Host's own page (`https://<host>.<tailnet>.ts.net/m`) pairs
+with a code from this Host, not from the Mac. Flags (`sidebar-termd --help`): `--data-dir`, `--port`,
 `--web-root`, `--pair`. On a Mac, for a smoke test, `cargo run --bin sidebar-termd -- --web-root build --pair`
 keeps its files in `~/Library/Application Support/com.bencooper.sidebarterm/daemon`, apart from
 the app's. It turns Remote on, so with Tailscale on that Mac it also points the Mac's Serve rule

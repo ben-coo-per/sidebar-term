@@ -1,7 +1,7 @@
 //! Output taps: what the Host keeps of each Session's output for its clients. A Session has a
 //! tap from its first byte of output: a ring of its recent output (replayed on attach, so a
-//! client does not start from a blank screen), the pty's size (a phone renders at the Host's
-//! size and never resizes), the clients attached, each fed the live output as it arrives, and
+//! client does not start from a blank screen), the pty's size (a client that may not size the
+//! pty renders at it), the clients attached, each fed the live output as it arrives, and
 //! the [`Marks`] a [`Scanner`] reads in the output as it passes: the OSC 0 / 2 title, BELs and
 //! when output last arrived, from which `status.rs` derives Agent status without a Terminal.
 //! `session.rs` feeds the taps; `remote/server.rs` attaches to them; the monitor reads the
