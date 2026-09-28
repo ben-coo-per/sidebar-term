@@ -237,11 +237,7 @@
     height: 100%;
     background: var(--term-bg);
     color: var(--text-primary);
-    font-family:
-      -apple-system,
-      BlinkMacSystemFont,
-      "SF Pro Text",
-      sans-serif;
+    font-family: var(--font-ui);
     outline: none;
   }
   .lanes {
@@ -265,7 +261,7 @@
     display: flex;
     align-items: baseline;
     gap: 4px;
-    font-size: 11px;
+    font-size: calc(11px * var(--ui-font-scale));
     font-weight: 600;
     letter-spacing: 0.02em;
     text-transform: uppercase;
@@ -284,7 +280,7 @@
   .ticks {
     position: relative;
     height: 16px;
-    font-size: 10.5px;
+    font-size: calc(10.5px * var(--ui-font-scale));
     color: var(--text-tertiary);
     font-variant-numeric: tabular-nums;
   }
@@ -313,7 +309,7 @@
   }
   .empty {
     margin: 10px 0;
-    font-size: 12.5px;
+    font-size: calc(12.5px * var(--ui-font-scale));
     color: var(--text-tertiary);
   }
   .legend {
@@ -321,7 +317,7 @@
     display: flex;
     gap: 16px;
     padding: 8px 0 0 232px;
-    font-size: 11px;
+    font-size: calc(11px * var(--ui-font-scale));
     color: var(--text-tertiary);
   }
   .legend > span {
@@ -372,7 +368,7 @@
   }
   .nothing {
     padding: 2px 0 6px;
-    font-size: 12.5px;
+    font-size: calc(12.5px * var(--ui-font-scale));
     color: var(--text-tertiary);
   }
   .finished-heading {
@@ -399,14 +395,14 @@
   }
   .finished-title {
     flex: none;
-    font-size: 12.5px;
+    font-size: calc(12.5px * var(--ui-font-scale));
     font-weight: 600;
     color: var(--text-primary);
   }
   .finished-description {
     flex: 0 2 auto;
     min-width: 0;
-    font-size: 12.5px;
+    font-size: calc(12.5px * var(--ui-font-scale));
     color: var(--text-tertiary);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -415,7 +411,7 @@
   .finished-summary {
     flex: 1 1 auto;
     min-width: 0;
-    font-size: 11.5px;
+    font-size: calc(11.5px * var(--ui-font-scale));
     color: var(--text-secondary);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -423,7 +419,7 @@
   }
   .finished-since {
     flex: none;
-    font-size: 10.5px;
+    font-size: calc(10.5px * var(--ui-font-scale));
     color: var(--text-tertiary);
     font-variant-numeric: tabular-nums;
   }
@@ -434,7 +430,7 @@
     border: none;
     background: none;
     font: inherit;
-    font-size: 11.5px;
+    font-size: calc(11.5px * var(--ui-font-scale));
     color: var(--accent-strong);
     cursor: default;
   }

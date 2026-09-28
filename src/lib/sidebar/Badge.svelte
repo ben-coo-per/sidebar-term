@@ -42,7 +42,7 @@
     align-items: center;
     gap: 4px;
     min-width: 0;
-    font-size: 11px;
+    font-size: calc(11px * var(--ui-font-scale));
     color: var(--text-tertiary);
     /* Tall enough for descenders: .place/.ref clip to their line box (overflow: hidden). */
     line-height: 1.3;

@@ -176,7 +176,7 @@
     flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
-    font-size: 11px;
+    font-size: calc(11px * var(--ui-font-scale));
     font-weight: 600;
     letter-spacing: 0.02em;
     text-transform: uppercase;

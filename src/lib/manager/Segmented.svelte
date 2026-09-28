@@ -55,7 +55,7 @@
     background: transparent;
     color: var(--text-tertiary);
     font: inherit;
-    font-size: 12.5px;
+    font-size: calc(12.5px * var(--ui-font-scale));
     white-space: nowrap;
     cursor: default;
   }
@@ -67,7 +67,7 @@
     color: var(--text-primary);
   }
   .count {
-    font-size: 11px;
+    font-size: calc(11px * var(--ui-font-scale));
     font-weight: 600;
     color: var(--status-needs-input);
     font-variant-numeric: tabular-nums;

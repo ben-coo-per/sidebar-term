@@ -137,7 +137,7 @@
     border: none;
     color: var(--text-primary);
     font: inherit;
-    font-size: 12px;
+    font-size: calc(12px * var(--ui-font-scale));
     text-align: left;
     padding: 6px 8px;
     border-radius: var(--radius-sm);
@@ -156,7 +156,7 @@
   }
   .arrow {
     color: var(--text-tertiary);
-    font-size: 10px;
+    font-size: calc(10px * var(--ui-font-scale));
   }
   .sep {
     height: 1px;

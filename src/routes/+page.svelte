@@ -11,6 +11,7 @@
   import { initHosts } from "$lib/host/hosts.svelte";
   import { initShortcuts } from "$lib/shortcuts";
   import { initHotkeys } from "$lib/hotkeys.svelte";
+  import { initAppearance } from "$lib/appearance/appearance.svelte";
   import { initUsageSettings } from "$lib/panel/usage/settings.svelte";
   import { initCaffeinate } from "$lib/tray/caffeinate.svelte";
   import { initMemoryGuard, setVisibleSession } from "$lib/guard/memoryGuard.svelte";
@@ -37,6 +38,7 @@
       void initResume();
       if (!stopped) stopHosts = initHosts();
     });
+    void initAppearance();
     void initHotkeys();
     void initUsageSettings();
     void initActivitySettings();

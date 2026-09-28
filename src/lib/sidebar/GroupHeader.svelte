@@ -179,7 +179,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 11px;
+    font-size: calc(11px * var(--ui-font-scale));
     font-weight: 600;
     letter-spacing: 0.02em;
     text-transform: uppercase;
@@ -196,21 +196,21 @@
     border-radius: 4px;
     color: var(--text-primary);
     font: inherit;
-    font-size: 11px;
+    font-size: calc(11px * var(--ui-font-scale));
     text-transform: none;
     padding: 1px 4px;
     outline: none;
   }
   .count {
     flex: none;
-    font-size: 11px;
+    font-size: calc(11px * var(--ui-font-scale));
     font-variant-numeric: tabular-nums;
     color: var(--text-tertiary);
   }
   .hotkey {
     flex: none;
     font-family: inherit;
-    font-size: 10.5px;
+    font-size: calc(10.5px * var(--ui-font-scale));
     line-height: 16px;
     padding: 0 5px;
     border: 1px solid var(--sidebar-border);

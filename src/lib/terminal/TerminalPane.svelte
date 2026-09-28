@@ -1,7 +1,6 @@
 <!-- Shows the Session in view's Terminal, on whichever Host. OWNER: terminal agent. CONTRACT: props are fixed. -->
 <script lang="ts">
   import { terminals } from "./manager";
-  import { TERMINAL_BACKGROUND } from "./theme";
   import { carriesFiles } from "./drop";
   import type { SessionKey } from "../host/ids";
 
@@ -59,12 +58,7 @@
   });
 </script>
 
-<div
-  class="terminal-pane"
-  class:drop-target={dropTarget}
-  bind:this={el}
-  style:--terminal-bg={TERMINAL_BACKGROUND}
-></div>
+<div class="terminal-pane" class:drop-target={dropTarget} bind:this={el}></div>
 
 <style>
   .terminal-pane {
@@ -74,7 +68,7 @@
     /* Inner padding; the Terminal's host fills the content box and fit() measures that. */
     padding: 6px 4px 4px 10px;
     overflow: hidden;
-    background: var(--terminal-bg);
+    background: var(--term-bg);
   }
   /* Drawn in the padding, around the Terminal. */
   .terminal-pane.drop-target {

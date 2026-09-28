@@ -1,4 +1,5 @@
-// Look of every Terminal. v1 is dark only. OWNER: terminal agent.
+// Look of every Terminal: the defaults, which the Settings page (Appearance) can change
+// (src/lib/appearance/model.ts). OWNER: terminal agent.
 
 import type { ITerminalInitOnlyOptions, ITerminalOptions, ITheme } from "@xterm/xterm";
 
@@ -41,10 +42,25 @@ export const terminalTheme: ITheme = {
  */
 export const TERMINAL_FONT_FAMILY = '"SF Mono", ui-monospace, Menlo, Monaco, monospace';
 
-export const terminalOptions: ITerminalOptions & ITerminalInitOnlyOptions = {
+/** What of a Terminal's look the Settings page (Appearance) changes, on every Terminal at once. */
+export interface TerminalLook {
+  theme: ITheme;
+  fontFamily: string;
+  fontSize: number;
+  lineHeight: number;
+  fontWeight: NonNullable<ITerminalOptions["fontWeight"]>;
+}
+
+export const DEFAULT_TERMINAL_LOOK: TerminalLook = {
   theme: terminalTheme,
   fontFamily: TERMINAL_FONT_FAMILY,
   fontSize: 13,
+  lineHeight: 1,
+  fontWeight: "400",
+};
+
+export const terminalOptions: ITerminalOptions & ITerminalInitOnlyOptions = {
+  ...DEFAULT_TERMINAL_LOOK,
   cursorBlink: true,
   scrollback: 10000,
   // Set before open(): transparency costs performance and triggers WebGL ghosting (#5847).

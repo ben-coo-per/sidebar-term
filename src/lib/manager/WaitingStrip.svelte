@@ -46,7 +46,7 @@
   .text {
     flex: 1 1 auto;
     min-width: 0;
-    font-size: 12px;
+    font-size: calc(12px * var(--ui-font-scale));
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -54,7 +54,7 @@
   .hotkey {
     flex: none;
     font-family: inherit;
-    font-size: 10.5px;
+    font-size: calc(10.5px * var(--ui-font-scale));
     line-height: 16px;
     padding: 0 5px;
     border: 1px solid var(--sidebar-border);

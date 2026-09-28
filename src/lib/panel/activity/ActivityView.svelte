@@ -176,7 +176,7 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
-    font-size: 11px;
+    font-size: calc(11px * var(--ui-font-scale));
     font-variant-numeric: tabular-nums;
   }
   .waiting {
@@ -198,7 +198,7 @@
   .meter-label {
     flex: none;
     width: 26px;
-    font-size: 10px;
+    font-size: calc(10px * var(--ui-font-scale));
     color: var(--text-tertiary);
   }
   .track {
@@ -234,7 +234,7 @@
     height: 20px;
     border-bottom: 1px solid var(--sidebar-divider);
     color: var(--text-tertiary);
-    font-size: 10px;
+    font-size: calc(10px * var(--ui-font-scale));
   }
   .sort {
     appearance: none;

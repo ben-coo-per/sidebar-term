@@ -24,7 +24,7 @@
     padding: 0 12px;
     border: 1px dashed var(--scrollbar-thumb);
     border-radius: var(--radius-md);
-    font-size: 12px;
+    font-size: calc(12px * var(--ui-font-scale));
     color: var(--text-secondary);
     transition: opacity var(--duration-medium) var(--ease-standard);
   }

@@ -32,7 +32,7 @@ import type { SessionId } from "../types";
 import { parseSessionKey, type SessionKey } from "../host/ids";
 import { FlowController } from "./flow-control";
 import { resolveDroppedPaths, shellEscape } from "./drop";
-import { TERMINAL_BACKGROUND, terminalOptions } from "./theme";
+import { DEFAULT_TERMINAL_LOOK, terminalOptions, type TerminalLook } from "./theme";
 import { attachWebgl, type WebglRenderer } from "./webgl";
 import { openLinkOnCmdClick, osc52Clipboard, osc8LinkHandler } from "./system";
 import { FileLinkProvider } from "./fileLinks";
@@ -100,10 +100,15 @@ export interface TerminalManager {
   dropFiles(key: SessionKey, files: File[]): Promise<void>;
   /** Re-fit the mounted Terminal to its container and resize the pty. */
   fit(key: SessionKey): void;
+  /** Give every Terminal, and each one made from now on, this look (colours and font). */
+  restyle(look: TerminalLook): void;
   on<K extends keyof TerminalEvents>(event: K, cb: TerminalEvents[K]): () => void;
 }
 
 const ACTIVITY_THROTTLE_MS = 250;
+
+/** The look every Terminal has: the default until `restyle` says otherwise. */
+let look: TerminalLook = DEFAULT_TERMINAL_LOOK;
 
 interface Entry {
   key: SessionKey;
@@ -272,7 +277,7 @@ export const terminals: TerminalManager = {
     if (!parsed) return;
     const sid = parsed.id;
     const { cols, rows } = lastGrid;
-    const term = new Terminal({ ...terminalOptions, cols, rows, linkHandler: osc8LinkHandler });
+    const term = new Terminal({ ...terminalOptions, ...look, cols, rows, linkHandler: osc8LinkHandler });
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.loadAddon(new Unicode11Addon());
@@ -285,7 +290,7 @@ export const terminals: TerminalManager = {
     host.className = "sidebar-term-host";
     host.style.width = "100%";
     host.style.height = "100%";
-    host.style.background = TERMINAL_BACKGROUND;
+    host.style.background = look.theme.background ?? "";
     // Enables Edit > Copy (and so Cmd-C) in WebKit while the Terminal has a selection.
     host.addEventListener("beforecopy", (ev) => {
       if (term.hasSelection()) ev.preventDefault();
@@ -409,6 +414,16 @@ export const terminals: TerminalManager = {
   fit(key) {
     const e = entries.get(key);
     if (e) scheduleFit(e);
+  },
+
+  restyle(next) {
+    look = next;
+    for (const e of entries.values()) {
+      Object.assign(e.term.options, next);
+      e.host.style.background = next.theme.background ?? "";
+      // A font changes the cell size, and so the grid that fits; a hidden Terminal fits on mount.
+      scheduleFit(e);
+    }
   },
 
   on(event, cb) {

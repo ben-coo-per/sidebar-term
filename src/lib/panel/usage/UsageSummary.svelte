@@ -24,7 +24,7 @@
 <style>
   .summary {
     flex: none;
-    font-size: 10.5px;
+    font-size: calc(10.5px * var(--ui-font-scale));
     font-variant-numeric: tabular-nums;
     color: var(--text-secondary);
     white-space: nowrap;

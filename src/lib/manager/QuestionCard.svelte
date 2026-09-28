@@ -119,7 +119,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 12.5px;
+    font-size: calc(12.5px * var(--ui-font-scale));
     font-weight: 600;
   }
   .description {
@@ -128,18 +128,18 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 12.5px;
+    font-size: calc(12.5px * var(--ui-font-scale));
     color: var(--text-tertiary);
   }
   .agent {
     flex: none;
-    font-size: 11px;
+    font-size: calc(11px * var(--ui-font-scale));
     color: var(--text-tertiary);
     white-space: nowrap;
   }
   .chip {
     flex: none;
-    font-size: 10px;
+    font-size: calc(10px * var(--ui-font-scale));
     line-height: 14px;
     padding: 0 5px;
     border-radius: 4px;
@@ -152,13 +152,13 @@
   }
   .since {
     flex: none;
-    font-size: 10.5px;
+    font-size: calc(10.5px * var(--ui-font-scale));
     color: var(--status-needs-input);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
   .question {
-    font-size: 13px;
+    font-size: calc(13px * var(--ui-font-scale));
     line-height: 1.4;
     color: var(--text-primary);
     text-wrap: pretty;
@@ -167,8 +167,8 @@
     background: var(--term-bg);
     border-radius: var(--radius-sm);
     padding: 6px 8px;
-    font-family: "SF Mono", ui-monospace, Menlo, monospace;
-    font-size: 11.5px;
+    font-family: var(--font-mono);
+    font-size: calc(11.5px * var(--ui-font-scale));
     line-height: 16px;
   }
   .line {
@@ -201,7 +201,7 @@
     background: var(--sidebar-bg-active);
     color: var(--text-primary);
     font: inherit;
-    font-size: 11.5px;
+    font-size: calc(11.5px * var(--ui-font-scale));
     white-space: nowrap;
     cursor: default;
   }
@@ -215,7 +215,7 @@
   }
   .n {
     opacity: 0.7;
-    font-size: 10.5px;
+    font-size: calc(10.5px * var(--ui-font-scale));
     font-variant-numeric: tabular-nums;
   }
   .link {
@@ -225,7 +225,7 @@
     padding: 0;
     height: 24px;
     font: inherit;
-    font-size: 11.5px;
+    font-size: calc(11.5px * var(--ui-font-scale));
     color: var(--accent-strong);
     white-space: nowrap;
     cursor: default;
