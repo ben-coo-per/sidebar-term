@@ -12,6 +12,9 @@
 //!   given; status changes of a screen-only agent), the last [`FEED_MAX`], on the
 //!   `agent-event` event and over the Host protocol.
 //!
+//! - **Steps**: what a hooked agent's hooks say that the Journal counts (a prompt, an edit's
+//!   lines, where its transcript is), to whoever watches them ([`Agents::watch_steps`]).
+//!
 //! The monitor calls [`Agents::decorate`] on every Session's facts each tick, before it compares
 //! them with the last ones, so a new question or status change goes out like any other change.
 
@@ -55,6 +58,9 @@ pub fn now_ms() -> u64 {
 /// Told of every agent event (Remote relays them to its clients).
 pub type Watcher = Box<dyn Fn(&AgentEvent) + Send + Sync>;
 
+/// Told of every step of a hooked agent, with its Session and the time (epoch ms).
+pub type StepWatcher = Box<dyn Fn(SessionId, &hooks::Step, u64) + Send + Sync>;
+
 #[derive(Clone)]
 pub struct Agents {
     inner: Arc<Inner>,
@@ -68,6 +74,7 @@ struct Inner {
     hooks: Mutex<Option<(String, install::Installed)>>,
     state: Mutex<State>,
     watchers: Mutex<Vec<Watcher>>,
+    step_watchers: Mutex<Vec<StepWatcher>>,
     next_id: AtomicU64,
 }
 
@@ -83,6 +90,8 @@ struct Tracked {
     /// Its agent reported through its hooks (and has not ended since).
     hooked: bool,
     waiting: Option<Waiting>,
+    /// The transcript its hooks last named.
+    transcript: Option<String>,
 }
 
 /// A question an agent's hook is held open on.
@@ -110,6 +119,7 @@ impl Agents {
                 hooks: Mutex::new(None),
                 state: Mutex::default(),
                 watchers: Mutex::default(),
+                step_watchers: Mutex::default(),
                 next_id: AtomicU64::new(0),
             }),
         }
@@ -151,6 +161,17 @@ impl Agents {
     /// Told of every agent event from now on.
     pub fn watch(&self, watcher: Watcher) {
         lock(&self.inner.watchers).push(watcher);
+    }
+
+    /// Told of every step of a hooked agent from now on.
+    pub fn watch_steps(&self, watcher: StepWatcher) {
+        lock(&self.inner.step_watchers).push(watcher);
+    }
+
+    fn step(&self, id: SessionId, step: hooks::Step, at: u64) {
+        for w in lock(&self.inner.step_watchers).iter() {
+            w(id, &step, at);
+        }
     }
 
     /// The last [`FEED_MAX`] agent events, oldest first.
@@ -284,7 +305,7 @@ impl Agents {
     /// to the reply to print, once there is one (a question waits for its answer); `None` lets
     /// Claude Code carry on as it would without the hook.
     pub(crate) async fn hook(&self, id: SessionId, event: &str, payload: Value) -> Option<Value> {
-        {
+        let transcript = {
             let mut state = lock(&self.inner.state);
             let t = state.sessions.entry(id).or_default();
             t.hooked = event != "SessionEnd";
@@ -294,13 +315,22 @@ impl Agents {
                     let _ = w.reply.send(None);
                 }
             }
+            let named = hooks::transcript(&payload).filter(|p| t.transcript.as_deref() != Some(*p));
+            named.map(|p| t.transcript.insert(p.to_owned()).clone())
+        };
+        if let Some(path) = transcript {
+            self.step(id, hooks::Step::Transcript(path), now_ms());
         }
         let ask = match event {
             "PermissionRequest" => hooks::permission(&payload),
             "PreToolUse" => hooks::question(&payload),
             _ => {
+                let now = now_ms();
                 if let Some((kind, text)) = hooks::event(event, &payload) {
-                    self.record(AgentEvent { at: now_ms(), session_id: id, kind, text });
+                    self.record(AgentEvent { at: now, session_id: id, kind, text });
+                }
+                if let Some(step) = hooks::step(event, &payload) {
+                    self.step(id, step, now);
                 }
                 return None;
             }
@@ -436,6 +466,32 @@ mod tests {
         let mut info = claude(3, AgentStatus::Running);
         a.decorate_at(&mut info, 6);
         assert_eq!(info.pending, None);
+    }
+
+    #[tokio::test]
+    async fn steps_are_said_and_a_transcript_once_until_it_changes() {
+        let (a, _) = agents();
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let seen = steps.clone();
+        a.watch_steps(Box::new(move |id, step, _| {
+            assert_eq!(id, 3);
+            lock(&seen).push(step.clone());
+        }));
+        a.hook(3, "SessionStart", json!({ "transcript_path": "/c/1.jsonl" })).await;
+        a.hook(3, "UserPromptSubmit", json!({ "transcript_path": "/c/1.jsonl", "prompt": "hi" })).await;
+        let write = json!({ "tool_name": "Write", "tool_input": { "file_path": "/r/a", "content": "1\n2" } });
+        a.hook(3, "PostToolUse", write).await;
+        a.hook(3, "Stop", json!({})).await;
+        a.hook(3, "SessionStart", json!({ "transcript_path": "/c/2.jsonl" })).await;
+        assert_eq!(
+            *lock(&steps),
+            [
+                hooks::Step::Transcript("/c/1.jsonl".into()),
+                hooks::Step::Prompt,
+                hooks::Step::Edit { added: 2, removed: 0 },
+                hooks::Step::Transcript("/c/2.jsonl".into()),
+            ]
+        );
     }
 
     #[tokio::test]
