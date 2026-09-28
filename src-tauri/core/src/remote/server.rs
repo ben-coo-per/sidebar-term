@@ -29,7 +29,8 @@
 //!   `group_set_collapsed` (the layout's, one to one), and `path_exists {path}` (whether an
 //!   absolute path exists on this Host, and is a directory: Handoff asks before choosing where
 //!   a Tab lands). From the Host: `hello {host, device,
-//!   layout, sessions}`, `layout {layout}` on change, `session {session}` on each change to a
+//!   layout, sessions}`, `layout {layout}` on change (the layout without this Host's linked
+//!   Tabs, which a client cannot reach through it; ADR 0003), `session {session}` on each change to a
 //!   Session's facts, `activity {sessions}` while the Host samples, `attached {sessionId, cols,
 //!   rows}` followed by a binary replay, `resized`, `exit {sessionId}`, `error {message}` (no
 //!   id: the message could not be read, or `input` failed), `pong`, and binary frames of
@@ -382,37 +383,57 @@ async fn run_command(inner: &Arc<Inner>, msg: ClientMsg) -> Option<(u64, Outcome
         ClientMsg::TabNew { id, group_id, after_tab_id, cwd, cols, rows } => (
             id,
             Box::new(move || {
-                inner
-                    .layout()
+                let layout = inner.layout();
+                if let Some(after) = &after_tab_id {
+                    layout.refuse_linked(after)?;
+                }
+                layout
                     .tab_new(TabNew { group_id, after_tab_id, cwd, cols, rows })
                     .map(|tab| json!(tab))
             }),
         ),
-        ClientMsg::TabClose { id, tab_id } => {
-            (id, Box::new(move || inner.layout().tab_close(&tab_id).map(|()| json!(null))))
-        }
+        // A client never sees this Host's linked Tabs (`client_snapshot`), so it cannot name one.
+        ClientMsg::TabClose { id, tab_id } => (
+            id,
+            Box::new(move || {
+                let layout = inner.layout();
+                layout.refuse_linked(&tab_id)?;
+                layout.tab_close(&tab_id).map(|()| json!(null))
+            }),
+        ),
         ClientMsg::TabRename { id, tab_id, title } => (
             id,
-            Box::new(move || inner.layout().tab_rename(&tab_id, &title).map(|()| json!(null))),
+            Box::new(move || {
+                let layout = inner.layout();
+                layout.refuse_linked(&tab_id)?;
+                layout.tab_rename(&tab_id, &title).map(|()| json!(null))
+            }),
         ),
         ClientMsg::TabMove { id, tab_id, group_id, index } => (
             id,
             Box::new(move || {
                 inner
                     .layout()
-                    .tab_move(&tab_id, &group_id, index)
+                    .client_tab_move(&tab_id, &group_id, index)
                     .map(|()| json!(null))
             }),
         ),
         ClientMsg::TabActivate { id, tab_id } => (
             id,
-            Box::new(move || inner.layout().tab_activate(&tab_id).map(|()| json!(null))),
+            Box::new(move || {
+                let layout = inner.layout();
+                layout.refuse_linked(&tab_id)?;
+                layout.tab_activate(&tab_id).map(|()| json!(null))
+            }),
         ),
         ClientMsg::GroupNew { id, name, tab_id } => (
             id,
             Box::new(move || {
-                inner
-                    .layout()
+                let layout = inner.layout();
+                if let Some(tab_id) = &tab_id {
+                    layout.refuse_linked(tab_id)?;
+                }
+                layout
                     .group_new(name.as_deref(), tab_id.as_deref())
                     .map(|group| json!(group))
             }),
@@ -474,7 +495,7 @@ async fn send_output(sink: &mut Sink, id: SessionId, bytes: &[u8]) -> bool {
 }
 
 async fn send_layout(sink: &mut Sink, inner: &Inner) -> bool {
-    send_json(sink, json!({ "t": "layout", "layout": inner.layout().snapshot() })).await
+    send_json(sink, json!({ "t": "layout", "layout": inner.layout().client_snapshot() })).await
 }
 
 /// The facts of Session `id`, if it is still known (a Session gone since the notification is
@@ -540,7 +561,7 @@ async fn connection(inner: Arc<Inner>, socket: WebSocket) {
         "t": "hello",
         "host": inner.host_info(),
         "device": device,
-        "layout": inner.layout().snapshot(),
+        "layout": inner.layout().client_snapshot(),
         "sessions": inner.layout().facts(),
     });
     if !send_json(&mut sink, hello).await {

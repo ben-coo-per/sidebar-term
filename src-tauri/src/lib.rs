@@ -13,6 +13,7 @@ use sidebar_term_core::layout::{Layout, TabNew};
 use sidebar_term_core::model::{
     AgentKind, ClaudeConversation, ConversationFiles, Group, GuardSnapshot, HandoffProbe,
     LayoutSnapshot, Pairing, RemoteSnapshot, ResumeEntry, SessionId, SessionInfo, Tab,
+    TabLink,
     EVENT_CAFFEINATE, EVENT_MEMORY_GUARD, EVENT_MENU_SETTINGS,
 };
 use sidebar_term_core::session::SessionManager;
@@ -229,6 +230,31 @@ fn tab_move(
 #[tauri::command]
 fn tab_activate(layout: State<'_, Arc<Layout>>, tab_id: String) -> Result<(), String> {
     layout.tab_activate(&tab_id)
+}
+
+/// Link paired Host `host_id`'s Tab `tab_id` into this layout (ADR 0003), right after
+/// `after_tab_id`, else as a new Tab would go; not made active. An existing link is handed back.
+#[tauri::command]
+fn tab_link(
+    layout: State<'_, Arc<Layout>>,
+    host_id: String,
+    tab_id: String,
+    group_id: Option<String>,
+    after_tab_id: Option<String>,
+) -> Result<Tab, String> {
+    layout.tab_link(TabLink { host_id, tab_id }, group_id.as_deref(), after_tab_id.as_deref())
+}
+
+/// Host `host_id`'s links follow the Tabs it has (`tab_ids`, in its order): gone Tabs' links go,
+/// new Tabs are linked into the Group named `group_name`. Resolves to the Tabs linked now.
+#[tauri::command]
+fn links_reconcile(
+    layout: State<'_, Arc<Layout>>,
+    host_id: String,
+    tab_ids: Vec<String>,
+    group_name: String,
+) -> Vec<String> {
+    layout.links_reconcile(&host_id, &tab_ids, &group_name)
 }
 
 /// A new Group at the end ("New Group" unless named); with `tab_id`, that Tab moves into it.
@@ -518,6 +544,8 @@ pub fn run() {
             tab_rename,
             tab_move,
             tab_activate,
+            tab_link,
+            links_reconcile,
             group_new,
             group_rename,
             group_move,

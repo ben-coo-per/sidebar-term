@@ -100,7 +100,7 @@ async function typeInto(host: HostId, sessionId: number, input: string): Promise
  * New Tab on a Host, are shown at once, as `newTab` does).
  */
 function markUnread(host: HostId, tabId: string): void {
-  // The Host's snapshot may not have named the Tab yet: mark it as soon as it has.
+  // This Mac's snapshot may not have named the Tab yet: mark it as soon as it has.
   const mark = () => {
     if (layout.tabs[tabId]) setTabUnread(tabId, true);
     else if (hostState(host)?.status === "online") setTimeout(mark, 100);
@@ -113,9 +113,9 @@ function markUnread(host: HostId, tabId: string): void {
 // ---------------------------------------------------------------------------------------------
 
 /**
- * A new Tab on `host`, in `groupId` there (default: the Host's active Tab's Group), at the
- * Host's checkout of the repo `tab` is in (else its home). Without the checkout, `git clone`
- * is typed there, not run. Shown at once.
+ * A new Tab on `host`, in `groupId` there (default: the Host's active Tab's Group) and right
+ * after `tab` here, at the Host's checkout of the repo `tab` is in (else its home). Without the
+ * checkout, `git clone` is typed there, not run. Shown at once.
  */
 export async function newTabOnHost(tab: Tab, host: HostId, groupId?: string): Promise<void> {
   const name = hostName(host);
@@ -125,9 +125,9 @@ export async function newTabOnHost(tab: Tab, host: HostId, groupId?: string): Pr
     const repo = git?.repoName ?? null;
     const { landing } = await findLanding(host, repo);
     const cloneUrl = landing.kind === "clone" && isLocal(tab.host) && tab.sessionId !== null ? await originOf(tab.sessionId) : null;
-    const tabId = await newTab({ host, groupId, cwd: landing.cwd });
+    const tabId = await newTab({ host, hostGroupId: groupId, after: tab.id, cwd: landing.cwd });
     if (landing.kind === "clone") {
-      // The Host's snapshot may not have named the new Tab yet.
+      // The layout may not have named the new Tab's Session yet.
       const sessionId = await sessionOfTab(tabId);
       if (sessionId === null) throw new Error(`The new Tab on ${name} has no Session; git clone was not typed.`);
       await typeInto(host, sessionId, handoffInput({ landing, entry: null, localRoot: null, branch: null, cloneUrl, conversationMoved: false, note: "" }));
@@ -149,8 +149,9 @@ async function originOf(sessionId: number): Promise<string | null> {
 
 /**
  * Hand `tab` off to `host`: its Session's Resume entry is rerun in a new Tab there, in
- * `groupId` (default: the Host's active Tab's Group), at the mapped checkout; a Claude Code
- * conversation moves with it. The local Tab is closed only after the Host has the new one.
+ * `groupId` (default: the Host's active Tab's Group), at the mapped checkout; here the new Tab
+ * takes the local Tab's place. A Claude Code conversation moves with it. The local Tab is
+ * closed only after the Host has the new one.
  */
 export async function moveTabToHost(tab: Tab, host: HostId, groupId?: string): Promise<void> {
   const name = hostName(host);
@@ -188,7 +189,7 @@ export async function moveTabToHost(tab: Tab, host: HostId, groupId?: string): P
   // The point of no return is the Host's ack of the new Tab.
   let newTabId: string;
   try {
-    newTabId = await newTab({ host, groupId, cwd: landing.cwd, show: wasInView });
+    newTabId = await newTab({ host, hostGroupId: groupId, after: tab.id, cwd: landing.cwd, show: wasInView });
   } catch (e) {
     await explain(`Could not move "${title}" to ${name}.`, `The Host did not open a Tab: ${reasonOf(e)}. Nothing changed here.`);
     return;
@@ -234,7 +235,7 @@ export async function moveTabToHost(tab: Tab, host: HostId, groupId?: string): P
   }
 }
 
-/** The Session id of a Tab once its Host's snapshot names it; null after a moment without one. */
+/** The Session id of a Tab once the layout names it with its Host's Session; null after a moment without one. */
 function sessionOfTab(tabId: string): Promise<number | null> {
   return new Promise((resolve) => {
     const start = Date.now();

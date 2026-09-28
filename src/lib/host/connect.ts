@@ -1,6 +1,6 @@
 // How the Mac app reaches a paired Host: the real connection (./client.ts) in the app, or the
 // browser mock's fake Host (src/lib/mock.ts) for a `mock://` URL under plain `vite dev`, so the
-// sidebar's Host section can be developed without a daemon. As src/lib/ipc.ts routes IPC.
+// sidebar's linked Tabs can be developed without a daemon. As src/lib/ipc.ts routes IPC.
 
 import { inTauri } from "../ipc";
 import * as mock from "../mock";
