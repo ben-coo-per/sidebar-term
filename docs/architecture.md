@@ -192,10 +192,16 @@ answers it (see "Host daemon" for the daemon's answer).
 - `src/lib/hotkeys.ts` — Hotkey actions, defaults and the pure rules for combos;
   `src/lib/hotkeys.svelte.ts` — the live bindings (persisted overrides); `src/lib/shortcuts.ts` —
   the window listener that dispatches them.
-- `src/lib/settings/*` — the Settings page (Usage agents, Remote, Hosts, Memory, Hotkeys), shown
-  over the Terminal; the settings blob's per-section store (`store.ts`); `HostsSection.svelte`
+- `src/lib/settings/*` — the Settings page, shown over the Terminal: its categories
+  (`categories.ts`: Appearance, Usage agents, Remote, Hosts, Memory, Hotkeys) listed down the
+  left, the selected one's section (`XxxSection.svelte`) in the pane beside them, all styled by
+  `settings.css`; the settings blob's per-section store (`store.ts`); `HostsSection.svelte`
   pairs with a Host, lists the paired ones and sets each one's Checkout root and repo overrides
   (Handoff).
+- `src/lib/appearance/*` — the colours and fonts the user chose in Settings, over the defaults
+  of `src/lib/theme.css` and `src/lib/terminal/theme.ts`: `model.ts` — what can be chosen and
+  what it turns into (pure); `appearance.svelte.ts` — sets it on the root element and restyles
+  every Terminal (persisted changes only, the `appearance` settings section).
 - `src/lib/sidebar/*` — sidebar components: Group headers and Tab rows (the same for local and
   linked Tabs; a linked one carries its Host's chip), drag-and-drop, the close-Tab flow.
   `src/routes/+page.svelte` — app shell.

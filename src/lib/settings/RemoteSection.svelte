@@ -3,6 +3,7 @@
 <script lang="ts">
   import QRCode from "qrcode";
   import { beginPairing, cancelPairing, refreshRemote, remote, revokeDevice, toggleRemote } from "../remote/remote.svelte";
+  import { appearance, uiDefaults } from "../appearance/appearance.svelte";
 
   const snap = $derived(remote.snapshot);
   const on = $derived(snap?.on ?? false);
@@ -28,8 +29,10 @@
       qr = "";
       return;
     }
+    // The library takes no CSS variable: the text colour as it is now.
+    const dark = appearance.colors["--text-primary"] ?? uiDefaults.colors["--text-primary"] ?? "#e7e8ea";
     let live = true;
-    void QRCode.toString(url, { type: "svg", margin: 1, errorCorrectionLevel: "M", color: { dark: "#e7e8ea", light: "#0000" } })
+    void QRCode.toString(url, { type: "svg", margin: 1, errorCorrectionLevel: "M", color: { dark, light: "#0000" } })
       .then((svg) => {
         if (live) qr = svg;
       })
@@ -81,7 +84,7 @@
     </li>
 
     {#if on}
-      <li class="row pairing">
+      <li class="row">
         {#if snap?.pairing}
           <div class="pair-card">
             <div class="qr">{@html qr}</div>
@@ -122,76 +125,13 @@
 </section>
 
 <style>
-  /* Matches SettingsPage.svelte's rows; scoped there, so repeated here. */
-  .section-header {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    gap: 12px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid var(--sidebar-divider);
-  }
-  h2 {
-    margin: 0 0 3px;
-    font-size: 14px;
-    font-weight: 600;
-  }
-  .hint {
-    margin: 0;
-    font-size: 12px;
-    color: var(--text-secondary);
-  }
-  .rows {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-  }
-  .row {
+  .pair-card {
+    flex: 1 1 auto;
     display: flex;
     flex-wrap: wrap;
-    align-items: center;
-    gap: 12px;
-    min-height: 34px;
-    padding: 3px 0;
-    border-bottom: 1px solid var(--sidebar-divider);
-  }
-  .label {
-    flex: 1 1 auto;
-    font-size: 13px;
-  }
-  .check {
-    flex: 1 1 auto;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 4px 0;
-    cursor: pointer;
-  }
-  .detail {
-    display: block;
-    margin-top: 1px;
-    font-size: 11.5px;
-    color: var(--text-tertiary);
-    word-break: break-word;
-  }
-  .detail.error {
-    color: var(--danger);
-  }
-  .detail.warn {
-    color: var(--status-needs-input);
-  }
-  .check input {
-    flex: none;
-    width: 14px;
-    height: 14px;
-    margin: 0;
-    accent-color: var(--accent);
-    cursor: pointer;
-  }
-  .pair-card {
-    display: flex;
     align-items: flex-start;
-    gap: 16px;
+    gap: 12px 16px;
+    min-width: 0;
     padding: 8px 0;
   }
   .qr {
@@ -208,6 +148,7 @@
     height: 100%;
   }
   .pair-text {
+    flex: 1 1 180px;
     display: flex;
     flex-direction: column;
     align-items: flex-start;
@@ -215,35 +156,9 @@
     min-width: 0;
   }
   .code {
-    font-family: "SF Mono", ui-monospace, Menlo, monospace;
-    font-size: 22px;
+    font-family: var(--font-mono);
+    font-size: calc(22px * var(--ui-font-scale));
     letter-spacing: 0.1em;
     user-select: text;
-  }
-  .text-btn {
-    appearance: none;
-    border: 1px solid var(--sidebar-border);
-    background: var(--sidebar-bg-raised);
-    color: var(--text-secondary);
-    font: inherit;
-    font-size: 12px;
-    padding: 4px 10px;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    white-space: nowrap;
-  }
-  .text-btn.small {
-    font-size: 11px;
-    padding: 2px 7px;
-    border-color: transparent;
-    background: transparent;
-    color: var(--text-tertiary);
-  }
-  .text-btn:hover {
-    background: var(--sidebar-bg-active);
-    color: var(--text-primary);
-  }
-  .text-btn.danger:hover {
-    color: var(--danger);
   }
 </style>
