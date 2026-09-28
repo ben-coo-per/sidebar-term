@@ -14,6 +14,7 @@ import {
   newTab,
   orderedTabIds,
   setTabUnread,
+  toggleMode,
   toggleSidebarVisible,
 } from "./layout.svelte";
 import { requestCloseTab } from "./sidebar/closeTabFlow";
@@ -98,6 +99,9 @@ function run(action: ActionId): void {
       return;
     case "sidebar.toggle":
       toggleSidebarVisible();
+      return;
+    case "view.manager":
+      toggleMode();
       return;
     case "settings.toggle":
       toggleSettings();

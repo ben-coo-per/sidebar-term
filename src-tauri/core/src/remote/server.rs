@@ -28,10 +28,13 @@
 //!   `tab_activate`, `group_new`, `group_rename`, `group_move`, `group_delete`,
 //!   `group_set_collapsed` (the layout's, one to one), and `path_exists {path}` (whether an
 //!   absolute path exists on this Host, and is a directory: Handoff asks before choosing where
-//!   a Tab lands). From the Host: `hello {host, device,
-//!   layout, sessions}`, `layout {layout}` on change (the layout without this Host's linked
-//!   Tabs, which a client cannot reach through it; ADR 0003), `session {session}` on each change to a
-//!   Session's facts, `activity {sessions}` while the Host samples, `attached {sessionId, cols,
+//!   a Tab lands), `answer {sessionId, pendingId, option}` (answer the question an agent is
+//!   waiting on) and `release {sessionId, pendingId}` (let the agent ask it in its Terminal
+//!   instead). From the Host: `hello {host, device, layout, sessions, agentEvents}`, `layout
+//!   {layout}` on change (the layout without this Host's linked Tabs, which a client cannot
+//!   reach through it; ADR 0003), `session {session}` on each change to a Session's facts,
+//!   `activity {sessions}` while the Host samples, `agent_event {event}` when an agent did
+//!   something, `attached {sessionId, cols,
 //!   rows}` followed by a binary replay, `resized`, `exit {sessionId}`, `error {message}` (no
 //!   id: the message could not be read, or `input` failed), `pong`, and binary frames of
 //!   output: a big-endian u32 Session id, then the bytes.
@@ -371,6 +374,8 @@ enum ClientMsg {
     GroupDelete { id: u64, group_id: String },
     GroupSetCollapsed { id: u64, group_id: String, collapsed: bool },
     PathExists { id: u64, path: String },
+    Answer { id: u64, session_id: SessionId, pending_id: u64, option: usize },
+    Release { id: u64, session_id: SessionId, pending_id: u64 },
 }
 
 /// A layout command's outcome: `Ok(result)` becomes `ok {id, result}`.
@@ -462,6 +467,17 @@ async fn run_command(inner: &Arc<Inner>, msg: ClientMsg) -> Option<(u64, Outcome
         ClientMsg::PathExists { id, path } => {
             (id, Box::new(move || path_exists(&path).map(|r| json!(r))))
         }
+        ClientMsg::Answer { id, session_id, pending_id, option } => (
+            id,
+            Box::new(move || inner.agents().answer(session_id, pending_id, option).map(|()| json!(null))),
+        ),
+        ClientMsg::Release { id, session_id, pending_id } => (
+            id,
+            Box::new(move || {
+                inner.agents().release(session_id, pending_id);
+                Ok(json!(null))
+            }),
+        ),
         _ => return None,
     };
     let outcome = tokio::task::spawn_blocking(job)
@@ -563,6 +579,7 @@ async fn connection(inner: Arc<Inner>, socket: WebSocket) {
         "device": device,
         "layout": inner.layout().client_snapshot(),
         "sessions": inner.layout().facts(),
+        "agentEvents": inner.agents().recent(),
     });
     if !send_json(&mut sink, hello).await {
         return;
@@ -673,6 +690,9 @@ async fn connection(inner: Arc<Inner>, socket: WebSocket) {
                     Ok(HubMsg::Session(id)) => send_session(&mut sink, &inner, id).await,
                     Ok(HubMsg::Activity(sessions)) => {
                         send_json(&mut sink, json!({ "t": "activity", "sessions": *sessions })).await
+                    }
+                    Ok(HubMsg::AgentEvent(event)) => {
+                        send_json(&mut sink, json!({ "t": "agent_event", "event": *event })).await
                     }
                     Ok(HubMsg::Shutdown) | Err(RecvError::Closed) => {
                         close(&mut sink, CLOSE_GOING_AWAY, "remote off").await;

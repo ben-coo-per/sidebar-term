@@ -9,9 +9,10 @@ mod drop;
 mod host;
 
 use host::AppHost;
+use sidebar_term_core::agents::Agents;
 use sidebar_term_core::layout::{Layout, TabNew};
 use sidebar_term_core::model::{
-    AgentKind, ClaudeConversation, ConversationFiles, Group, GuardSnapshot, HandoffProbe,
+    AgentEvent, AgentKind, ClaudeConversation, ConversationFiles, Group, GuardSnapshot, HandoffProbe,
     LayoutSnapshot, Pairing, RemoteSnapshot, ResumeEntry, SessionId, SessionInfo, Tab,
     TabLink,
     EVENT_CAFFEINATE, EVENT_MEMORY_GUARD, EVENT_MENU_SETTINGS,
@@ -91,6 +92,24 @@ fn session_reset(
 #[tauri::command]
 fn session_info(sessions: State<'_, Sessions>, session_id: SessionId) -> Option<SessionInfo> {
     sessions.info(session_id)
+}
+
+/// The last agent events, oldest first; later ones arrive on `agent-event`.
+#[tauri::command]
+fn agent_events(agents: State<'_, Agents>) -> Vec<AgentEvent> {
+    agents.recent()
+}
+
+/// Answer the question Session `session_id`'s agent is waiting on with option `option` (0-based).
+#[tauri::command]
+fn agent_answer(agents: State<'_, Agents>, session_id: SessionId, pending_id: u64, option: usize) -> Result<(), String> {
+    agents.answer(session_id, pending_id, option)
+}
+
+/// Stop holding that question: the agent asks it in its Terminal instead.
+#[tauri::command]
+fn agent_release(agents: State<'_, Agents>, session_id: SessionId, pending_id: u64) {
+    agents.release(session_id, pending_id)
 }
 
 /// Start or stop the Activity sampler; while on, `activity` fires every 2 s.
@@ -456,6 +475,14 @@ pub fn run() {
             let events = host.events.clone();
             let sessions: Sessions = Arc::new(SessionManager::new(taps.clone(), events.clone()));
             app.manage(sessions.clone());
+            // Claude Code's hooks, up before the layout spawns the first Session, which gets
+            // their environment like every later one.
+            let agents = Agents::start(&host);
+            let for_env = agents.clone();
+            sessions.set_env_hook(Box::new(move |env| for_env.extend_env(env)));
+            let for_exit = agents.clone();
+            sessions.on_exit(Arc::new(move |id| for_exit.forget(id)));
+            app.manage(agents.clone());
             let frozen_file = store::path(&*host.paths, store::FROZEN)
                 .inspect_err(|e| eprintln!("memory guard: no app data dir ({e}); not persisted"))
                 .ok();
@@ -478,6 +505,7 @@ pub fn run() {
             let for_observe = layout.clone();
             monitor::spawn(
                 events.clone(),
+                agents.clone(),
                 move || for_targets.probe_targets(),
                 move |id| for_marks.marks(id),
                 move |infos| for_observe.observe(infos),
@@ -517,7 +545,7 @@ pub fn run() {
                 .ok();
             // Clients on the socket get the layout and each Session's facts through Remote,
             // which watches the layout.
-            app.manage(remote::Remote::open(host, sessions, taps, layout, remote_file));
+            app.manage(remote::Remote::open(host, sessions, taps, layout, agents, remote_file));
             app.state::<remote::Remote>().start_if_enabled();
             // Dev aid: `SIDEBAR_TERM_REMOTE_PAIR=1 pnpm tauri dev` starts a pairing at launch and
             // prints its code, so a browser can pair without clicking through Settings.
@@ -538,6 +566,9 @@ pub fn run() {
             session_resume,
             session_reset,
             session_info,
+            agent_events,
+            agent_answer,
+            agent_release,
             layout_get,
             tab_new,
             tab_close,

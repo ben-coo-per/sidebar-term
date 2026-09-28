@@ -15,6 +15,7 @@
 //! pairing at any time: `systemctl --user kill -s USR1 sidebar-termd`, then read the code in the
 //! journal. Everything is logged to stderr.
 
+use sidebar_term_core::agents::Agents;
 use sidebar_term_core::host::{Asset, Assets, Events, Host, Paths};
 use sidebar_term_core::layout::Layout;
 use sidebar_term_core::model::{
@@ -323,6 +324,12 @@ fn main() {
     // no use for yet: Activity and Memory Guard (not wired in yet), Usage (app-only), Caffeinate (app-only).
     let taps = Arc::new(Taps::default());
     let sessions = Arc::new(SessionManager::new(taps.clone(), host.events.clone()));
+    // Claude Code's hooks, up before the layout spawns the first Session.
+    let agents = Agents::start(&host);
+    let for_env = agents.clone();
+    sessions.set_env_hook(Box::new(move |env| for_env.extend_env(env)));
+    let for_exit = agents.clone();
+    sessions.on_exit(Arc::new(move |id| for_exit.forget(id)));
     // Resume first: what the last run left running becomes leftover before the Tabs respawn.
     let resume_file = store::path(&*host.paths, store::RESUME)
         .inspect_err(|e| log(&format!("resume: no data dir ({e}); not persisted")))
@@ -347,6 +354,7 @@ fn main() {
     let (for_monitor, for_marks, for_observe) = (sessions.clone(), sessions.clone(), layout.clone());
     monitor::spawn(
         host.events.clone(),
+        agents.clone(),
         move || for_monitor.probe_targets(),
         move |id| for_marks.marks(id),
         move |infos| for_observe.observe(infos),
@@ -362,6 +370,7 @@ fn main() {
         sessions.clone(),
         taps,
         layout.clone(),
+        agents,
         remote_file,
     ));
     if let Some(port) = args.port {

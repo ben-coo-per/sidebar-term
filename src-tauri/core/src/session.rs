@@ -107,10 +107,15 @@ pub struct SessionManager {
     events: Arc<dyn Events>,
     /// Told of every exit before the event goes out (the layout drops the Session's Tab).
     exit_hooks: Arc<Mutex<Vec<ExitHook>>>,
+    /// Adds to every Session's environment (`agents/`: where Claude Code's hooks report).
+    env_hook: Mutex<Option<EnvHook>>,
 }
 
 /// Runs on a Session's reader thread once the Session is gone, before `session-exit` is emitted.
 pub type ExitHook = Arc<dyn Fn(SessionId) + Send + Sync>;
+
+/// Runs on every spawn with the Session's environment, before the shell starts.
+pub type EnvHook = Box<dyn Fn(&mut BTreeMap<OsString, OsString>) + Send + Sync>;
 
 impl SessionManager {
     pub fn new(taps: Arc<Taps>, events: Arc<dyn Events>) -> Self {
@@ -120,7 +125,13 @@ impl SessionManager {
             taps,
             events,
             exit_hooks: Arc::default(),
+            env_hook: Mutex::new(None),
         }
+    }
+
+    /// Let `hook` add to the environment of every Session spawned from now on.
+    pub fn set_env_hook(&self, hook: EnvHook) {
+        *lock(&self.env_hook) = Some(hook);
     }
 
     /// Run `hook` for every Session that exits from now on, before its `session-exit` event.
@@ -141,7 +152,10 @@ impl SessionManager {
         resume_key: Option<String>,
         mut on_output: OutputSink,
     ) -> Result<SessionId, String> {
-        let spec = SpawnSpec::login_shell(cwd.as_deref(), cols, rows);
+        let mut spec = SpawnSpec::login_shell(cwd.as_deref(), cols, rows);
+        if let Some(hook) = lock(&self.env_hook).as_ref() {
+            hook(&mut spec.env);
+        }
         let taps = self.taps.clone();
         let taps_on_exit = self.taps.clone();
         let events = self.events.clone();
@@ -299,6 +313,9 @@ fn resolve_cwd(cwd: Option<&str>, home: Option<&Path>) -> PathBuf {
     }
 }
 
+/// Every Session's own id, in its environment.
+pub const SESSION_ID_VAR: &str = "SIDEBAR_TERM_SESSION_ID";
+
 /// Variables that would leak the launching terminal or agent into every shell.
 const STRIP_EXACT: &[&str] = &[
     "CLAUDECODE",
@@ -319,6 +336,7 @@ const STRIP_PREFIX: &[&str] = &[
     "WEZTERM_",
     "KITTY_",
     "TERM_SESSION_ID",
+    "SIDEBAR_TERM_",
 ];
 
 fn leaks(key: &OsStr) -> bool {
@@ -565,7 +583,7 @@ impl PtyHost {
     /// the Session removed from the registry. `code` is `None` when the child died by a signal.
     pub fn spawn<O, E>(
         &self,
-        spec: SpawnSpec,
+        mut spec: SpawnSpec,
         on_output: O,
         on_exit: E,
     ) -> Result<SessionId, String>
@@ -586,6 +604,10 @@ impl PtyHost {
         let src = dup_fd(master_fd)?;
         let dst = dup_fd(master_fd)?;
 
+        // The id is taken before the spawn, so the Session knows it (Claude Code's hooks say
+        // which Session they come from with it). One that fails to spawn leaves a gap.
+        let id = self.registry.next_id.fetch_add(1, Ordering::SeqCst) + 1;
+        spec.env.insert(SESSION_ID_VAR.into(), id.to_string().into());
         let mut child = slave
             .spawn_command(spec.command())
             .map_err(|e| format!("spawning {} failed: {e:#}", spec.argv[0].to_string_lossy()))?;
@@ -597,7 +619,6 @@ impl PtyHost {
             return Err("spawned child has no pid".into());
         };
 
-        let id = self.registry.next_id.fetch_add(1, Ordering::SeqCst) + 1;
         let (input, queue) = mpsc::channel::<Vec<u8>>();
         let writer = thread::Builder::new()
             .name(format!("pty-write-{id}"))

@@ -11,6 +11,7 @@
 //! CONTRACT: `model.rs` is mirrored by `src/lib/types.ts`.
 
 pub mod activity;
+pub mod agents;
 pub mod detect;
 pub mod guard;
 pub mod handoff;

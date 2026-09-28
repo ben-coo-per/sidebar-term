@@ -81,6 +81,12 @@ answers it (see "Host daemon" for the daemon's answer).
 
 **The core, `src-tauri/core/src/` (`sidebar_term_core`)**
 
+- `agents/` — what the Host knows about each Agent session beyond the probe, for Manager (see
+  "Manager"): `mod.rs`, `Agents`: each Session's status history, the question a hooked agent is
+  waiting on, and the agent events feed; `hooks.rs`, Claude Code's hook payloads read into
+  questions and feed lines, and the replies that answer them (pure); `install.rs`, the `claude`
+  wrapper, hook script and settings it writes under the data dir; `server.rs`, the hook endpoint
+  on 127.0.0.1.
 - `host.rs` — what the core takes from its binary: `Events` (emit a named JSON event), `Paths`
   (the data dir), `Assets` (the phone page's files), an `OutputSink` per Session, and a tokio
   runtime handle, bundled as `Host`.
@@ -165,6 +171,10 @@ answers it (see "Host daemon" for the daemon's answer).
   the one in view, WebGL on the mounted Terminal with DOM fallback, fit and resize, flow control,
   dropped files through the transport, title/bell events.
 - `src/lib/terminal/TerminalPane.svelte` — shows the Session in view's Terminal.
+- `src/lib/manager/` — Manager (see "Manager"): `manager.svelte.ts` (lanes, cards, Sent rows,
+  focus, answering and opening Tabs), `feed.svelte.ts` (every Host's agent events), `model.ts`
+  (the pure rules: segments, order, ticks, durations), `Manager.svelte` and its parts, and the
+  Tabs-mode `ModeSwitch.svelte` and `WaitingStrip.svelte`.
 - `src/lib/layout.svelte.ts` — the mirror of this Mac's layout (`layout_get`, then every `layout`
   event) as `layout.groups` and `layout.tabs`, local and linked Tabs alike (each knows the Host
   its Session runs on); each paired Host's snapshot (fed by `src/lib/host/hosts.svelte.ts`) fills
@@ -239,8 +249,8 @@ answers it (see "Host daemon" for the daemon's answer).
   the Nth Group (the Tab last active in it, else its first; expands a collapsed Group), Cmd-` /
   Cmd-Shift-` next / previous Tab within the active Tab's Group (wrapping), Cmd-Shift-[ / ] previous
   / next Tab across all Groups, Cmd-Opt-Up/Down move Tab, Cmd-Shift-U mark the active Tab unread,
-  Cmd-Shift-T / Cmd-Shift-M New Tab on / Move Tab to the first online Host ("Handoff"),
-  Cmd-B toggle sidebar, Cmd-, Settings
+  Cmd-Shift-T / Cmd-Shift-H New Tab on / Move Tab to the first online Host ("Handoff"),
+  Cmd-Shift-M Tabs / Manager ("Manager"), Cmd-B toggle sidebar, Cmd-, Settings
   (also the app menu's "Settings…"; the sidebar has no Settings button).
   These are defaults: every one is a Hotkey the user can rebind on the Settings page
   (`src/lib/hotkeys.ts` holds the actions and rules; overrides persist in `settings.json` next to
@@ -498,6 +508,8 @@ five seconds, or the Host closes with 4408 (4401 for a token it does not know).
 | `group_new` | `id, name?, tabId?` | `ok {result: Group}` |
 | `group_rename` / `group_move` / `group_delete` / `group_set_collapsed` | `id, groupId` (+ `name` / `index` / `collapsed`) | `ok` |
 | `path_exists` | `id, path` | `ok {result: {exists, dir}}` for an absolute path on the Host, `error` otherwise (Handoff asks before choosing where a Tab lands) |
+| `answer` | `id, sessionId, pendingId, option` | `ok`: the question the Session's agent waits on is answered with that option (0-based); `error` when that question is no longer waiting |
+| `release` | `id, sessionId, pendingId` | `ok`: the Host stops holding that question, and the agent asks it in its Terminal |
 
 The commands are the layout's (the IPC table above), one to one (plus `path_exists`), and take a client-chosen `id`
 (a number) that the reply echoes: `ok {id, result?}` or `error {id, message}`. What they change
@@ -505,7 +517,8 @@ arrives as `layout` like any other change, to every client.
 
 | From the Host | Fields | When |
 |---|---|---|
-| `hello` | `host {name, version, home}, device, layout, sessions` | right after `auth`: the whole layout (`LayoutSnapshot`) and every live Session's facts (`SessionInfo[]`); `device` is this client's name as the Host knows it; `home` is for the `~` in automatic Titles |
+| `hello` | `host {name, version, home}, device, layout, sessions, agentEvents` | right after `auth`: the whole layout (`LayoutSnapshot`), every live Session's facts (`SessionInfo[]`) and the last agent events (`AgentEvent[]`, oldest first); `device` is this client's name as the Host knows it; `home` is for the `~` in automatic Titles |
+| `agent_event` | `event` | an agent did something (`AgentEvent`: see "Manager") |
 | `layout` | `layout` | the layout changed; the whole `LayoutSnapshot`, with its revision (an older one is ignored) |
 | `session` | `session` | a Session's facts changed: `SessionInfo` whole (Foreground process, agent, cwd, git, remote, the OSC title, the BEL count, Agent status) |
 | `activity` | `sessions` | each Session's CPU and memory (`ActivitySession[]`), every sample while the Host samples Activity (the Mac's Panel or Memory Guard on; the daemon does not yet) |
@@ -713,7 +726,7 @@ Claude Code conversation's transcript (`docs/research/claude-session-portability
 submenu of `<Host> · <Group>` for every Group of every online paired Host, so the Group there is
 the user's choice (the Host's own Group, for its other clients); on the Mac the new Tab is linked
 right after the local Tab, and a Move's takes its place. Hotkeys "New Tab on Host"
-(`Cmd-Shift-T`) and "Move Tab to Host" (`Cmd-Shift-M`), category Hosts: the Tab in view, to the
+(`Cmd-Shift-T`) and "Move Tab to Host" (`Cmd-Shift-H`), category Hosts: the Tab in view, to the
 first online paired Host in Settings order, in its active Tab's Group. A linked Tab offers
 neither (Handoff starts from this Mac).
 
@@ -778,6 +791,49 @@ marked Unread, so it is bold until the user goes to it (decision for #30).
 **Not moved**: the Worktree, the branch, uncommitted changes, other files (subagent
 transcripts, spilled tool results, checkpoint history), the Tab's custom Title, Codex and Gemini
 conversations (Resume records no entry for them, so nothing is rerun).
+
+## Manager
+
+The window's second mode, for running several agents at once (the first, Tabs, is the sidebar
+and one Terminal). The Tabs / Manager switch sits in the sidebar's drag region when the sidebar is
+at least 260 px wide (narrower, the Tray needs the room), and in Manager's top bar; `Cmd-Shift-M`
+(Hotkey `view.manager`) toggles. The mode and Manager's zoom are per window, in the `sidebar`
+section of settings. Manager has no list of its own: it reads the same Tabs and Session facts as
+the sidebar, and a Tab it opens opens in Tabs mode.
+
+- **Lanes**: every Tab whose Session runs an agent, one row each, across the window of time
+  (15 min, 1 h, 4 h, or since the oldest lane began; ticks at the quarters, refreshed every 30 s).
+  Segments come from `SessionInfo.history`, which the Host keeps (`core/src/agents/`: every change
+  of Agent status, about 5 h of it, the change in force at the window's start kept), so a paired
+  Host's lanes and a phone's would match. Order: waiting (longest first), working, idle, held
+  while the pointer is over the lanes. A lane's Title is bold under the Tab's Unread rule.
+- **Needs you**: a card per waiting agent, oldest first. A **hooked** agent's question (below)
+  shows its detail and its answers; 1-9 answer the focused card, Tab moves the focus. The answer
+  goes to the agent through its hook; a "Sent" row stands in for the card until the agent leaves
+  Needs input, then fades. A screen-only agent's card shows the last 3 lines of its Terminal and
+  "Open Tab to answer". Below: Tabs whose agent finished or stopped while nobody looked, with what
+  its last turn changed.
+- **Activity**: every Host's agent events, newest first (the heading is the design's; it is not
+  the Panel's Activity view).
+- In Tabs mode a strip at the top of the Groups says how many agents wait, and opens Manager.
+
+**Hooks** (`core/src/agents/`). Every Session's `PATH` starts with `<data dir>/claude-hooks/bin`,
+whose `claude` runs the real one with `--settings <data dir>/claude-hooks/settings.json`: the
+user's own settings are untouched, and Claude Code merges the hooks with theirs. Each hook runs
+`claude-hooks/hook`, which posts the payload with `curl` to the Host's hook endpoint (127.0.0.1,
+a port of the system's choosing, always on, a per-launch token), naming its Session by
+`SIDEBAR_TERM_SESSION_ID`. `SessionStart` marks the Session hooked. `PermissionRequest`, and
+`PreToolUse` for an `AskUserQuestion` with one single-choice question, become
+`SessionInfo.pending`; the Host holds the hook open until a client answers (`agent_answer`, or
+`answer` over the Host protocol) or lets go (`agent_release` / `release`), and the Session reads
+Needs input meanwhile. `UserPromptSubmit`, `PostToolUse` and `Stop` are lines of the feed (the
+last 500 per Host, `agent-event`). The Host lets go of a question when the agent moves on (a new
+prompt, the end of its turn or of the agent), when the Session ends, when the user opens the
+Tab from Manager, and whenever the Tab it belongs to is in view in Tabs mode, so a question the
+user is looking at always shows in its Terminal. With no Host to reach, the hook prints nothing
+and Claude Code asks as usual. A `claude` that is not the wrapper (an alias, a `PATH` rebuilt by
+the shell's startup files), Codex and Gemini are **screen-only**: their status changes are the
+feed, and their cards open the Tab.
 
 ## Window
 

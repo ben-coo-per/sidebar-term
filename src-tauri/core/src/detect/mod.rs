@@ -82,6 +82,9 @@ pub fn probe(target: &ProbeTarget) -> SessionInfo {
         title: None,
         bells: 0,
         status: None,
+        history: Vec::new(),
+        hooked: false,
+        pending: None,
     }
 }
 

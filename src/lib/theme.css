@@ -29,6 +29,12 @@
   --status-needs-input: #e3a63e;
   --status-finished: #9a9ea7;
   --status-frozen: #7cc4e8; /* a Tab Memory Guard froze */
+  --status-needs-input-dim: #e3a63e1a; /* the waiting strip's fill */
+  --status-needs-input-border: #e3a63e40; /* a question card's and the waiting strip's edge */
+
+  /* Diffs and failures, in the Terminal theme's red and green (src/lib/terminal/theme.ts) */
+  --diff-remove: #bf616a;
+  --diff-add: #a3be8c;
 
   /* Activity (Panel): Tabs in their colour, everything else muted */
   --tab-color-plain: #d4d6db; /* a Tab outside any repo, which has no repo colour */

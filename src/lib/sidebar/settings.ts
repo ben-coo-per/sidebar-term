@@ -1,5 +1,5 @@
 // This client's own sidebar state, the `sidebar` section of settings.json: the sidebar width,
-// the Panel and the user's unread marks. Pure: the parse with its defaults and clamps, no state.
+// the Panel, the user's unread marks, and the window's mode (Tabs or Manager) with Manager's zoom. Pure: the parse with its defaults and clamps, no state.
 // The Host's layout (Groups, Tabs, the active Tab) is src/lib/layout.svelte.ts's mirror; this is
 // what stays presentation (ADR 0002). A version-1 layout.json's `sidebarWidth`, `panel` and
 // unread Tabs land here once, moved by the Host (src-tauri/core/src/layout/file.rs).
@@ -16,11 +16,21 @@ export interface PanelState {
   height: number;
 }
 
+/** The window shows the sidebar and one Terminal (Tabs), or every agent's lane (Manager). */
+export type WindowMode = "tabs" | "manager";
+
+/** How much time Manager's lanes span: 15 minutes, an hour, 4 hours, or since the oldest lane began. */
+export type ManagerZoom = "15m" | "1h" | "4h" | "start";
+
+export const MANAGER_ZOOMS: readonly ManagerZoom[] = ["15m", "1h", "4h", "start"];
+
 export interface SidebarSettings {
   width: number;
   panel: PanelState;
   /** Tab ids the user marked unread. */
   unread: string[];
+  mode: WindowMode;
+  managerZoom: ManagerZoom;
 }
 
 export const DEFAULT_SIDEBAR_WIDTH = 240;
@@ -30,6 +40,7 @@ export const MAX_SIDEBAR_WIDTH = 420;
 export const MIN_PANEL_HEIGHT = 128;
 export const MAX_PANEL_HEIGHT = 640;
 export const DEFAULT_PANEL: PanelState = { view: PANEL_VIEWS[0].id, collapsed: false, height: 220 };
+export const DEFAULT_MANAGER_ZOOM: ManagerZoom = "1h";
 
 export function clampWidth(px: number): number {
   return Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, Math.round(px)));
@@ -56,5 +67,7 @@ export function parseSidebarSection(raw: unknown): SidebarSettings {
     width: typeof r.width === "number" ? clampWidth(r.width) : DEFAULT_SIDEBAR_WIDTH,
     panel: parsePanel(r.panel),
     unread: Array.isArray(r.unread) ? r.unread.filter((x): x is string => typeof x === "string") : [],
+    mode: r.mode === "manager" ? "manager" : "tabs",
+    managerZoom: MANAGER_ZOOMS.includes(r.managerZoom as ManagerZoom) ? (r.managerZoom as ManagerZoom) : DEFAULT_MANAGER_ZOOM,
   };
 }

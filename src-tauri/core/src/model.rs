@@ -76,6 +76,19 @@ pub struct SessionInfo {
     /// Running / Needs input / Done for an Agent session; `None` otherwise.
     #[serde(default)]
     pub status: Option<AgentStatus>,
+    /// Every change of `status` over the last few hours, oldest first (`agents/`): Manager's lane.
+    /// The first entry may be older than the window, so the lane knows how it started.
+    #[serde(default)]
+    pub history: Vec<StatusChange>,
+    /// The agent reports to the Host through its hooks (Claude Code started through
+    /// sidebar-term's `claude`); `false` for a screen-only agent (Codex, Gemini, a Claude Code
+    /// started another way).
+    #[serde(default)]
+    pub hooked: bool,
+    /// What the agent is asking right now, from its hooks; `None` while it asks nothing, and
+    /// always for a screen-only agent. While set, `status` is Needs input.
+    #[serde(default)]
+    pub pending: Option<Pending>,
 }
 
 impl SessionInfo {
@@ -92,8 +105,98 @@ impl SessionInfo {
             title: None,
             bells: 0,
             status: None,
+            history: Vec::new(),
+            hooked: false,
+            pending: None,
         }
     }
+}
+
+/// One change of a Session's Agent status: to `status` (`None`: the agent left), at `at`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusChange {
+    pub status: Option<AgentStatus>,
+    /// Epoch ms.
+    pub at: u64,
+}
+
+/// What kind of question a hooked agent is waiting on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PendingKind {
+    /// May it use a tool (edit a file, run a command)?
+    Permission,
+    /// A question it put to the user, with options (Claude Code's AskUserQuestion).
+    Question,
+}
+
+/// How a line of a question's detail reads: a diff's removal or addition, or plain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LineTone {
+    Plain,
+    Add,
+    Remove,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingLine {
+    pub text: String,
+    pub tone: LineTone,
+}
+
+/// A question a hooked agent is waiting on (`agents/hooks.rs`). The Host holds the agent's hook
+/// open until a client answers with one of `options` (by index) or lets go of it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pending {
+    /// Names this question, so an answer to one already gone is refused.
+    pub id: u64,
+    pub kind: PendingKind,
+    /// The question, one line: "Make this edit to src/session.rs?".
+    pub text: String,
+    /// What it is about, a few lines: the diff of an edit, the command to run.
+    pub detail: Vec<PendingLine>,
+    /// The answers on offer, the first the default: "Yes", ..., "No, tell Claude what to do".
+    pub options: Vec<String>,
+    /// When it was asked, epoch ms.
+    pub since: u64,
+}
+
+/// What an agent did, for Manager's feed: from its hooks (a tool it used, a question it asked,
+/// an answer given) or, for a screen-only agent, a change of its status.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentEventKind {
+    /// It asked the user something.
+    Asked,
+    /// The user answered it.
+    Answered,
+    /// The user gave it a prompt.
+    Started,
+    /// It changed a file.
+    Edit,
+    /// It read or searched.
+    Read,
+    /// It ran a command or another tool.
+    Command,
+    /// A tool it used failed.
+    Failed,
+    /// It stopped, back at its prompt.
+    Idle,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentEvent {
+    /// Epoch ms.
+    pub at: u64,
+    pub session_id: SessionId,
+    pub kind: AgentEventKind,
+    /// One line: "Updated remote/pairing.rs (+61)", "Ran cargo test -p core".
+    pub text: String,
 }
 
 /// Payload of the `session-exit` event.
@@ -468,3 +571,5 @@ pub const EVENT_MEMORY_GUARD: &str = "memory-guard";
 /// The layout changed (a Tab or Group made, closed, renamed, moved, activated, a Tab's Session
 /// or last cwd changed); payload `LayoutSnapshot`, the whole of it.
 pub const EVENT_LAYOUT: &str = "layout";
+/// An agent did something (`agents/`); payload `AgentEvent`.
+pub const EVENT_AGENT_EVENT: &str = "agent-event";

@@ -111,6 +111,22 @@ _Avoid_: Connect (that is the phone reaching the Mac at all), open (that is a Ta
 A machine running the sidebar-term core, whose Sessions, Tabs and Groups can be shown and driven from a client. The Mac app is its own local Host; a second machine runs the core as a headless daemon (`sidebar-termd`). The Mac shows a paired Host's Tabs as linked Tabs in its own Groups.
 _Avoid_: Server, remote machine, node, peer
 
+**Manager**:
+The window's second mode, beside Tabs: every Agent session as a Lane, the questions agents wait on (answered in place when the agent is Hooked), finished work not looked at, and every agent's Agent events. Its Tabs are the sidebar's; opening one goes back to Tabs.
+_Avoid_: Dashboard, overview, mission control
+
+**Lane**:
+One Agent session's row in Manager: its Title, then its Agent status over time (working, waiting on you, idle at prompt), then what it is doing now.
+_Avoid_: Track, timeline, swimlane
+
+**Hooked**:
+An Agent session whose agent reports to its Host through hooks (a Claude Code started through sidebar-term's `claude`): its questions come with their answers and can be answered from Manager. Every other agent is **screen-only**: only its Agent status and its screen are known.
+_Avoid_: Integrated, instrumented, connected
+
+**Agent event**:
+One thing an agent did, as its Host recorded it: a tool it used, a question it asked, an answer given, or (for a screen-only agent) a change of its Agent status. Manager lists every agent's, newest first.
+_Avoid_: Log, activity (that is CPU and memory), history (that is a Lane's status over time)
+
 **Handoff**:
 Moving a Tab to another Host: its Session is killed here after its Resume entry is recorded, a Tab is created on the Host at the matching checkout, and the entry is rerun there. Code moves by push and checkout, never by copying files.
 _Avoid_: Migrate, transfer, sync

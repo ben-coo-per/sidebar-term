@@ -6,7 +6,7 @@
 // status included) whole; a client derives what a row shows from them (src/lib/mobile/rows.ts
 // on the phone, src/lib/sessions.svelte.ts on the Mac).
 
-import type { HostInfo, LayoutSnapshot, PathExists, SessionId, SessionInfo, ActivitySession, Tab, Group } from "../types";
+import type { AgentEvent, HostInfo, LayoutSnapshot, PathExists, SessionId, SessionInfo, ActivitySession, Tab, Group } from "../types";
 
 // --- Messages -----------------------------------------------------------------------------------
 
@@ -27,7 +27,11 @@ export type CommandMessage =
   | { t: "group_delete"; id: CommandId; groupId: string }
   | { t: "group_set_collapsed"; id: CommandId; groupId: string; collapsed: boolean }
   /** Whether an absolute path exists on the Host (Handoff asks before choosing where a Tab lands). */
-  | { t: "path_exists"; id: CommandId; path: string };
+  | { t: "path_exists"; id: CommandId; path: string }
+  /** Answer the question a Session's agent is waiting on with option `option` (0-based). */
+  | { t: "answer"; id: CommandId; sessionId: SessionId; pendingId: number; option: number }
+  /** Stop holding that question: the agent asks it in its Terminal instead. */
+  | { t: "release"; id: CommandId; sessionId: SessionId; pendingId: number };
 
 /** A command as a client hands it to its connection, which puts the `id` on it. */
 export type Command = CommandMessage extends infer M ? (M extends CommandMessage ? Omit<M, "id"> : never) : never;
@@ -46,7 +50,9 @@ export type ClientMessage =
 
 /** Text frames the Host sends. Output comes as binary frames (see `decodeOutputFrame`). */
 export type ServerMessage =
-  | { t: "hello"; host: HostInfo; device: string; layout: LayoutSnapshot; sessions: SessionInfo[] }
+  | { t: "hello"; host: HostInfo; device: string; layout: LayoutSnapshot; sessions: SessionInfo[]; agentEvents?: AgentEvent[] }
+  /** An agent did something. */
+  | { t: "agent_event"; event: AgentEvent }
   | { t: "layout"; layout: LayoutSnapshot }
   | { t: "session"; session: SessionInfo }
   | { t: "activity"; sessions: ActivitySession[] }
