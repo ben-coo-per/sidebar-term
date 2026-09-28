@@ -207,6 +207,15 @@ pub struct SessionExit {
     pub code: Option<i32>,
 }
 
+/// Payload of the `session-resized` event.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionResized {
+    pub session_id: SessionId,
+    pub cols: u16,
+    pub rows: u16,
+}
+
 /// What the monitor needs to probe one live Session.
 #[derive(Clone, Copy, Debug)]
 pub struct ProbeTarget {
@@ -577,6 +586,8 @@ pub struct RemoteSnapshot {
 /// Event names. Frontend listens with `listen(EVENT_SESSION_INFO, ...)`.
 pub const EVENT_SESSION_INFO: &str = "session-info";
 pub const EVENT_SESSION_EXIT: &str = "session-exit";
+/// A Session's pty took another size, whoever asked: the webview, or a client that took it.
+pub const EVENT_SESSION_RESIZED: &str = "session-resized";
 /// Sent every activity tick while the webview watches (`activity_watch`).
 pub const EVENT_ACTIVITY: &str = "activity";
 /// Sent when the watched agents' usage changes, and right away on `usage_watch`.

@@ -14,6 +14,7 @@ import {
   EVENT_REMOTE,
   EVENT_SESSION_EXIT,
   EVENT_SESSION_INFO,
+  EVENT_SESSION_RESIZED,
   EVENT_USAGE,
   type ActivitySnapshot,
   type AgentEvent,
@@ -31,6 +32,7 @@ import {
   type SessionExit,
   type SessionId,
   type SessionInfo,
+  type SessionResized,
   type Tab,
   type TabLink,
   type UsageSnapshot,
@@ -203,6 +205,12 @@ export function onSessionInfo(cb: (info: SessionInfo) => void): Promise<Unlisten
 export function onSessionExit(cb: (exit: SessionExit) => void): Promise<UnlistenFn> {
   if (!inTauri) return mock.onSessionExit(cb);
   return listen<SessionExit>(EVENT_SESSION_EXIT, (e) => cb(e.payload));
+}
+
+/** A local Session's pty took another size: this webview's own resize, or a phone's that took the size. */
+export function onSessionResized(cb: (resized: SessionResized) => void): Promise<UnlistenFn> {
+  if (!inTauri) return mock.onSessionResized(cb);
+  return listen<SessionResized>(EVENT_SESSION_RESIZED, (e) => cb(e.payload));
 }
 
 /** The local Host's last agent events, oldest first; later ones arrive through `onAgentEvent`. */

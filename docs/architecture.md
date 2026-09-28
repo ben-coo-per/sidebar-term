@@ -62,6 +62,7 @@ A Session is spawned by the Host as its Tab is made; the webview *attaches* its 
 | `layout` | `LayoutSnapshot` | the layout changed: a Tab or Group made, closed, renamed, moved, collapsed or activated, a Tab's Session or last cwd changed. The whole model each time, with a revision |
 | `session-info` | `SessionInfo` | first probe of a Session, then on every change (monitor tick 500 ms): the Foreground process, agent, cwd, git, and the OSC title, BEL count and Agent status the Host read in its output |
 | `session-exit` | `SessionExit` | the shell exited or was killed (its Tab is already gone from the layout) |
+| `session-resized` | `SessionResized` | a Session's pty took another size: the webview's own `session_resize`, or a phone's that took the size, which the Terminal follows (ADR 0007) |
 | `activity` | `ActivitySnapshot` | every 2 s while `activity_watch(true)`; the first right away |
 | `usage` | `UsageSnapshot` | right away on `usage_watch(true, ..)`, then whenever a number changes (checked every 5 s) |
 | `menu-settings` | - | the app menu's "Settings…" was chosen |
@@ -113,7 +114,7 @@ answers it (see "Host daemon" for the daemon's answer).
 - `session.rs` — `SessionManager`: spawn `$SHELL -l` on a `portable-pty` pty, one reader thread
   per Session coalescing output into chunks for the Session's `OutputSink` and its tap, write,
   resize, pause/resume, kill, `probe_targets()`, exit hooks (the layout's); `session-exit`
-  through `Events`.
+  and `session-resized` through `Events`.
 - `detect/` — `probe(&ProbeTarget) -> SessionInfo`: the Foreground process group's members
   (comm, executable path, argv, cwd) read by `detect/os/`, one backend per OS behind one contract
   (`os/macos.rs`: libproc and `sysctl`; `os/linux.rs`: `/proc`, for the Host daemon); agent
@@ -179,6 +180,8 @@ answers it (see "Host daemon" for the daemon's answer).
   Mac's Host; `hostTransport` from `src/lib/host/hosts.svelte.ts` for a paired one), mount only
   the one in view, WebGL on the mounted Terminal with DOM fallback, fit and resize, flow control,
   dropped files through the transport, title/bell events.
+- `src/lib/terminal/sizing.ts` — whose size a Session's pty has, as its Terminal knows it: the
+  Mac's own asks, the Host's word, a size another client took (pure; ADR 0007).
 - `src/lib/terminal/TerminalPane.svelte` — shows the Session in view's Terminal.
 - `src/lib/manager/` — Manager (see "Manager"): `state.svelte.ts` (lanes, cards, Sent rows,
   focus, answering and opening Tabs), `feed.svelte.ts` (every Host's agent events), `model.ts`
@@ -617,7 +620,7 @@ five seconds, or the Host closes with 4408 (4401 for a token it does not know).
 | `detach` | `sessionId` | - |
 | `input` | `sessionId, data` | `error {message}` if the write failed |
 | `ping` | - | `pong` |
-| `resize` | `id, sessionId, cols, rows` | `ok` / `error`: sizes the pty, only for a client attached to the Session with no other client on the socket attached and no Terminal attached in process (the Mac webview's). The phone sends it too (ADR 0006), and gives the size back when it leaves |
+| `resize` | `id, sessionId, cols, rows, take?` | `ok` / `error`: sizes the pty, for a client attached to the Session. Without `take`, only while no other client on the socket is attached and no Terminal is attached in process (the Mac webview's). With `take: true`, whoever else shows the Session: the client's user is at it (ADR 0007). The phone sends it too (ADR 0006), and gives the size back when it leaves |
 | `tab_new` | `id, groupId?, afterTabId?, cwd?, cols?, rows?` | `ok {result: Tab}` |
 | `tab_close` / `tab_rename` / `tab_move` / `tab_activate` | `id, tabId` (+ `title` / `groupId, index?`) | `ok` |
 | `group_new` | `id, name?, tabId?` | `ok {result: Group}` |
@@ -638,7 +641,7 @@ arrives as `layout` like any other change, to every client.
 | `layout` | `layout` | the layout changed; the whole `LayoutSnapshot`, with its revision (an older one is ignored); without this Host's linked Tabs unless the client asked for `links` |
 | `session` | `session` | a Session's facts changed: `SessionInfo` whole (Foreground process, agent, cwd, git, remote, the OSC title, the BEL count, Agent status) |
 | `activity` | `sessions` | each Session's CPU and memory (`ActivitySession[]`), every sample while the Host samples Activity (the Mac's Panel or Memory Guard on; the daemon does not yet) |
-| `attached` / `resized` | `sessionId, cols, rows` | after `attach`; the pty was resized |
+| `attached` / `resized` | `sessionId, cols, rows` | after `attach`; the pty was resized, by whichever client (to every client attached, the one that asked too) |
 | `exit` | `sessionId` | an attached Session ended (its Tab left the layout with it) |
 | `ok` / `error` | `id, result?` / `id, message` | a command's reply |
 | `error` | `message` (no `id`) | a message the Host could not read, or `input` failed |
@@ -720,14 +723,20 @@ title), and `TerminalScreen`: an xterm.js Terminal at a text size the phone read
 changed under "Aa" or with two fingers; `prefs.svelte.ts`), `t.reset()` before each replay. It
 asks the Host for the grid that fits the screen at that size (`resize`; `fit.ts`, from a measured
 cell) on attach and whenever the size of the text or of the screen changes, and gives the pty the
-size it found when the Terminal is left or the page hidden (ADR 0006). Refused, because another
-client shows the Session, it keeps the Host's grid at the readable size, says so, pans across it,
-and asks again every 15 s; "Fit the width" shrinks the font instead until the Host's columns fit (
+size it found when the Terminal is left or the page hidden (ADR 0006). What it asks for it takes
+(`take`), from any other client that shows the Session, while its user is at it: from when the
+Terminal is opened, the page come back to, the screen touched or a key typed, until another
+client sizes the pty (a `resized` to a grid the phone did not ask for; ADR 0007). From then it
+keeps that grid at the readable size, says so, pans across it, asks without taking every 15 s
+(the other client may have left), and takes the size again at the next touch. Under a Host that
+knows no `take` it is refused while another client shows the Session, and pans likewise; "Fit the
+width" shrinks the font instead until the Host's columns fit (
 below 6 px the grid still pans). Fingers move the view (`drag`): across the grid, and down the
 screen and the scrollback as one (`shareDrag`); in an alternate screen the program gets a wheel,
 a line at a time. The keyboard is the page's own (`Keyboard.svelte`, `keys.ts`: Esc, Tab,
 Shift-Tab, one-shot Ctrl and Alt, ^C and arrows, a row of what a shell is typed with, then
-letters, numbers or symbols; held keys repeat; paste reads the clipboard) and the phone's stays
+letters, numbers or symbols; held keys repeat; a finger between two keys, or off the end of a
+row, means the nearest key, `keyAt`; paste reads the clipboard) and the phone's stays
 down, its text area taking none (`inputmode="none"`); or, chosen under "Aa", the phone's, under
 the key bar (Esc, Tab, Shift-Tab, a one-shot Ctrl, arrows, ^C, Return; DECCKM-aware arrows), the
 screen sized to the visual viewport so the bar sits above it. `service-worker.ts` caches the page and assets
@@ -868,9 +877,12 @@ passes that on as `hello.hosts` and `hosts`.
 **Terminals** (`src/lib/terminal/manager.ts`). A linked Tab's Session gets the same xterm.js
 Terminal as a local one, through its Host's transport: `attach` (the Host replays its recent
 output at its grid; the Terminal clears first, takes that grid while hidden, and refits when
-shown), `input`, `resize` (the Mac sends it after every fit; the Host honours it only for the
-one client attached, so a phone showing the Session leaves the Mac's request refused, which is
-ignored), WebGL as local. No flow control: the Host's ring and drop-behind rules stand in for
+shown), `input`, `resize` (the Mac sends it after every fit, taking the size while its window
+has the focus; without that the Host honours it only for the one client attached, and refused,
+the Terminal goes back to the pty's grid), WebGL as local. A Terminal whose size another client
+took (`resized`, or `session-resized` for a local Session, to a grid the Mac did not ask for)
+draws the pty's grid and is not fitted, until the Mac is used: its window gets the focus, or a
+click or a key lands in the Terminal (`sizing.ts`, pure; ADR 0007). No flow control: the Host's ring and drop-behind rules stand in for
 `session_pause`. Files dropped on a linked Tab's Terminal are uploaded (`POST /api/upload`) and
 their paths on the Host pasted, shell-escaped, as local drops are. Paths printed in a linked
 Terminal are not links (they name files on the Host).

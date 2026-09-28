@@ -24,7 +24,9 @@
 //! never hit.
 
 use crate::host::{Events, OutputSink};
-use crate::model::{ProbeTarget, SessionExit, SessionId, SessionInfo, EVENT_SESSION_EXIT};
+use crate::model::{
+    ProbeTarget, SessionExit, SessionId, SessionInfo, SessionResized, EVENT_SESSION_EXIT, EVENT_SESSION_RESIZED,
+};
 use crate::remote::tap::Marks;
 use crate::remote::Taps;
 use portable_pty::{
@@ -103,7 +105,7 @@ pub struct SessionManager {
     resume_keys: Mutex<HashMap<SessionId, String>>,
     /// Remote's copy of every Session's output and size, for phones attaching (`remote/tap.rs`).
     taps: Arc<Taps>,
-    /// Where `session-exit` goes.
+    /// Where `session-exit` and `session-resized` go.
     events: Arc<dyn Events>,
     /// Told of every exit before the event goes out (the layout drops the Session's Tab).
     exit_hooks: Arc<Mutex<Vec<ExitHook>>>,
@@ -186,9 +188,14 @@ impl SessionManager {
         self.host.write(id, data)
     }
 
+    /// Size the pty, and tell whoever shows the Session when the size is another: Remote's
+    /// clients (`resized`) and the webview (`session-resized`), which follow a size another
+    /// client took (ADR 0007).
     pub fn resize(&self, id: SessionId, cols: u16, rows: u16) -> Result<(), String> {
         self.host.resize(id, cols, rows)?;
-        self.taps.resized(id, cols, rows);
+        if self.taps.resized(id, cols, rows) {
+            self.events.emit(EVENT_SESSION_RESIZED, &SessionResized { session_id: id, cols, rows });
+        }
         Ok(())
     }
 

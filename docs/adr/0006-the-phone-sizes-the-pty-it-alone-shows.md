@@ -1,7 +1,8 @@
 # 6. The phone sizes the pty of a Session it alone shows
 
 Status: **accepted**. Supersedes "The phone renders at the Mac's grid and never resizes the pty"
-in 0002 (remote clients); the rest of 0002 stands.
+in 0002 (remote clients); the rest of 0002 stands. That the Host refuses the phone while another
+client shows the Session is superseded by 0007: the phone takes the size, and the Mac follows.
 
 ## Context
 

@@ -15,7 +15,8 @@ export type CommandId = number;
 
 /** The commands a client sends, each answered by `ok` or `error` carrying its `id`. */
 export type CommandMessage =
-  | { t: "resize"; id: CommandId; sessionId: SessionId; cols: number; rows: number }
+  /** `take`: the client's user is at it, and the Host sizes the pty though other clients show the Session (ADR 0007). */
+  | { t: "resize"; id: CommandId; sessionId: SessionId; cols: number; rows: number; take?: boolean }
   | { t: "tab_new"; id: CommandId; groupId?: string; afterTabId?: string; cwd?: string; cols?: number; rows?: number }
   | { t: "tab_close"; id: CommandId; tabId: string }
   | { t: "tab_rename"; id: CommandId; tabId: string; title: string }

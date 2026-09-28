@@ -26,8 +26,8 @@
 //!   within five seconds; `"links": true` on it asks for this Host's linked Tabs too (the
 //!   phone, which reaches their Hosts itself). Then, from the client: `attach` / `detach` `{sessionId}`, `input`
 //!   `{sessionId, data}`, `ping`, and the commands, each with a client-chosen `id` answered by
-//!   `ok {id, result?}` or `error {id, message}`: `resize {sessionId, cols, rows}` (only for
-//!   the one client attached), `tab_new`, `tab_close`, `tab_rename`, `tab_move`,
+//!   `ok {id, result?}` or `error {id, message}`: `resize {sessionId, cols, rows, take?}` (for
+//!   the one client attached, or one that takes the size: ADR 0007), `tab_new`, `tab_close`, `tab_rename`, `tab_move`,
 //!   `tab_activate`, `group_new`, `group_rename`, `group_move`, `group_delete`,
 //!   `group_set_collapsed` (the layout's, one to one), and `path_exists {path}` (whether an
 //!   absolute path exists on this Host, and is a directory: Handoff asks before choosing where
@@ -372,7 +372,15 @@ enum ClientMsg {
     Detach { session_id: SessionId },
     Input { session_id: SessionId, data: String },
     Ping,
-    Resize { id: u64, session_id: SessionId, cols: u16, rows: u16 },
+    Resize {
+        id: u64,
+        session_id: SessionId,
+        cols: u16,
+        rows: u16,
+        /// The client's user is at it: size the pty though other clients show the Session.
+        #[serde(default)]
+        take: bool,
+    },
     TabNew {
         id: u64,
         group_id: Option<String>,
@@ -676,10 +684,10 @@ async fn connection(inner: Arc<Inner>, socket: WebSocket) {
                             }
                         }
                     }
-                    ClientMsg::Resize { id, session_id, cols, rows } => {
+                    ClientMsg::Resize { id, session_id, cols, rows, take } => {
                         let outcome = if attached.contains_key(&session_id) {
                             let others = taps.subscribers(session_id).saturating_sub(1);
-                            inner.resize(session_id, cols, rows, others).map(|()| json!(null))
+                            inner.resize(session_id, cols, rows, others, take).map(|()| json!(null))
                         } else {
                             Err(format!("not attached to Session {session_id}"))
                         };
@@ -828,7 +836,10 @@ mod tests {
         assert!(matches!(m, ClientMsg::GroupSetCollapsed { collapsed: true, .. }));
         let m: ClientMsg =
             serde_json::from_str(r#"{"t":"resize","id":3,"sessionId":4,"cols":100,"rows":30}"#).unwrap();
-        assert!(matches!(m, ClientMsg::Resize { id: 3, session_id: 4, cols: 100, rows: 30 }));
+        assert!(matches!(m, ClientMsg::Resize { id: 3, session_id: 4, cols: 100, rows: 30, take: false }));
+        let m: ClientMsg =
+            serde_json::from_str(r#"{"t":"resize","id":3,"sessionId":4,"cols":63,"rows":32,"take":true}"#).unwrap();
+        assert!(matches!(m, ClientMsg::Resize { cols: 63, rows: 32, take: true, .. }));
         assert!(matches!(serde_json::from_str::<ClientMsg>(r#"{"t":"ping"}"#).unwrap(), ClientMsg::Ping));
         let m: ClientMsg = serde_json::from_str(r#"{"t":"auth","token":"x"}"#).unwrap();
         assert!(matches!(m, ClientMsg::Auth { links: false, .. }), "linked Tabs only when asked for");

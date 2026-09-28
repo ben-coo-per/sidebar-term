@@ -129,6 +129,13 @@ export interface SessionExit {
   code: number | null;
 }
 
+/** A Session's pty took another size, whoever asked. */
+export interface SessionResized {
+  sessionId: SessionId;
+  cols: number;
+  rows: number;
+}
+
 /** One process in an ActivitySnapshot. */
 export interface ActivityProcess {
   pid: number;
@@ -394,6 +401,7 @@ export interface RemoteSnapshot {
 
 export const EVENT_SESSION_INFO = "session-info";
 export const EVENT_SESSION_EXIT = "session-exit";
+export const EVENT_SESSION_RESIZED = "session-resized";
 export const EVENT_ACTIVITY = "activity";
 export const EVENT_USAGE = "usage";
 /** The app menu's "Settings…" was chosen. */

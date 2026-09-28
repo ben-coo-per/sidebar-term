@@ -16,6 +16,10 @@
 //   output on every attach (the first, and after a reconnect): the grid is cleared before each.
 // - `mount` moves the Terminal's host element into the container, opens it the first time, puts
 //   the WebGL renderer on it, fits and focuses. Only mounted Terminals hold a WebGL context.
+// - A fit sizes the pty to what fits the Terminal, taking the size from any other client that
+//   shows the Session while this Mac is in use (its window has the focus). Once another client
+//   has taken the size (a phone: ADR 0007), the Terminal draws the pty's grid instead of what
+//   fits, until the Mac is used again (`sizing.ts`).
 // - `unmount` releases the WebGL context (the DOM renderer takes over) and detaches the host.
 //   The Terminal, its scrollback and modes live on.
 // - The Session's exit (its shell ended, or its Tab was closed) disposes the Terminal and emits
@@ -27,7 +31,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import "@xterm/xterm/css/xterm.css";
-import { attachSession, onSessionExit, pauseSession, resizeSession, resumeSession, writeSession } from "../ipc";
+import { attachSession, onSessionExit, onSessionResized, pauseSession, resizeSession, resumeSession, writeSession } from "../ipc";
 import type { SessionId } from "../types";
 import { parseSessionKey, type SessionKey } from "../host/ids";
 import { FlowController } from "./flow-control";
@@ -36,6 +40,7 @@ import { DEFAULT_TERMINAL_LOOK, terminalOptions, type TerminalLook } from "./the
 import { attachWebgl, type WebglRenderer } from "./webgl";
 import { openLinkOnCmdClick, osc52Clipboard, osc8LinkHandler } from "./system";
 import { FileLinkProvider } from "./fileLinks";
+import { ask, granted, refused, resized, sizingAt, type Grid, type Sizing } from "./sizing";
 
 export interface TerminalEvents {
   /** OSC 0/2 title set by the Foreground process (e.g. Codex/Gemini status titles). "" clears. */
@@ -57,6 +62,8 @@ export interface TerminalSink {
    * attach): the Terminal clears its grid first so nothing is shown twice.
    */
   replay(cols: number, rows: number): void;
+  /** The pty took this grid: this Mac's own resize, or another client's that took the size. */
+  resized(cols: number, rows: number): void;
   /** The Session ended (its Tab is gone with it). */
   exit(code: number | null): void;
 }
@@ -67,8 +74,11 @@ export interface SessionTransport {
   attach(id: SessionId, sink: TerminalSink): Promise<void>;
   detach(id: SessionId): void;
   write(id: SessionId, data: string): Promise<void>;
-  /** Size the pty; a remote Host refuses while another client shows the Session (ignored). */
-  resize(id: SessionId, cols: number, rows: number): Promise<void>;
+  /**
+   * Size the pty. `take`: this Mac is in use, and has the size though another client shows the
+   * Session; without it a remote Host refuses while one does, and rejects.
+   */
+  resize(id: SessionId, cols: number, rows: number, take: boolean): Promise<void>;
   /** Flow control; a remote Host's output ring and drop-behind rules stand in (no-ops there). */
   pause(id: SessionId): Promise<void>;
   resume(id: SessionId): Promise<void>;
@@ -123,9 +133,8 @@ interface Entry {
   container: HTMLElement | null;
   webgl: WebglRenderer | null;
   flow: FlowController;
-  /** Size the pty was last told about; `resize` only runs when the grid differs. */
-  ptyCols: number;
-  ptyRows: number;
+  /** The pty's size as last asked for or heard of, and whether another client has it. */
+  size: Sizing;
   /** Pending requestAnimationFrame for a coalesced fit, 0 when none. */
   fitFrame: number;
   lastActivity: number;
@@ -157,8 +166,35 @@ function emit<K extends keyof TerminalEvents>(event: K, ...args: Parameters<Term
 
 function control(e: Entry, op: () => Promise<void>) {
   e.control = e.control.then(op).catch(() => {
-    /* the Session is gone, or the Host refused (a resize while another client shows it) */
+    /* the Session is gone */
   });
+}
+
+/** Whether this Mac is in use: what it asks for then, it takes from any other client. */
+function inUse(): boolean {
+  return document.hasFocus();
+}
+
+/** Give the Terminal the pty's grid. */
+function show(e: Entry, grid: Grid | null) {
+  if (!grid || grid.cols <= 0 || grid.rows <= 0 || entries.get(e.key) !== e) return;
+  e.term.resize(grid.cols, grid.rows);
+}
+
+/** Whether `grid` is what fits the mounted Terminal. */
+function fitsHere(e: Entry, grid: Grid): boolean {
+  if (!e.opened || !e.container || !e.host.isConnected) return false;
+  const fits = e.fitAddon.proposeDimensions();
+  return fits !== undefined && fits.cols === grid.cols && fits.rows === grid.rows;
+}
+
+/** The Host says the pty took a grid: follow it, if it is another client's doing. */
+function follow(e: Entry, grid: Grid) {
+  const change = resized(e.size, grid);
+  e.size = change.sizing;
+  show(e, change.show);
+  // Given back the grid that fits here: nothing is lent.
+  if (e.size.lent && fitsHere(e, grid)) e.size = { ...e.size, lent: false };
 }
 
 /** Hand pty output to xterm with back-pressure, and report activity. */
@@ -178,19 +214,43 @@ function cancelFit(e: Entry) {
   e.fitFrame = 0;
 }
 
-/** Fit the mounted Terminal to its host now, and tell the pty if the grid changed. */
-function fitNow(e: Entry) {
+/**
+ * Fit the mounted Terminal to its host now, and tell the pty if the grid changed. `take`: from
+ * any other client that shows the Session. A Terminal whose size another client has is left at
+ * the pty's grid unless it takes.
+ */
+function fitNow(e: Entry, take = inUse()) {
   cancelFit(e);
   if (!e.opened || !e.container || !e.host.isConnected) return;
   // A collapsed or display:none container would fit to 1 row; wait for a real size instead.
   if (e.host.clientWidth === 0 || e.host.clientHeight === 0) return;
+  if (e.size.lent && !take) return;
   e.fitAddon.fit();
-  const { cols, rows } = e.term;
-  lastGrid = { cols, rows };
-  if (cols === e.ptyCols && rows === e.ptyRows) return;
-  e.ptyCols = cols;
-  e.ptyRows = rows;
-  control(e, () => e.transport.resize(e.id, cols, rows));
+  const want = { cols: e.term.cols, rows: e.term.rows };
+  lastGrid = { ...want };
+  if (want.cols === e.size.pty.cols && want.rows === e.size.pty.rows) {
+    e.size = { ...e.size, lent: false };
+    return;
+  }
+  e.size = ask(e.size, want);
+  control(e, () =>
+    e.transport.resize(e.id, want.cols, want.rows, take).then(
+      () => {
+        e.size = granted(e.size, want);
+      },
+      () => {
+        // Another client shows the Session (or it is gone): back to the pty's grid.
+        const change = refused(e.size, want);
+        e.size = change.sizing;
+        show(e, change.show);
+      },
+    ),
+  );
+}
+
+/** This Mac is used: a Terminal whose size another client has takes it back. */
+function takeBack(e: Entry) {
+  if (e.size.lent) fitNow(e, true);
 }
 
 function scheduleFit(e: Entry) {
@@ -207,8 +267,7 @@ function scheduleFit(e: Entry) {
  */
 function beforeReplay(e: Entry, cols: number, rows: number) {
   e.term.reset();
-  e.ptyCols = cols;
-  e.ptyRows = rows;
+  e.size = sizingAt({ cols, rows });
   if (e.container) fitNow(e);
   else if (cols > 0 && rows > 0) e.term.resize(cols, rows);
 }
@@ -295,6 +354,7 @@ export const terminals: TerminalManager = {
     host.addEventListener("beforecopy", (ev) => {
       if (term.hasSelection()) ev.preventDefault();
     });
+    host.addEventListener("pointerdown", () => takeBack(e), { capture: true });
 
     const e: Entry = {
       key,
@@ -310,8 +370,7 @@ export const terminals: TerminalManager = {
         onPause: () => control(e, () => transport.pause(sid)),
         onResume: () => control(e, () => transport.resume(sid)),
       }),
-      ptyCols: cols,
-      ptyRows: rows,
+      size: sizingAt({ cols, rows }),
       fitFrame: 0,
       lastActivity: 0,
       control: Promise.resolve(),
@@ -329,6 +388,9 @@ export const terminals: TerminalManager = {
         replay: (c, r) => {
           if (live()) beforeReplay(e, c, r);
         },
+        resized: (c, r) => {
+          if (live()) follow(e, { cols: c, rows: r });
+        },
         exit: (code) => {
           if (live()) handleExit(key, code);
         },
@@ -344,6 +406,8 @@ export const terminals: TerminalManager = {
       term.onBinary((data) => {
         if (/^[\x00-\x7f]*$/.test(data)) void transport.write(sid, data).catch(() => {});
       }),
+      // A key typed here (not what the Terminal answers a program by itself).
+      term.onKey(() => takeBack(e)),
       term.onTitleChange((title) => emit("title", key, title)),
       term.onBell(() => emit("bell", key)),
     );
@@ -385,7 +449,10 @@ export const terminals: TerminalManager = {
   },
 
   focus(key) {
-    entries.get(key)?.term.focus();
+    const e = entries.get(key);
+    if (!e) return;
+    takeBack(e);
+    e.term.focus();
   },
 
   screenLines(key) {
@@ -432,6 +499,13 @@ export const terminals: TerminalManager = {
   },
 };
 
+// The window got the focus: this Mac is used, and the Terminals in view take their size back.
+if (typeof window !== "undefined") {
+  window.addEventListener("focus", () => {
+    for (const e of entries.values()) if (e.container) takeBack(e);
+  });
+}
+
 // --- The local Host: this Mac's own Sessions, over IPC ----------------------------------------
 
 const localSinks = new Map<SessionId, TerminalSink>();
@@ -455,6 +529,10 @@ void onSessionExit(({ sessionId, code }) => {
     earlyExits.delete(earlyExits.keys().next().value as SessionId);
   }
 });
+
+// A phone that shows one of this Mac's Sessions took its size, or gave it back; this Mac's own
+// resizes come round too.
+void onSessionResized(({ sessionId, cols, rows }) => localSinks.get(sessionId)?.resized(cols, rows));
 
 export const localTransport: SessionTransport = {
   async attach(id, sink) {
