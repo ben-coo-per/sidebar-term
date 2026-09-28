@@ -1,8 +1,7 @@
-// Which Host a Tab or Session belongs to, as this client tells them apart. The Mac app is its
-// own local Host (reached in process); every paired Host is a section of the sidebar (see
-// docs/architecture.md "Hosts"). Tab and Group ids are 128-bit random on every Host
-// (src-tauri/core/src/layout/model.rs `new_id`), so the client keys its mirror by them as they
-// are; Session ids are small per-Host integers, so a Session is keyed by Host and id. Pure.
+// Which Host a Tab's Session runs on, as this client tells them apart. The Mac app is its own
+// local Host (reached in process); a paired Host's Tabs are linked into the Mac's Groups (see
+// docs/architecture.md "Hosts", ADR 0003). Session ids are small per-Host integers, so a
+// Session is keyed by Host and id. Pure.
 
 import type { SessionId } from "../types";
 

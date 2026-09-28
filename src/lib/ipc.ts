@@ -31,6 +31,7 @@ import {
   type SessionId,
   type SessionInfo,
   type Tab,
+  type TabLink,
   type UsageSnapshot,
 } from "./types";
 import * as mock from "./mock";
@@ -139,6 +140,25 @@ export function tabMove(tabId: string, groupId: string, index?: number): Promise
 export function tabActivate(tabId: string): Promise<void> {
   if (!inTauri) return mock.tabActivate(tabId);
   return invoke("tab_activate", { tabId });
+}
+
+/**
+ * Link a paired Host's Tab into this Mac's layout (ADR 0003), right after `afterTabId`, else as
+ * a new Tab would go; not made active. An existing link to the same Tab is handed back as it is.
+ */
+export function tabLink(link: TabLink, groupId?: string | null, afterTabId?: string | null): Promise<Tab> {
+  if (!inTauri) return mock.tabLink(link, groupId, afterTabId);
+  return invoke("tab_link", { hostId: link.hostId, tabId: link.tabId, groupId: groupId ?? null, afterTabId: afterTabId ?? null });
+}
+
+/**
+ * A paired Host's links follow the Tabs it has (`tabIds`, in its order): a link whose Tab is
+ * gone goes, and a Tab with no link is linked at the end of the Group named `groupName` (made
+ * if missing). Resolves to the ids of the Tabs linked now.
+ */
+export function linksReconcile(hostId: string, tabIds: string[], groupName: string): Promise<string[]> {
+  if (!inTauri) return mock.linksReconcile(hostId, tabIds, groupName);
+  return invoke("links_reconcile", { hostId, tabIds, groupName });
 }
 
 /** A new Group at the end ("New Group" unless named); with `tabId`, that Tab moves into it. */

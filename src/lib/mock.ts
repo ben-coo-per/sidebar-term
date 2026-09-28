@@ -13,6 +13,8 @@
 //   cd ~/Dev/detached         -> detached HEAD
 //   ls                        -> file paths to double-click (opening one logs it to the console)
 //   offline                   -> (on the fake remote Host only) drop its connection for a while
+//   newtab                    -> (on the fake remote Host only) a Tab made there from elsewhere,
+//                                as a phone would: it lands in the "dell" Group, Unread
 // The layout (Groups, Tabs, the active Tab) is a copy of the Host's rules (src-tauri/core/src/layout/)
 // kept in localStorage. Activity is invented: each fake Session has a shell (and
 // its foreground program, busy when it is an agent) next to a fixed cast of jittering system
@@ -24,7 +26,8 @@
 //
 // A fake Host is one instance of `createFakeHost`: the local one behind the IPC exports, and a
 // second, "dell", behind `hostClient` (a fake Host protocol connection, src/lib/host/connect.ts),
-// so the sidebar's Host section shows with `pnpm dev`. Its layout is its own localStorage key.
+// whose Tabs the sidebar links into the local layout (a "dell" Group on first run, each row with
+// the Host's chip) with `pnpm dev`. Its layout is its own localStorage key.
 
 import type { TabNewOptions } from "./ipc";
 import type { ClientEvents, HostClient, Paired } from "./host/client";
@@ -54,6 +57,7 @@ import type {
   StatusChange,
   Pending,
   Tab,
+  TabLink,
   UsageSnapshot,
 } from "./types";
 
@@ -104,6 +108,8 @@ interface FakeHostOptions {
   resume: boolean;
   /** The fake shell's `offline` command (the remote Host only). */
   onOffline?: () => void;
+  /** The fake shell's `newtab` command (the remote Host only): a Tab made there from elsewhere, as a phone would. */
+  outsideTabs?: boolean;
 }
 
 interface MockLayout {
@@ -342,10 +348,21 @@ function createFakeHost(opts: FakeHostOptions) {
         endSession(s.id, 0);
         return;
       case "help":
-        out(s, `fake shell: cd, claude, codex, gemini, ssh, npm, pnpm, uv, exit, ls${opts.onOffline ? ", offline" : ""}\r\n`);
+        out(s, `fake shell: cd, claude, codex, gemini, ssh, npm, pnpm, uv, exit, ls${opts.onOffline ? ", offline" : ""}${opts.outsideTabs ? ", newtab" : ""}\r\n`);
         break;
       case "ls":
         out(s, "README.md  src  package.json\r\n");
+        break;
+      case "newtab":
+        if (opts.outsideTabs) {
+          out(s, "\x1b[2m(fake) a Tab made here from elsewhere, as a phone would\x1b[0m\r\n");
+          const group = model.groups.find((g) => g.tabIds.length > 0) ?? model.groups[0];
+          const tab = makeTab(group.id, s.cwd);
+          group.tabIds.push(tab.id);
+          layoutChanged();
+          break;
+        }
+        out(s, `zsh: command not found: ${head}\r\n`);
         break;
       case "offline":
         if (opts.onOffline) {
@@ -533,8 +550,8 @@ function createFakeHost(opts: FakeHostOptions) {
   // --- The layout: the Host's model, in localStorage -------------------------------------------
 
   const model: MockLayout = loadModel();
-  // Launch: every persisted Tab respawns; a fresh install gets one Tab.
-  for (const t of Object.values(model.tabs)) t.sessionId = spawn(t.lastCwd, t.id);
+  // Launch: every persisted Tab respawns (a linked Tab's Session is its Host's); a fresh install gets one Tab.
+  for (const t of Object.values(model.tabs)) if (!t.link) t.sessionId = spawn(t.lastCwd, t.id);
   if (Object.keys(model.tabs).length === 0 && typeof localStorage !== "undefined") {
     const group = model.groups[0];
     const tab = makeTab(group.id, null);
@@ -579,7 +596,7 @@ function createFakeHost(opts: FakeHostOptions) {
         localStorage.setItem(
           opts.storageKey,
           JSON.stringify({
-            version: 2,
+            version: 3,
             groups: model.groups,
             tabs: Object.values(model.tabs).map(({ sessionId: _, ...t }) => t),
             activeTabId: model.activeTabId,
@@ -668,6 +685,60 @@ function createFakeHost(opts: FakeHostOptions) {
     if (model.activeTabId === tabId) return;
     model.activeTabId = tabId;
     layoutChanged();
+  }
+
+  function linkedTab(link: TabLink): Tab | undefined {
+    return Object.values(model.tabs).find((t) => t.link?.hostId === link.hostId && t.link.tabId === link.tabId);
+  }
+
+  /** A linked Tab: no Session here, not made active (the core's `link_tab`). */
+  async function tabLink(link: TabLink, groupId?: string | null, afterTabId?: string | null): Promise<Tab> {
+    const existing = linkedTab(link);
+    if (existing) return structuredClone(existing);
+    const active = model.activeTabId ? model.tabs[model.activeTabId] : null;
+    const anchor = afterTabId ? model.tabs[afterTabId] : null;
+    if (afterTabId && !anchor) throw new Error(`no Tab ${afterTabId}`);
+    const group = model.groups.find((g) => g.id === (anchor?.groupId ?? groupId ?? active?.groupId ?? model.groups[0]?.id));
+    if (!group) throw new Error("no Group to link a Tab into");
+    const after = anchor?.id ?? (active && active.groupId === group.id ? active.id : null);
+    const tab: Tab = { id: mockId("tab"), groupId: group.id, sessionId: null, customTitle: null, lastCwd: null, link: { ...link } };
+    model.tabs[tab.id] = tab;
+    const at = after ? group.tabIds.indexOf(after) : -1;
+    group.tabIds.splice(at === -1 ? group.tabIds.length : at + 1, 0, tab.id);
+    layoutChanged();
+    return structuredClone(tab);
+  }
+
+  /** A Host's links follow its Tabs; strays land in the Group named after it (the core's `reconcile_links`). */
+  async function linksReconcile(hostId: string, tabIds: string[], groupName: string): Promise<string[]> {
+    const there = new Set(tabIds);
+    let changed = false;
+    for (const t of Object.values(model.tabs)) {
+      if (t.link?.hostId === hostId && !there.has(t.link.tabId)) {
+        removeTab(t.id);
+        changed = true;
+      }
+    }
+    const known = new Set(Object.values(model.tabs).flatMap((t) => (t.link?.hostId === hostId ? [t.link.tabId] : [])));
+    const strays = tabIds.filter((id) => !known.has(id) && (known.add(id), true));
+    const made: string[] = [];
+    if (strays.length) {
+      const name = groupName.trim();
+      let group = model.groups.find((g) => g.name === name);
+      if (!group) {
+        group = { id: mockId("group"), name, collapsed: false, tabIds: [] };
+        model.groups.push(group);
+      }
+      for (const tabId of strays) {
+        const tab: Tab = { id: mockId("tab"), groupId: group.id, sessionId: null, customTitle: null, lastCwd: null, link: { hostId, tabId } };
+        model.tabs[tab.id] = tab;
+        group.tabIds.push(tab.id);
+        made.push(tab.id);
+      }
+      changed = true;
+    }
+    if (changed) layoutChanged();
+    return made;
   }
 
   async function groupNew(name?: string | null, tabId?: string | null): Promise<Group> {
@@ -774,6 +845,8 @@ function createFakeHost(opts: FakeHostOptions) {
     tabRename,
     tabMove,
     tabActivate,
+    tabLink,
+    linksReconcile,
     groupNew,
     groupRename,
     groupMove,
@@ -845,6 +918,8 @@ export const {
   tabRename,
   tabMove,
   tabActivate,
+  tabLink,
+  linksReconcile,
   groupNew,
   groupRename,
   groupMove,
@@ -1213,7 +1288,7 @@ function dellHost() {
   } catch {
     /* no storage: seed every time */
   }
-  dell = createFakeHost({ storageKey: key, home: DELL_HOME, resume: false, onOffline: () => dellOutage?.() });
+  dell = createFakeHost({ storageKey: key, home: DELL_HOME, resume: false, onOffline: () => dellOutage?.(), outsideTabs: true });
   if (fresh) {
     // A first run: a running fake agent, a Worktree, and a server, in two Groups.
     dell.seed("Agents", `${DELL_HOME}/Dev/jack`, "claude");

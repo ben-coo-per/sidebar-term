@@ -289,12 +289,22 @@ export interface Group {
 export interface Tab {
   id: string;
   groupId: string;
-  /** null while the Tab has no Session (its shell failed to spawn). */
+  /** null while the Tab has no Session (its shell failed to spawn, or the Tab is linked). */
   sessionId: SessionId | null;
   /** A rename that sticks; null means "the automatic Title". */
   customTitle: string | null;
   /** Last known non-remote cwd, where the Tab's Session respawns at the next launch. */
   lastCwd: string | null;
+  /** Only on a linked Tab (the Mac's layout, ADR 0003): the paired Host's Tab it places. */
+  link?: TabLink;
+}
+
+/** What a linked Tab points at: a Tab on a paired Host, which owns it and its Session. */
+export interface TabLink {
+  /** This client's id for the Host (src/lib/host/ids.ts `HostId`). */
+  hostId: string;
+  /** The Tab's id on that Host. */
+  tabId: string;
 }
 
 /** The whole layout, from `layout_get` and the `layout` event; the webview mirrors it. */

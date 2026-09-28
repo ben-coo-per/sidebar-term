@@ -28,7 +28,7 @@
 
   $effect(() => {
     // Resume needs the Tabs: it drops entries whose Tab is gone. Paired Hosts join once the
-    // local Host's layout is in, so their sections come after its Groups.
+    // local Host's layout is in: their Tabs are linked into it.
     let stopHosts: (() => void) | null = null;
     let stopped = false;
     void initLayout().then(() => {
@@ -69,7 +69,7 @@
   const managerMode = $derived(layout.ready && layout.mode === "manager");
 
   // Memory Guard never freezes the Tab in view, and going to a frozen Tab thaws it. It is this
-  // Mac's: a paired Host's Tab in view leaves no local Session in view; Manager shows none.
+  // Mac's: a linked Tab in view leaves no local Session in view; Manager shows none.
   $effect(() => setVisibleSession(managerMode ? null : localSessionId(active)));
 
   // Tabs show their CPU and memory from Activity samples, taken only while something shows them.

@@ -22,6 +22,7 @@ import { actionFor, comboFromEvent, isMac, isModifierOnly, type ActionId } from 
 import { hotkeys } from "./hotkeys.svelte";
 import { toggleSettings } from "./settings/visibility.svelte";
 import { canHandOff, defaultHandoffHost, moveTabToHost, newTabOnHost } from "./handoff/handoff.svelte";
+import { LOCAL_HOST } from "./host/ids";
 
 /** Handoff Hotkeys: the Tab in view, to the first online paired Host, in its active Tab's Group. */
 function handOff(move: boolean): void {
@@ -92,6 +93,9 @@ function run(action: ActionId): void {
       return;
     case "host.moveTab":
       handOff(true);
+      return;
+    case "host.newLocalTab":
+      void newTab({ host: LOCAL_HOST });
       return;
     case "sidebar.toggle":
       toggleSidebarVisible();

@@ -438,12 +438,34 @@ pub struct Group {
 pub struct Tab {
     pub id: String,
     pub group_id: String,
-    /// The Session this Tab points at; `None` while it has none (its shell failed to spawn).
+    /// The Session this Tab points at; `None` while it has none (its shell failed to spawn, or
+    /// the Tab is linked).
     pub session_id: Option<SessionId>,
     /// A rename the user typed, which sticks; `None` means "the automatic Title".
     pub custom_title: Option<String>,
     /// Last known non-remote cwd, where the Tab's Session respawns at the next launch.
     pub last_cwd: Option<String>,
+    /// Set on a linked Tab: its Session is a Tab's on a paired Host, and this Host spawns none
+    /// for it (ADR 0003). Only the Mac app links Tabs; absent on the wire otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<TabLink>,
+}
+
+/// What a linked Tab points at: a Tab on a paired Host. The Host owns that Tab and its
+/// Session; the Tab here only places it among this Host's Groups.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TabLink {
+    /// The client's id for the paired Host (the webview's `hosts` settings). Opaque here.
+    pub host_id: String,
+    /// The Tab's id on that Host, from its layout snapshot.
+    pub tab_id: String,
+}
+
+impl Tab {
+    pub fn is_linked(&self) -> bool {
+        self.link.is_some()
+    }
 }
 
 /// The whole layout, as the Host holds it. Payload of `layout` and of `layout_get`; every

@@ -1,16 +1,16 @@
 // The paired Hosts, as the Mac app drives them: one connection per Host (./client.ts, the Host
-// protocol over its socket, reconnecting with backoff), its connection state for the sidebar's
-// section header and the Settings page, its name and home from `hello`, each Session's CPU and
+// protocol over its socket, reconnecting with backoff), its connection state for its Tabs' chips
+// and the Settings page, its name and home from `hello`, each Session's CPU and
 // memory from its `activity` messages, its agent events (src/lib/manager/feed.svelte.ts), and the token that lets this Mac in (settings.json,
-// section `hosts`: ./settings.ts). What a Host says about its layout and Sessions goes into the
-// same mirrors as the local Host's: src/lib/layout.svelte.ts (`applyHostSnapshot`) and
-// src/lib/sessions.svelte.ts (`applySessionInfo`); its Sessions' Terminals are the Terminal
+// section `hosts`: ./settings.ts). What a Host says about its layout fills in its linked Tabs in
+// this Mac's layout (src/lib/layout.svelte.ts `applyHostSnapshot`, ADR 0003); its Sessions' facts
+// go into the same mirror as the local Host's (src/lib/sessions.svelte.ts `applySessionInfo`); its Sessions' Terminals are the Terminal
 // manager's, reached through the transport made here. See docs/architecture.md "Hosts".
 
 import { loadSection, saveSection } from "../settings/store";
 import type { ActivitySession, ConversationFiles, HostInfo, PathExists, SessionId } from "../types";
 import type { SessionTransport, TerminalSink } from "../terminal/manager";
-import { applyHostSnapshot, dropHost, ensureHostSection, type LayoutCommands } from "../layout.svelte";
+import { applyHostSnapshot, dropHost, dropUnknownHosts, type LayoutCommands } from "../layout.svelte";
 import { applySessionInfo, forgetSession, setHostHome } from "../sessions.svelte";
 import { addAgentEvent, dropHostAgentEvents, setHostAgentEvents } from "../manager/feed.svelte";
 import type { ConnectionStatus, HostClient } from "./client";
@@ -164,7 +164,7 @@ function disconnect(id: HostId): void {
 
 /**
  * Read the paired Hosts and connect to each; returns the function that stops. Call after the
- * local Host's layout is in, so the sections come after its Groups.
+ * local Host's layout is in: each Host's Tabs are linked into it.
  */
 export function initHosts(): () => void {
   void loadSection(HOSTS_SECTION)
@@ -181,9 +181,9 @@ export function initHosts(): () => void {
           activity: {},
         };
         hosts.list.push(state);
-        ensureHostSection(state.id);
         connect(hosts.list[hosts.list.length - 1]);
       }
+      dropUnknownHosts(hosts.list.map((h) => h.id));
       hosts.ready = true;
     });
   // Back in the foreground (the window was hidden, the Mac slept): do not wait out a backoff.
@@ -234,11 +234,10 @@ export async function addHost(url: string, code: string): Promise<void> {
   };
   hosts.list.push(state);
   persist();
-  ensureHostSection(state.id);
   connect(hosts.list[hosts.list.length - 1]);
 }
 
-/** Forget a Host: close its connection, drop its section and Tabs, and its token. The Host still lists this Mac until removed there. */
+/** Forget a Host: close its connection, drop its linked Tabs, and its token. The Host still lists this Mac until removed there. */
 export function removeHost(id: HostId): void {
   disconnect(id);
   dropHost(id);

@@ -3,12 +3,14 @@
 //! clients all read one model and change it through the same commands.
 //!
 //! - `model.rs` is the pure state and its transitions, tested without a pty.
-//! - `file.rs` is `layout.json` (version 2) and the migration of the webview's version 1.
+//! - `file.rs` is `layout.json` (version 3) and the migration of older versions.
 //!
 //! [`Layout`] wraps the model in a lock and adds the side effects: a Tab's Session is spawned as
 //! the Tab is made (at launch for every persisted Tab, or on `tab_new`) and killed as it is
 //! closed, with its Tab id as the Resume key; a Session that exits on its own takes its Tab with
-//! it. Every change emits one `layout` event carrying the whole snapshot (under the model's lock,
+//! it. A linked Tab (ADR 0003: the Mac app places a paired Host's Tab among its own Groups) has
+//! no Session here, so it is never spawned, respawned, resumed or probed; the webview links and
+//! reconciles them (`tab_link`, `links_reconcile`), and Remote serves the layout without them. Every change emits one `layout` event carrying the whole snapshot (under the model's lock,
 //! so snapshots arrive in order; each carries a revision for clients that cannot rely on that),
 //! rewrites `layout.json` after a 500 ms quiet period, and tells `watch`ers (Remote, which
 //! serves the Host protocol). Session facts (`SessionInfo`) reach it through `observe`, from
@@ -20,7 +22,7 @@ pub mod file;
 pub mod model;
 
 use crate::host::{Events, OutputSink, Paths};
-use crate::model::{Group, LayoutSnapshot, SessionId, SessionInfo, Tab, EVENT_LAYOUT};
+use crate::model::{Group, LayoutSnapshot, SessionId, SessionInfo, Tab, TabLink, EVENT_LAYOUT};
 use crate::outlet::{Outlet, Outlets};
 use crate::session::SessionManager;
 use model::{new_id, Model};
@@ -153,12 +155,17 @@ impl Layout {
                         session_id,
                         custom_title: None,
                         last_cwd: None,
+                        link: None,
                     },
                     None,
                 );
             } else {
                 for id in s.model.ordered_tab_ids() {
-                    let cwd = s.model.tabs[&id].last_cwd.clone();
+                    let tab = &s.model.tabs[&id];
+                    if tab.is_linked() {
+                        continue; // its Session is its Host's
+                    }
+                    let cwd = tab.last_cwd.clone();
                     let session_id = layout.inner.spawn(&id, cwd, DEFAULT_COLS, DEFAULT_ROWS);
                     let _ = s.model.set_session(&id, session_id);
                 }
@@ -181,6 +188,22 @@ impl Layout {
     pub fn snapshot(&self) -> LayoutSnapshot {
         let s = lock(&self.inner.state);
         s.model.snapshot(s.revision)
+    }
+
+    /// The snapshot for Remote's clients: without linked Tabs (they cannot reach a paired Host
+    /// through this one).
+    pub fn client_snapshot(&self) -> LayoutSnapshot {
+        let s = lock(&self.inner.state);
+        s.model.snapshot_without_links(s.revision)
+    }
+
+    /// `Err` for a linked Tab: Remote's clients cannot see those, so a command naming one is
+    /// refused as if it did not exist.
+    pub fn refuse_linked(&self, tab_id: &str) -> Result<(), String> {
+        if lock(&self.inner.state).model.is_linked(tab_id) {
+            return Err(format!("no Tab {tab_id}"));
+        }
+        Ok(())
     }
 
     /// The latest facts about every live Session, by Session id.
@@ -271,17 +294,9 @@ impl Layout {
     /// Make a Tab, with its Session, and go to it.
     pub fn tab_new(&self, opts: TabNew) -> Result<Tab, String> {
         let mut s = lock(&self.inner.state);
-        let mut placement = s.model.placement(opts.group_id.as_deref(), opts.cwd)?;
-        if let Some(after) = &opts.after_tab_id {
-            let group_id = s
-                .model
-                .tabs
-                .get(after)
-                .map(|t| t.group_id.clone())
-                .ok_or_else(|| format!("no Tab {after}"))?;
-            placement.group_id = group_id;
-            placement.after = Some(after.clone());
-        }
+        let placement = s
+            .model
+            .placement_after(opts.group_id.as_deref(), opts.after_tab_id.as_deref(), opts.cwd)?;
         let id = new_id("tab");
         let session_id = self.inner.spawn(
             &id,
@@ -295,10 +310,36 @@ impl Layout {
             session_id,
             custom_title: None,
             last_cwd: placement.cwd,
+            link: None,
         };
         s.model.insert_tab(tab.clone(), placement.after.as_deref())?;
         self.inner.changed(&mut s);
         Ok(tab)
+    }
+
+    /// Link a paired Host's Tab into this layout (the Mac app, for a Tab it made there): placed
+    /// after `after_tab_id`, else as a new Tab would be, and not made active. Linking a Tab
+    /// already linked hands back that Tab.
+    pub fn tab_link(&self, link: TabLink, group_id: Option<&str>, after_tab_id: Option<&str>) -> Result<Tab, String> {
+        let mut s = lock(&self.inner.state);
+        let before = s.model.linked_tab(&link.host_id, &link.tab_id).is_some();
+        let tab = s.model.link_tab(link, group_id, after_tab_id)?;
+        if !before {
+            self.inner.changed(&mut s);
+        }
+        Ok(tab)
+    }
+
+    /// Host `host_id`'s links follow the Tabs it has (`host_tabs`, in its order): see
+    /// `Model::reconcile_links`. Returns the ids of the Tabs linked just now (the webview marks
+    /// them Unread).
+    pub fn links_reconcile(&self, host_id: &str, host_tabs: &[String], stray_group: &str) -> Vec<String> {
+        let mut s = lock(&self.inner.state);
+        let r = s.model.reconcile_links(host_id, host_tabs, stray_group);
+        if !r.linked.is_empty() || !r.unlinked.is_empty() {
+            self.inner.changed(&mut s);
+        }
+        r.linked
     }
 
     /// Close a Tab: it goes at once, and its Session is killed. No confirmation here: a client
@@ -330,6 +371,19 @@ impl Layout {
     /// Move a Tab within or across Groups to `index` (default: the end of the Group).
     pub fn tab_move(&self, tab_id: &str, group_id: &str, index: Option<usize>) -> Result<(), String> {
         let mut s = lock(&self.inner.state);
+        s.model.move_tab(tab_id, group_id, index)?;
+        self.inner.changed(&mut s);
+        Ok(())
+    }
+
+    /// `tab_move` for a Remote client, which sees no linked Tabs: `index` counts the Group's
+    /// other Tabs only, and a linked Tab is not there to move.
+    pub fn client_tab_move(&self, tab_id: &str, group_id: &str, index: Option<usize>) -> Result<(), String> {
+        let mut s = lock(&self.inner.state);
+        if s.model.is_linked(tab_id) {
+            return Err(format!("no Tab {tab_id}"));
+        }
+        let index = index.map(|i| s.model.index_skipping_links(group_id, i));
         s.model.move_tab(tab_id, group_id, index)?;
         self.inner.changed(&mut s);
         Ok(())
@@ -383,7 +437,8 @@ impl Layout {
         Ok(())
     }
 
-    /// Delete a Group and close every Tab in it. Never the last Group.
+    /// Delete a Group and close every Tab in it (a linked Tab's link goes; closing it on its Host
+    /// is the webview's). Never the last Group.
     pub fn group_delete(&self, group_id: &str) -> Result<(), String> {
         let kills: Vec<SessionId> = {
             let mut s = lock(&self.inner.state);
@@ -560,7 +615,7 @@ mod tests {
             Box::new(move |id| lock(&for_hook).push(id)),
         );
 
-        // A fresh install: one Group "Tabs", one Tab with a live Session, on disk as version 2.
+        // A fresh install: one Group "Tabs", one Tab with a live Session, on disk as version 3.
         let snap = layout.snapshot();
         assert_eq!(snap.groups.len(), 1);
         assert_eq!(snap.groups[0].name, "Tabs");
@@ -572,7 +627,7 @@ mod tests {
         assert_eq!(sessions.keyed_targets()[0].0, first.id, "the Tab id is the Resume key");
         let on_disk: serde_json::Value =
             serde_json::from_slice(&std::fs::read(dir.path().join(crate::store::LAYOUT)).unwrap()).unwrap();
-        assert_eq!(on_disk["version"], 2);
+        assert_eq!(on_disk["version"], 3);
 
         // Watchers (Remote) hear of every change, layout and facts alike.
         let seen: Arc<Mutex<Vec<Update>>> = Arc::default();
@@ -714,9 +769,9 @@ mod tests {
         let settings = crate::store::load(&*paths, crate::store::SETTINGS).unwrap().unwrap();
         assert_eq!(settings["sidebar"]["width"], 300);
         assert_eq!(settings["sidebar"]["unread"], serde_json::json!(["a"]));
-        // And the file is version 2 now.
+        // And the file is the current version now.
         let on_disk = crate::store::load(&*paths, crate::store::LAYOUT).unwrap().unwrap();
-        assert_eq!(on_disk["version"], 2);
+        assert_eq!(on_disk["version"], 3);
         layout.group_delete("g").unwrap_err(); // the last Group stays
         let other = layout.group_new(Some("Other"), Some("a")).unwrap();
         assert_eq!(layout.snapshot().tabs["a"].group_id, other.id);
@@ -726,6 +781,84 @@ mod tests {
             "deleting the Group did not kill its Tab's Session"
         );
         assert_eq!(layout.snapshot().tabs.len(), 1);
+        sessions.kill_all();
+        assert!(wait_until(T, || sessions.probe_targets().is_empty()));
+    }
+
+    #[test]
+    fn linked_tabs_get_no_session_and_keep_their_place_across_a_relaunch() {
+        let _serial = lock(&PTY_SERIAL);
+        let dir = TempDir::new("layout-linked");
+        let paths: Arc<dyn Paths> = Arc::new(Dir(dir.path().to_path_buf()));
+        crate::store::save(
+            &*paths,
+            crate::store::LAYOUT,
+            &serde_json::json!({
+                "version": 3,
+                "groups": [{ "id": "g", "name": "Work", "tabIds": ["a", "l", "b"] }],
+                "tabs": [
+                    { "id": "a", "groupId": "g" },
+                    { "id": "l", "groupId": "g", "link": { "hostId": "h", "tabId": "r1" } },
+                    { "id": "b", "groupId": "g" }
+                ],
+                "activeTabId": "l"
+            }),
+        )
+        .unwrap();
+        let open = || {
+            let recorder = Arc::new(Recorder::default());
+            let sessions = Arc::new(SessionManager::new(Arc::new(Taps::default()), recorder.clone()));
+            let layout = Layout::open(paths.clone(), recorder.clone(), sessions.clone(), Box::new(|_| {}));
+            (layout, sessions, recorder)
+        };
+        let order = |s: &LayoutSnapshot| -> Vec<String> { s.groups.iter().flat_map(|g| g.tab_ids.clone()).collect() };
+        let (layout, sessions, recorder) = open();
+        let snap = layout.snapshot();
+        assert_eq!(order(&snap), ["a", "l", "b"]);
+        assert_eq!(snap.tabs["l"].session_id, None, "a linked Tab is never spawned");
+        assert!(snap.tabs["a"].session_id.is_some() && snap.tabs["b"].session_id.is_some());
+        let keys: Vec<String> = sessions.keyed_targets().into_iter().map(|(k, _)| k).collect();
+        assert_eq!(keys, ["a", "b"], "no Resume key for the linked Tab");
+        assert_eq!(snap.active_tab_id.as_deref(), Some("l"));
+
+        // Remote's clients do not see it, and cannot name it.
+        let client = layout.client_snapshot();
+        assert_eq!(order(&client), ["a", "b"]);
+        assert_eq!(client.active_tab_id, None);
+        assert!(layout.refuse_linked("l").is_err() && layout.refuse_linked("a").is_ok());
+        assert!(layout.client_tab_move("l", "g", None).is_err());
+        layout.client_tab_move("b", "g", Some(0)).unwrap();
+        assert_eq!(order(&layout.snapshot()), ["b", "a", "l"], "index 0 among [a, b]");
+
+        // Linking: one event per change, none when nothing changes.
+        let events = recorder.named(EVENT_LAYOUT).len();
+        let link = TabLink { host_id: "h".into(), tab_id: "r2".into() };
+        let made = layout.tab_link(link.clone(), None, Some("b")).unwrap();
+        assert_eq!(order(&layout.snapshot()), ["b", made.id.as_str(), "a", "l"]);
+        assert_eq!(layout.tab_link(link, None, None).unwrap().id, made.id);
+        assert_eq!(recorder.named(EVENT_LAYOUT).len(), events + 1);
+        let linked = layout.links_reconcile("h", &["r2".into(), "r3".into()], "dell");
+        assert_eq!(linked.len(), 1, "r3 was a stray");
+        let snap = layout.snapshot();
+        assert!(!snap.tabs.contains_key("l"), "r1 is gone from the Host");
+        assert_eq!(snap.groups[1].name, "dell");
+        assert!(layout.links_reconcile("h", &["r2".into(), "r3".into()], "dell").is_empty());
+        assert_eq!(recorder.named(EVENT_LAYOUT).len(), events + 2);
+        // Closing a linked Tab here kills nothing.
+        layout.tab_close(&made.id).unwrap();
+        assert_eq!(sessions.probe_targets().len(), 2);
+
+        // A relaunch: the same order, links and all. (The layout goes before its Sessions, so
+        // their exits change nothing on disk.)
+        layout.flush();
+        let before = order(&layout.snapshot());
+        drop(layout);
+        sessions.kill_all();
+        assert!(wait_until(T, || sessions.probe_targets().is_empty()));
+        let (layout, sessions, _) = open();
+        assert_eq!(order(&layout.snapshot()), before);
+        assert_eq!(sessions.probe_targets().len(), 2);
+        drop(layout);
         sessions.kill_all();
         assert!(wait_until(T, || sessions.probe_targets().is_empty()));
     }

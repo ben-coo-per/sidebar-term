@@ -1,6 +1,6 @@
-<!-- The sidebar: the local Host's Group headers + Tab rows, then one section per paired Host
-     (its header, then its Groups and Tabs, greyed while the Host is not connected), resizable,
-     with the Panel beneath them and the shared context menu and confirm dialog mounted once.
+<!-- The sidebar: this Mac's Group headers + Tab rows (local and linked Tabs alike; a linked Tab's
+     row carries its Host's chip, ADR 0003), resizable, with the Panel beneath them and the shared
+     context menu and confirm dialog mounted once.
      Runs to the top of the window; its header is the Tauri drag region (see
      docs/architecture.md "Window") and holds the Tabs / Manager switch (when the sidebar is wide
      enough for it beside the Tray) and the Tray, right of the traffic lights. While agents wait
@@ -15,14 +15,12 @@
     MAX_SIDEBAR_WIDTH,
     PANEL_MIN_SIDEBAR_WIDTH,
   } from "../layout.svelte";
-  import { hostState } from "../host/hosts.svelte";
   import { LOCAL_HOST } from "../host/ids";
   import Panel from "../panel/Panel.svelte";
   import Tray from "../tray/Tray.svelte";
   import ModeSwitch from "../manager/ModeSwitch.svelte";
   import WaitingStrip from "../manager/WaitingStrip.svelte";
   import GroupHeader from "./GroupHeader.svelte";
-  import HostHeader from "./HostHeader.svelte";
   import TabRow from "./TabRow.svelte";
   import ContextMenu from "./ContextMenu.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
@@ -37,7 +35,7 @@
     return key ? `${text} (${key})` : text;
   }
 
-  const localTabs = $derived(layout.groups.reduce((n, g) => n + g.tabIds.length, 0));
+  const tabCount = $derived(layout.groups.reduce((n, g) => n + g.tabIds.length, 0));
 
   /** Below this sidebar width the Tabs / Manager switch and the Tray do not both fit; the Hotkey and the waiting strip still reach Manager. */
   const MODE_SWITCH_MIN_WIDTH = 260;
@@ -76,47 +74,25 @@
     <WaitingStrip />
     {#if !layout.ready}
       <!-- Startup: loading the persisted layout and respawning Sessions. -->
+    {:else if tabCount === 0}
+      <div class="empty-state">
+        <p class="empty-title">No Tabs open</p>
+        <button type="button" class="new-tab-btn" onclick={() => void newTab({ host: LOCAL_HOST })}>
+          <PlusIcon size={11} />
+          New Tab
+        </button>
+        <p class="empty-hint">{hotkeyLabel("tab.new")}</p>
+      </div>
     {:else}
-      {#if localTabs === 0}
-        <div class="empty-state" class:compact={layout.sections.length > 0}>
-          <p class="empty-title">No Tabs open</p>
-          <button type="button" class="new-tab-btn" onclick={() => void newTab({ host: LOCAL_HOST })}>
-            <PlusIcon size={11} />
-            New Tab
-          </button>
-          <p class="empty-hint">{hotkeyLabel("tab.new")}</p>
-        </div>
-      {:else}
-        {#each layout.groups as group (group.id)}
-          <GroupHeader {group} />
-          {#if !group.collapsed}
-            {#each group.tabIds as tabId (tabId)}
-              {#if layout.tabs[tabId]}
-                <TabRow tab={layout.tabs[tabId]} />
-              {/if}
-            {/each}
-          {/if}
-        {/each}
-      {/if}
-
-      {#each layout.sections as section (section.host)}
-        {@const state = hostState(section.host)}
-        <div class="host-section" class:offline={!state || state.status !== "online"} role="group">
-          <HostHeader host={section.host} />
-          {#each section.groups as group (group.id)}
-            <GroupHeader {group} />
-            {#if !group.collapsed}
-              {#each group.tabIds as tabId (tabId)}
-                {#if layout.tabs[tabId]}
-                  <TabRow tab={layout.tabs[tabId]} />
-                {/if}
-              {/each}
+      {#each layout.groups as group (group.id)}
+        <GroupHeader {group} />
+        {#if !group.collapsed}
+          {#each group.tabIds as tabId (tabId)}
+            {#if layout.tabs[tabId]}
+              <TabRow tab={layout.tabs[tabId]} />
             {/if}
           {/each}
-          {#if section.groups.length === 0}
-            <p class="host-empty">{state?.status === "online" ? "No Groups" : "Not connected yet"}</p>
-          {/if}
-        </div>
+        {/if}
       {/each}
     {/if}
   </div>
@@ -198,16 +174,6 @@
     background: var(--scrollbar-thumb);
     border-radius: 4px;
   }
-  /* A Host that is not connected keeps its last snapshot, greyed. */
-  .host-section.offline > :global(:not(.host)) {
-    opacity: 0.45;
-  }
-  .host-empty {
-    margin: 2px 4px 0;
-    padding: 4px 8px 4px 20px;
-    font-size: 11.5px;
-    color: var(--text-tertiary);
-  }
   .footer {
     flex: none;
     display: flex;
@@ -253,9 +219,6 @@
     gap: 8px;
     padding: 48px 16px;
     text-align: center;
-  }
-  .empty-state.compact {
-    padding: 20px 16px 12px;
   }
   .empty-title {
     margin: 0;

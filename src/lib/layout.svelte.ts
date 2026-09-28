@@ -1,16 +1,19 @@
-// The layout as the webview sees it: a mirror of every Host's snapshot (Groups, Tabs, order,
-// each Host's active Tab: src-tauri/core/src/layout/), changed only through the Hosts' `tab_*`
-// / `group_*` commands, plus what is this client's own: the Tab in view, the sidebar width and
+// The layout as the webview sees it: a mirror of this Mac's layout (the local Host's snapshot:
+// Groups, Tabs, order, the active Tab: src-tauri/core/src/layout/), changed only through its
+// `tab_*` / `group_*` commands, plus what is this client's own: the sidebar width and
 // visibility, the Panel, the user's unread marks, the window's mode (Tabs or Manager) and
 // Manager's zoom. Those persist in the `sidebar` section of
-// settings.json (debounced ~500 ms), never in a Host's layout.json.
+// settings.json (debounced ~500 ms), never in layout.json.
 //
-// The local Host (this Mac's own, `LOCAL_HOST`) is read with `layout_get` and followed on the
-// `layout` event; its Groups are `layout.groups`. Each paired Host is a section
-// (`layout.sections`, in Settings order) fed by src/lib/host/hosts.svelte.ts from the Host's
-// `hello` and `layout` messages. Every Host's Tabs share `layout.tabs` (ids are random per
-// Host, so they never collide); a Tab knows its Host. See docs/architecture.md "Split of
-// responsibility", "Persistence" and "Hosts", ADR 0002, and CONTEXT.md.
+// One set of Groups (ADR 0003). A Tab in them is local (its Session is this Mac's) or linked:
+// it places a paired Host's Tab, whose Session, custom Title and cwd stay that Host's. Each
+// paired Host's snapshot (its `hello` and `layout` messages, from src/lib/host/hosts.svelte.ts)
+// is kept here only to fill in its linked Tabs and to keep the links in line with it: a Tab the
+// Host has and this Mac has not linked (made from a phone, or there before pairing) is linked
+// into a Group named after the Host and marked Unread; a link whose Tab is gone there goes. The
+// Host's own Groups are not shown. Moving a Tab between Groups is this Mac's alone; closing,
+// renaming and activating a linked Tab go to its Host. See docs/architecture.md "Hosts",
+// ADR 0003, and CONTEXT.md.
 //
 // OWNER: sidebar agent. Session facts (SessionInfo, title, Agent status) live in
 // src/lib/sessions.svelte.ts, which reads this module's Tabs to know what to update.
@@ -22,10 +25,12 @@ import {
   groupRename,
   groupSetCollapsed,
   layoutGet,
+  linksReconcile,
   onLayout,
   resetSessions,
   tabActivate,
   tabClose,
+  tabLink,
   tabMove,
   tabNew,
   tabRename,
@@ -36,7 +41,8 @@ import { localTransport, terminals, type SessionTransport } from "./terminal/man
 import type { Group as HostGroup, LayoutSnapshot, SessionId, Tab as HostTab } from "./types";
 import type { PanelViewId } from "./panel/views";
 import { isLocal, LOCAL_HOST, sessionKey, type HostId, type SessionKey } from "./host/ids";
-import { hostCommands, hostTransport } from "./host/hosts.svelte";
+import { hostCommands, hostName, hostState, hostTransport } from "./host/hosts.svelte";
+import { hostTabOrder, linksOutOfLine } from "./host/links";
 import {
   clampPanelHeight,
   clampWidth,
@@ -53,34 +59,28 @@ import {
 export type { ManagerZoom, PanelState, WindowMode };
 export { MAX_PANEL_HEIGHT, MAX_SIDEBAR_WIDTH, MIN_PANEL_HEIGHT, MIN_SIDEBAR_WIDTH } from "./sidebar/settings";
 
-/** A Tab as this client shows it: its Host's, plus which Host, and the user's unread mark. */
+/**
+ * A Tab as this client shows it. For a linked Tab, `sessionId`, `customTitle` and `lastCwd` are
+ * its Host's Tab's (null until that Host's snapshot is in).
+ */
 export interface Tab extends HostTab {
+  /** Where its Session runs: this Mac (`LOCAL_HOST`) for a local Tab, the link's Host otherwise. */
   host: HostId;
+  /** The Tab's id on its Host: its own for a local Tab, the link's for a linked one. */
+  hostTabId: string;
   /** Marked unread by the user; cleared when the user next goes to the Tab. */
   unread: boolean;
 }
 
-/** A Group as this client shows it: its Host's, plus which Host. */
-export interface Group extends HostGroup {
-  host: HostId;
-}
-
-/** A paired Host's part of the sidebar: its Groups, and which Tab the Host itself calls active. */
-export interface HostSection {
-  host: HostId;
-  groups: Group[];
-  /** The Host's own active Tab; the Tab in view (`layout.activeTabId`) is this client's. */
-  activeTabId: string | null;
-}
+/** A Group: this Mac's, holding local and linked Tabs alike. */
+export type Group = HostGroup;
 
 interface LayoutState {
-  /** The local Host's Groups, in sidebar order. */
+  /** This Mac's Groups, in sidebar order. */
   groups: Group[];
-  /** Each paired Host's section, in Settings order, whether it is connected or not. */
-  sections: HostSection[];
-  /** Every Host's Tabs, by id. */
+  /** Every Tab, local and linked, by this Mac's id. */
   tabs: Record<string, Tab>;
-  /** The Tab in view, on any Host: whose Terminal shows. */
+  /** The Tab in view: whose Terminal shows. */
   activeTabId: string | null;
   sidebarWidth: number;
   /** Cmd-B toggle. Not persisted: the sidebar is visible again on relaunch. */
@@ -101,7 +101,6 @@ const SIDEBAR_SECTION = "sidebar";
 
 export const layout = $state<LayoutState>({
   groups: [],
-  sections: [],
   tabs: {},
   activeTabId: null,
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
@@ -112,13 +111,57 @@ export const layout = $state<LayoutState>({
   ready: false,
 });
 
-/** Each Host's revision of the snapshot shown; an older one arriving late is ignored. */
-const revisions = new Map<HostId, number>();
+/** This Mac's layout as last shown. */
+let local: LayoutSnapshot | null = null;
+/** Each paired Host's layout as last heard, for its linked Tabs; kept while it is offline. */
+const hostLayouts = new Map<HostId, LayoutSnapshot>();
+/**
+ * Hosts with a `tab_new` from this Mac in flight, until their snapshot names the new Tab (its
+ * reply can come first): that Tab is not a stray, so their links wait.
+ */
+const creating = new Map<HostId, number>();
+/** How long a Host's links wait for its snapshot to name a Tab this Mac made there. */
+const CREATE_WAIT_MS = 5000;
+/** Waiting for a Host's snapshot to name a Tab: resolved by `applyHostSnapshot`. */
+const namedWaiters = new Map<HostId, { tabId: string; resolve: () => void }[]>();
+
+/** Resolves once `host`'s snapshot has Tab `tabId`, or after `CREATE_WAIT_MS`. */
+function whenHostNames(host: HostId, tabId: string | null): Promise<void> {
+  if (tabId === null || hostLayouts.get(host)?.tabs[tabId]) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, CREATE_WAIT_MS);
+    const list = namedWaiters.get(host) ?? [];
+    list.push({ tabId, resolve: () => (clearTimeout(timer), resolve()) });
+    namedWaiters.set(host, list);
+  });
+}
+/**
+ * Host Tab ids this Mac asked their Host to close, until its snapshot drops them: its reply can
+ * come before that snapshot, and a Tab unlinked here meanwhile must not come back as a stray.
+ */
+const closing = new Map<HostId, Set<string>>();
+
+function closingOn(host: HostId): Set<string> {
+  let ids = closing.get(host);
+  if (!ids) closing.set(host, (ids = new Set()));
+  return ids;
+}
+
+/** Ask `host` to close its Tab `hostTabId`. */
+function closeOnHost(host: HostId, hostTabId: string): Promise<void> {
+  closingOn(host).add(hostTabId);
+  return hostCommands(host)
+    .tabClose(hostTabId)
+    .catch((e) => {
+      closing.get(host)?.delete(hostTabId);
+      throw e;
+    });
+}
 
 /** Tab ids the user marked unread. Persisted with the sidebar settings. */
 const unreadMarks = new Set<string>();
-/** The Host each marked Tab was last seen on: a mark is only pruned once its Host's snapshot lacks the Tab. */
-const markHosts = new Map<string, HostId>();
+/** Marks put on Tabs this Mac's layout has not named yet (a stray just linked): not pruned. */
+const freshMarks = new Set<string>();
 
 /** SessionKey -> Tab id, kept in step with `layout.tabs` for O(1) lookups. */
 const sessionToTab = new Map<SessionKey, string>();
@@ -126,8 +169,8 @@ const sessionToTab = new Map<SessionKey, string>();
 /** Group id -> the Tab last active in it, so jumping to a Group lands where you left off. */
 const lastActiveInGroup = new Map<string, string>();
 
-/** A Tab this client made (`tab_new`) and wants in view once its Host's snapshot names it. */
-let pendingView: { host: HostId; tabId: string } | null = null;
+/** A Tab this client made or wants in view once the layout names it. */
+let pendingView: string | null = null;
 
 $effect.root(() => {
   $effect(() => {
@@ -140,24 +183,16 @@ export function tabIdForSession(key: SessionKey): string | null {
   return sessionToTab.get(key) ?? null;
 }
 
-/** The Groups of one Host, in its sidebar order. */
-export function groupsOf(host: HostId): Group[] {
-  if (isLocal(host)) return layout.groups;
-  return layout.sections.find((s) => s.host === host)?.groups ?? [];
-}
-
-function sectionOf(host: HostId): HostSection | null {
-  return layout.sections.find((s) => s.host === host) ?? null;
-}
-
 function findGroup(groupId: string): Group | null {
-  for (const g of layout.groups) if (g.id === groupId) return g;
-  for (const s of layout.sections) for (const g of s.groups) if (g.id === groupId) return g;
-  return null;
+  return layout.groups.find((g) => g.id === groupId) ?? null;
 }
 
 function transportFor(host: HostId): SessionTransport {
   return isLocal(host) ? localTransport : hostTransport(host);
+}
+
+function hostOnline(host: HostId): boolean {
+  return hostState(host)?.status === "online";
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -165,90 +200,128 @@ function transportFor(host: HostId): SessionTransport {
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Take a Host's snapshot: replace its Groups, Tabs and active Tab, keep this client's marks, and
- * give every Tab's Session a Terminal. `initial` accepts the snapshot at the revision shown (the
- * first read); `fresh` accepts any revision (a paired Host's `hello`: it may have restarted);
- * otherwise events only move forward.
- *
- * The Tab in view follows the Host's active Tab only while the view is on that Host (the Host's
- * word wins there: after a `tab_new` or a close, it picks what shows next), or while nothing is
- * in view yet, or when the snapshot brings the Tab this client just made. Another Host changing
- * its own active Tab never pulls the view away.
+ * Build the Tabs shown from this Mac's layout and each Host's: a linked Tab takes its Session,
+ * Title and cwd from its Host's Tab. Every Tab's Session gets a Terminal. Unread marks for Tabs
+ * that are gone are dropped (and saved with the next change).
  */
-export function applyHostSnapshot(host: HostId, snap: LayoutSnapshot, opts: { initial?: boolean; fresh?: boolean } = {}): void {
-  const shown = revisions.get(host);
-  if (shown !== undefined && !opts.fresh && (opts.initial ? snap.revision < shown : snap.revision <= shown)) return;
-  revisions.set(host, snap.revision);
-
-  const viewTab = layout.activeTabId ? (layout.tabs[layout.activeTabId] ?? null) : null;
-  const viewHost = viewTab?.host ?? null;
-
-  // This Host's Tabs, replaced whole; other Hosts' stay.
+function rebuild(): void {
+  if (!local) return;
   const tabs: Record<string, Tab> = {};
-  for (const [id, t] of Object.entries(layout.tabs)) if (t.host !== host) tabs[id] = t;
-  for (const key of sessionToTab.keys()) if (key.startsWith(`${host}/`)) sessionToTab.delete(key);
-  for (const id of Object.keys(snap.tabs)) {
-    const t = snap.tabs[id];
-    tabs[id] = { ...t, host, unread: unreadMarks.has(id) };
-    if (unreadMarks.has(id)) markHosts.set(id, host);
-    if (t.sessionId !== null) {
-      const key = sessionKey(host, t.sessionId);
-      sessionToTab.set(key, id);
+  sessionToTab.clear();
+  for (const t of Object.values(local.tabs)) {
+    const host = t.link?.hostId ?? LOCAL_HOST;
+    const there = t.link ? (hostLayouts.get(host)?.tabs[t.link.tabId] ?? null) : t;
+    const tab: Tab = {
+      ...t,
+      sessionId: there?.sessionId ?? null,
+      customTitle: there?.customTitle ?? null,
+      lastCwd: there?.lastCwd ?? null,
+      host,
+      hostTabId: t.link?.tabId ?? t.id,
+      unread: unreadMarks.has(t.id),
+    };
+    tabs[t.id] = tab;
+    freshMarks.delete(t.id);
+    if (tab.sessionId !== null) {
+      const key = sessionKey(host, tab.sessionId);
+      sessionToTab.set(key, t.id);
       terminals.attach(key, transportFor(host));
     }
   }
-  // Marks for Tabs that are gone from their Host are dropped (and saved with the next change).
   let pruned = false;
   for (const id of unreadMarks) {
-    if (markHosts.get(id) === host && !tabs[id]) {
+    if (!tabs[id] && !freshMarks.has(id)) {
       unreadMarks.delete(id);
-      markHosts.delete(id);
       pruned = true;
     }
   }
-  const groups: Group[] = snap.groups.map((g) => ({ ...g, tabIds: [...g.tabIds], host }));
-  if (isLocal(host)) {
-    layout.groups = groups;
-  } else {
-    const section = sectionOf(host);
-    if (section) {
-      section.groups = groups;
-      section.activeTabId = snap.activeTabId;
-    } else {
-      layout.sections.push({ host, groups, activeTabId: snap.activeTabId });
-    }
-  }
+  layout.groups = local.groups.map((g) => ({ ...g, tabIds: [...g.tabIds] }));
   layout.tabs = tabs;
-
-  if (pendingView?.host === host && tabs[pendingView.tabId]) {
-    layout.activeTabId = pendingView.tabId;
-    pendingView = null;
-  } else if (viewHost === host || (viewTab === null && isLocal(host))) {
-    layout.activeTabId = snap.activeTabId && tabs[snap.activeTabId] ? snap.activeTabId : null;
-  }
   if (pruned) scheduleSave();
 }
 
-/** A paired Host's section, shown (empty, until its first snapshot) as soon as it is paired. */
-export function ensureHostSection(host: HostId): void {
-  if (isLocal(host) || sectionOf(host)) return;
-  layout.sections.push({ host, groups: [], activeTabId: null });
+/**
+ * Take this Mac's snapshot. `initial` accepts it at the revision shown (the first read);
+ * otherwise events only move forward. The Tab in view follows the layout's active Tab, which
+ * going to a Tab keeps in step, unless this client is waiting to show a Tab it just made.
+ */
+function applyLocalSnapshot(snap: LayoutSnapshot, opts: { initial?: boolean } = {}): void {
+  if (local && (opts.initial ? snap.revision < local.revision : snap.revision <= local.revision)) return;
+  local = snap;
+  rebuild();
+  if (pendingView !== null) {
+    if (layout.tabs[pendingView]) {
+      layout.activeTabId = pendingView;
+      pendingView = null;
+    }
+  } else {
+    layout.activeTabId = snap.activeTabId && layout.tabs[snap.activeTabId] ? snap.activeTabId : null;
+  }
+  if (layout.ready) for (const host of hostLayouts.keys()) void reconcile(host);
 }
 
-/** A paired Host was removed: its section and Tabs go; a view on it falls back to the local Host's active Tab. */
+/**
+ * Take a paired Host's snapshot: its linked Tabs show what it says, and its links follow its
+ * Tabs. `fresh` accepts any revision (a `hello`: the Host may have restarted); otherwise events
+ * only move forward. It never moves the view.
+ */
+export function applyHostSnapshot(host: HostId, snap: LayoutSnapshot, opts: { fresh?: boolean } = {}): void {
+  const shown = hostLayouts.get(host);
+  if (shown && !opts.fresh && snap.revision <= shown.revision) return;
+  hostLayouts.set(host, snap);
+  const ids = closing.get(host);
+  if (ids) for (const id of ids) if (!snap.tabs[id]) ids.delete(id);
+  const waiters = namedWaiters.get(host);
+  if (waiters) {
+    for (const w of waiters) if (snap.tabs[w.tabId]) w.resolve();
+    namedWaiters.set(host, waiters.filter((w) => !snap.tabs[w.tabId]));
+  }
+  rebuild();
+  void reconcile(host);
+}
+
+/**
+ * Bring `host`'s links in line with the Tabs it has, when they differ: its Tabs with no link are
+ * linked into a Group named after it and marked Unread; links whose Tab is gone go. Waits while
+ * this Mac is making a Tab there (that Tab is linked where it was asked for, then this runs).
+ */
+async function reconcile(host: HostId): Promise<void> {
+  const snap = hostLayouts.get(host);
+  if (!layout.ready || !local || !snap || (creating.get(host) ?? 0) > 0) return;
+  const there = hostTabOrder(snap, closing.get(host));
+  if (!linksOutOfLine(local, host, there)) return;
+  try {
+    for (const id of await linksReconcile(host, there, hostName(host))) markUnread(id);
+  } catch (e) {
+    report("linking a Host's Tabs")(e);
+  }
+}
+
+function markUnread(tabId: string): void {
+  unreadMarks.add(tabId);
+  const tab = layout.tabs[tabId];
+  if (tab) tab.unread = true;
+  else freshMarks.add(tabId);
+  scheduleSave();
+}
+
+/** A paired Host was removed: its linked Tabs go (a view on one falls to its neighbour). */
 export function dropHost(host: HostId): void {
   if (isLocal(host)) return;
-  revisions.delete(host);
-  const viewTab = layout.activeTabId ? (layout.tabs[layout.activeTabId] ?? null) : null;
-  const tabs: Record<string, Tab> = {};
-  for (const [id, t] of Object.entries(layout.tabs)) if (t.host !== host) tabs[id] = t;
-  for (const key of sessionToTab.keys()) if (key.startsWith(`${host}/`)) sessionToTab.delete(key);
-  layout.tabs = tabs;
-  layout.sections = layout.sections.filter((s) => s.host !== host);
-  if (viewTab?.host === host) {
-    const local = layout.groups.flatMap((g) => g.tabIds);
-    layout.activeTabId = local[0] ?? null;
-  }
+  hostLayouts.delete(host);
+  creating.delete(host);
+  for (const w of namedWaiters.get(host) ?? []) w.resolve();
+  namedWaiters.delete(host);
+  closing.delete(host);
+  rebuild();
+  void linksReconcile(host, [], "").catch(report("dropping a Host's Tabs"));
+}
+
+/** The paired Hosts are read: links to a Host that is not among them any more go. */
+export function dropUnknownHosts(known: HostId[]): void {
+  const keep = new Set(known);
+  const stale = new Set(Object.values(layout.tabs).flatMap((t) => (t.link && !keep.has(t.link.hostId) ? [t.link.hostId] : [])));
+  for (const host of stale) dropHost(host);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -278,8 +351,9 @@ function serializeSidebar(): SidebarSettings {
 
 /**
  * Startup: replace what a previous page left attached, read the local Host's layout and follow
- * it, and read this client's sidebar settings. The Host has already spawned a Session per Tab.
- * Paired Hosts join afterwards (src/lib/host/hosts.svelte.ts `initHosts`).
+ * it, and read this client's sidebar settings. The Host has already spawned a Session per local
+ * Tab. Paired Hosts join afterwards (src/lib/host/hosts.svelte.ts `initHosts`) and fill in the
+ * linked Tabs.
  */
 export async function initLayout(): Promise<void> {
   await resetSessions().catch(() => {});
@@ -292,9 +366,9 @@ export async function initLayout(): Promise<void> {
 
   // Listen before the first read: nothing between the two is missed, and an older snapshot
   // arriving after a newer one is ignored by its revision.
-  await onLayout((snap) => applyHostSnapshot(LOCAL_HOST, snap));
+  await onLayout((snap) => applyLocalSnapshot(snap));
   const first = await layoutGet();
-  applyHostSnapshot(LOCAL_HOST, first, { initial: true });
+  applyLocalSnapshot(first, { initial: true });
   layout.ready = true;
 }
 
@@ -312,17 +386,23 @@ export function activeHost(): HostId {
 }
 
 export function groupOf(tab: Tab): Group | null {
-  return groupsOf(tab.host).find((g) => g.id === tab.groupId) ?? null;
+  return findGroup(tab.groupId);
 }
 
-/** Tab ids in top-to-bottom sidebar order, every Host, including collapsed Groups. */
+/** Tab ids in top-to-bottom sidebar order, including collapsed Groups. */
 export function orderedTabIds(): string[] {
-  return [...layout.groups, ...layout.sections.flatMap((s) => s.groups)].flatMap((g) => g.tabIds);
+  return layout.groups.flatMap((g) => g.tabIds);
+}
+
+/** A paired Host's own Groups, as it last said (Handoff lets the user pick one there). */
+export function hostGroups(host: HostId): HostGroup[] {
+  return hostLayouts.get(host)?.groups ?? [];
 }
 
 // ---------------------------------------------------------------------------------------------
-// Actions on a Host's layout: each is one command to that Host; the snapshot it emits updates
-// the mirror. The local Host's go over IPC, a paired Host's over its socket.
+// Actions. This Mac's layout changes by its commands (over IPC); its snapshot updates the
+// mirror. What only a linked Tab's Host can do (make, close, rename, activate its Tab) goes to
+// that Host over its socket (src/lib/host/hosts.svelte.ts `hostCommands`).
 // ---------------------------------------------------------------------------------------------
 
 /** The layout commands, as every Host answers them (the IPC table, one to one with the Host protocol's). */
@@ -339,63 +419,118 @@ export interface LayoutCommands {
   groupSetCollapsed(groupId: string, collapsed: boolean): Promise<void>;
 }
 
-const localCommands: LayoutCommands = {
-  tabNew,
-  tabClose,
-  tabRename,
-  tabMove,
-  tabActivate,
-  groupNew,
-  groupRename,
-  groupMove,
-  groupDelete,
-  groupSetCollapsed,
-};
-
-function commandsFor(host: HostId): LayoutCommands {
-  return isLocal(host) ? localCommands : hostCommands(host);
-}
-
 function report(what: string): (e: unknown) => void {
   return (e) => console.error(`layout: ${what} failed`, e);
 }
 
+export interface NewTabOptions {
+  /** Where its Session runs: default the Host of `after`, else of the Tab in view (a `groupId` alone: this Mac). */
+  host?: HostId;
+  /** This Mac's Group to put it in, at the end (unless `after` is given). */
+  groupId?: string;
+  /** The Tab to put it right after (default: the Tab in view, unless `groupId` is given). */
+  after?: string;
+  /** Where the Session starts: default the cwd of the Tab it goes after, when on the same Host. */
+  cwd?: string | null;
+  /** A paired Host's own Group for the Tab there (Handoff's choice); default its active Tab's. */
+  hostGroupId?: string;
+  /** false: leave the view where it is (Handoff moving a Tab that was not in view). */
+  show?: boolean;
+}
+
 /**
- * New Tab, on `host` (default: the Group's Host, else the Host of the Tab in view) in the active
- * Tab's Group there, right after it, spawned at that Tab's cwd (the Host's rule; `groupId` puts
- * it at the end of that Group instead). Shown as soon as its Host names it, unless `show` is
- * false (Handoff moving a Tab that was not in view). Resolves to its id.
+ * New Tab: on the Host of the Tab in view (so ⌘T next to a Tab on a paired Host makes one
+ * there, and next to a local Tab one here), right after it in its Group, at its cwd; `groupId`
+ * alone puts a local Tab at the end of that Group. Shown as soon as the layout names it, unless
+ * `show` is false. Resolves to its id in this Mac's layout.
  */
-export async function newTab(opts?: { cwd?: string | null; groupId?: string; host?: HostId; show?: boolean }): Promise<string> {
-  const host = opts?.host ?? (opts?.groupId ? (findGroup(opts.groupId)?.host ?? activeHost()) : activeHost());
-  // Not shown, while the view is on a Tab of the same Host: the Host makes its new Tab active
-  // there, and its snapshot would pull the view along; keep the view, and give the Host its
-  // active Tab back.
-  const view = layout.activeTabId ? (layout.tabs[layout.activeTabId] ?? null) : null;
-  const keep = opts?.show === false && view?.host === host ? view.id : null;
-  if (keep) pendingView = { host, tabId: keep };
-  const tab = await commandsFor(host).tabNew({ cwd: opts?.cwd, groupId: opts?.groupId, ...terminals.grid() });
-  if (opts?.show === false) {
-    if (keep) void commandsFor(host).tabActivate(keep).catch(report("going back to a Tab"));
+export async function newTab(opts: NewTabOptions = {}): Promise<string> {
+  const anchor = opts.after ? (layout.tabs[opts.after] ?? null) : opts.groupId ? null : activeTab();
+  const host = opts.host ?? (anchor?.host ?? LOCAL_HOST);
+  return isLocal(host) ? newLocalTab(opts, anchor) : newTabOnHost(host, opts, anchor);
+}
+
+async function newLocalTab(opts: NewTabOptions, anchor: Tab | null): Promise<string> {
+  // Not shown: this Mac makes its new Tab active, and its snapshot would pull the view along;
+  // keep the view, and give the layout its active Tab back.
+  const keep = opts.show === false ? layout.activeTabId : null;
+  if (keep) pendingView = keep;
+  const tab = await tabNew({
+    cwd: opts.cwd ?? (anchor && isLocal(anchor.host) ? undefined : null),
+    groupId: opts.groupId ?? anchor?.groupId,
+    afterTabId: anchor?.id,
+    ...terminals.grid(),
+  });
+  if (opts.show === false) {
+    if (keep) void tabActivate(keep).catch(report("going back to a Tab"));
     return tab.id;
   }
   if (layout.tabs[tab.id]) activateTab(tab.id);
-  else pendingView = { host, tabId: tab.id };
+  else pendingView = tab.id;
   return tab.id;
 }
 
-/** Close a Tab: its Host takes it out at once and kills its Session. */
+/**
+ * A Tab on paired Host `host`: made there (after the anchor's Tab when that is on the same Host,
+ * at its cwd), then linked here after the anchor. Its links wait meanwhile, so the new Tab is
+ * never taken for a stray.
+ */
+async function newTabOnHost(host: HostId, opts: NewTabOptions, anchor: Tab | null): Promise<string> {
+  const sameHost = anchor?.host === host ? anchor : null;
+  creating.set(host, (creating.get(host) ?? 0) + 1);
+  let madeId: string | null = null;
+  let linked: HostTab;
+  try {
+    const made = await hostCommands(host).tabNew({
+      groupId: opts.hostGroupId,
+      afterTabId: opts.hostGroupId ? undefined : sameHost?.hostTabId,
+      cwd: opts.cwd ?? sameHost?.lastCwd ?? undefined,
+      ...terminals.grid(),
+    });
+    madeId = made.id;
+    linked = await tabLink({ hostId: host, tabId: made.id }, opts.groupId ?? anchor?.groupId ?? null, anchor?.id ?? null);
+  } finally {
+    void whenHostNames(host, madeId).then(() => {
+      creating.set(host, (creating.get(host) ?? 1) - 1);
+      void reconcile(host);
+    });
+  }
+  if (opts.show !== false) {
+    if (layout.tabs[linked.id]) activateTab(linked.id);
+    else {
+      // The Host made it its active Tab already; this Mac's layout follows.
+      pendingView = linked.id;
+      void tabActivate(linked.id).catch(report("going to a Tab"));
+    }
+  }
+  return linked.id;
+}
+
+/**
+ * Close a Tab: a local one here (its Session is killed), a linked one on its Host, then its link
+ * (the Host's snapshot would drop it anyway). A Host that answers but no longer has the Tab gets
+ * its link dropped too. The caller checks the Host is connected (closeTabFlow.ts).
+ */
 export function closeTab(tabId: string): void {
   const tab = layout.tabs[tabId];
   if (!tab) return;
-  void commandsFor(tab.host).tabClose(tabId).catch(report("closing a Tab"));
+  if (isLocal(tab.host)) {
+    void tabClose(tabId).catch(report("closing a Tab"));
+    return;
+  }
+  const unlink = () => void tabClose(tabId).catch(() => {}); // gone already: the Host's snapshot won
+  void closeOnHost(tab.host, tab.hostTabId).then(unlink, (e) => {
+    if (hostOnline(tab.host)) unlink();
+    else report("closing a Tab")(e);
+  });
 }
 
-/** Rename a Tab; an empty title clears the rename and reverts to the automatic Title. */
+/** Rename a Tab; an empty title clears the rename and reverts to the automatic Title. A linked Tab's Title is its Host's. */
 export function renameTab(tabId: string, title: string): void {
   const tab = layout.tabs[tabId];
   if (!tab) return;
-  void commandsFor(tab.host).tabRename(tabId, title).catch(report("renaming a Tab"));
+  const done = isLocal(tab.host) ? tabRename(tabId, title) : hostCommands(tab.host).tabRename(tab.hostTabId, title);
+  void done.catch(report("renaming a Tab"));
 }
 
 /** Mark or unmark a Tab as unread. The mark stays until the user next goes to the Tab. */
@@ -403,34 +538,29 @@ export function setTabUnread(tabId: string, unread: boolean): void {
   const tab = layout.tabs[tabId];
   if (!tab || tab.unread === unread) return;
   tab.unread = unread;
-  if (unread) {
-    unreadMarks.add(tabId);
-    markHosts.set(tabId, tab.host);
-  } else {
-    unreadMarks.delete(tabId);
-    markHosts.delete(tabId);
-  }
+  if (unread) unreadMarks.add(tabId);
+  else unreadMarks.delete(tabId);
   scheduleSave();
 }
 
 /**
- * Go to a Tab, clearing its unread mark. Shown at once, ahead of the Host's snapshot, so the
- * Terminal switches without a round trip; the Tab's Host is told, so its own active Tab (what
- * `tab_new` there goes next to) follows. Not used on relaunch, so a mark put on the Tab in view
- * survives a restart.
+ * Go to a Tab, clearing its unread mark. Shown at once, ahead of the snapshot, so the Terminal
+ * switches without a round trip. This Mac's layout is told (what a local `tab_new` goes next
+ * to), and for a linked Tab its Host too, so its own active Tab follows. Not used on relaunch,
+ * so a mark put on the Tab in view survives a restart.
  */
 export function activateTab(tabId: string): void {
   const tab = layout.tabs[tabId];
   if (!tab || layout.activeTabId === tabId) return;
   layout.activeTabId = tabId;
   setTabUnread(tabId, false);
-  void commandsFor(tab.host).tabActivate(tabId).catch(report("going to a Tab"));
+  void tabActivate(tabId).catch(report("going to a Tab"));
+  if (!isLocal(tab.host) && hostOnline(tab.host)) void hostCommands(tab.host).tabActivate(tab.hostTabId).catch(() => {});
 }
 
 /**
- * Go to the local Host's Group at `index` (0-based, sidebar order): activate the Tab last active
- * in it, else its first Tab, expanding the Group so the active Tab shows. A no-op for an empty
- * Group. Go-to-Group numbers count the local Host's Groups only (docs/architecture.md "Hosts").
+ * Go to the Group at `index` (0-based, sidebar order): activate the Tab last active in it, else
+ * its first Tab, expanding the Group so the active Tab shows. A no-op for an empty Group.
  */
 export function jumpToGroup(index: number): void {
   const group = layout.groups[index];
@@ -440,23 +570,23 @@ export function jumpToGroup(index: number): void {
   activateTab(remembered && group.tabIds.includes(remembered) ? remembered : group.tabIds[0]);
 }
 
-/** A new Group at the end of `host`'s (default: the Host of the Tab in view); resolves to its id. */
-export async function newGroup(name?: string, host?: HostId): Promise<string> {
-  const group = await commandsFor(host ?? activeHost()).groupNew(name);
+/** A new Group at the end; resolves to its id. */
+export async function newGroup(name?: string): Promise<string> {
+  const group = await groupNew(name);
   return group.id;
 }
 
 export function renameGroup(groupId: string, name: string): void {
   const group = findGroup(groupId);
   if (!group || name.trim() === "") return; // Groups have no automatic name to fall back to.
-  void commandsFor(group.host).groupRename(groupId, name).catch(report("renaming a Group"));
+  void groupRename(groupId, name).catch(report("renaming a Group"));
 }
 
 export function setGroupCollapsed(groupId: string, collapsed: boolean): void {
   const group = findGroup(groupId);
   if (!group || group.collapsed === collapsed) return;
   group.collapsed = collapsed; // shown at once; the snapshot agrees
-  void commandsFor(group.host).groupSetCollapsed(groupId, collapsed).catch(report("collapsing a Group"));
+  void groupSetCollapsed(groupId, collapsed).catch(report("collapsing a Group"));
 }
 
 export function toggleGroupCollapsed(groupId: string): void {
@@ -464,42 +594,42 @@ export function toggleGroupCollapsed(groupId: string): void {
   if (group) setGroupCollapsed(groupId, !group.collapsed);
 }
 
-/** Delete a Group and close its Tabs. Never a Host's last Group (the caller disables the affordance too). */
-export function deleteGroup(groupId: string): void {
+/**
+ * Delete a Group and close its Tabs: its linked Tabs on their Hosts first, then the Group here.
+ * Never the last Group (the caller disables the affordance too). A linked Tab whose Host is not
+ * connected only loses its link, and comes back into the Host's Group when the Host does.
+ */
+export async function deleteGroup(groupId: string): Promise<void> {
   const group = findGroup(groupId);
-  if (!group || groupsOf(group.host).length <= 1) return;
-  void commandsFor(group.host).groupDelete(groupId).catch(report("deleting a Group"));
+  if (!group || layout.groups.length <= 1) return;
+  const closes = group.tabIds.flatMap((id) => {
+    const t = layout.tabs[id];
+    return t && !isLocal(t.host) ? [closeOnHost(t.host, t.hostTabId)] : [];
+  });
+  await Promise.allSettled(closes);
+  await groupDelete(groupId).catch(report("deleting a Group"));
 }
 
-/** Peel a Tab out into a brand new Group of its own, on its Host (context menu: "New Group from Tab"). */
+/** Peel a Tab out into a brand new Group of its own (context menu: "New Group from Tab"). */
 export async function newGroupFromTab(tabId: string, name?: string): Promise<string | null> {
-  const tab = layout.tabs[tabId];
-  if (!tab) return null;
-  const group = await commandsFor(tab.host).groupNew(name, tabId);
+  if (!layout.tabs[tabId]) return null;
+  const group = await groupNew(name, tabId);
   return group.id;
 }
 
 /**
- * Move a Tab within or across Groups of its Host, inserting at `targetIndex` (default: end of
- * Group). A Session cannot change machines, so a Group on another Host is refused (Handoff, #30,
- * is the real thing).
+ * Move a Tab within or across Groups, inserting at `targetIndex` (default: end of Group). Local
+ * and linked Tabs alike: a move is this Mac's alone and never moves a Session (Handoff does).
  */
 export function moveTab(tabId: string, targetGroupId: string, targetIndex?: number): void {
-  const tab = layout.tabs[tabId];
-  const target = findGroup(targetGroupId);
-  if (!tab || !target) return;
-  if (target.host !== tab.host) {
-    console.warn("layout: a Tab cannot move to another Host's Group");
-    return;
-  }
-  void commandsFor(tab.host).tabMove(tabId, targetGroupId, targetIndex).catch(report("moving a Tab"));
+  if (!layout.tabs[tabId] || !findGroup(targetGroupId)) return;
+  void tabMove(tabId, targetGroupId, targetIndex).catch(report("moving a Tab"));
 }
 
-/** Reorder a Host's Groups, moving `groupId` to `targetIndex` among them. */
+/** Reorder the Groups, moving `groupId` to `targetIndex` among them. */
 export function moveGroup(groupId: string, targetIndex: number): void {
-  const group = findGroup(groupId);
-  if (!group) return;
-  void commandsFor(group.host).groupMove(groupId, Math.max(0, targetIndex)).catch(report("moving a Group"));
+  if (!findGroup(groupId)) return;
+  void groupMove(groupId, Math.max(0, targetIndex)).catch(report("moving a Group"));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -549,12 +679,12 @@ export function setManagerZoom(zoom: ManagerZoom): void {
   scheduleSave();
 }
 
-/** The Session key of a Tab, or null while it has no Session. */
+/** The Session key of a Tab, or null while it has none. */
 export function tabSessionKey(tab: Tab | null): SessionKey | null {
   return tab && tab.sessionId !== null ? sessionKey(tab.host, tab.sessionId) : null;
 }
 
-/** The local Session id of a Tab, or null for a paired Host's Tab or one without a Session. */
+/** The local Session id of a Tab, or null for a linked Tab or one without a Session. */
 export function localSessionId(tab: Tab | null): SessionId | null {
   return tab && isLocal(tab.host) ? tab.sessionId : null;
 }
