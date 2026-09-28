@@ -25,7 +25,7 @@ use crate::agents::Agents;
 use crate::host::{Assets, Host};
 use crate::layout::{Layout, Update};
 use crate::model::{
-    ActivitySnapshot, HostInfo, Pairing, RemoteDevice, RemoteSnapshot, SessionId,
+    ActivitySnapshot, HostInfo, LinkedHost, Pairing, RemoteDevice, RemoteSnapshot, SessionId,
     TailscaleState, EVENT_REMOTE,
 };
 use crate::session::SessionManager;
@@ -60,6 +60,8 @@ pub(crate) enum HubMsg {
     Activity(Arc<serde_json::Value>),
     /// An agent did something (`agents/`): one `AgentEvent`.
     AgentEvent(Arc<serde_json::Value>),
+    /// The Hosts this one's linked Tabs point at changed (`Remote::set_hosts`).
+    Hosts,
     /// Remote is turning off: every connection closes.
     Shutdown,
 }
@@ -82,6 +84,9 @@ pub(crate) struct Inner {
     tailscale: Mutex<TailscaleState>,
     /// `https://<dns name>/m` while Serve publishes the server.
     url: Mutex<Option<String>>,
+    /// The Hosts this one's linked Tabs point at, as the Mac app's webview last said; none on
+    /// the daemon, which links no Tabs.
+    hosts: Mutex<Vec<LinkedHost>>,
 }
 
 /// Why a phone's pairing request was refused.
@@ -135,6 +140,7 @@ impl Remote {
                 error: Mutex::new(None),
                 tailscale: Mutex::new(TailscaleState::default()),
                 url: Mutex::new(None),
+                hosts: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -203,6 +209,20 @@ impl Remote {
         if removed {
             self.inner.changed();
         }
+    }
+
+    /// The Hosts this one's linked Tabs point at (the Mac app's webview holds the pairings and
+    /// says so at launch and on every change). A client that shows linked Tabs is told, so it
+    /// can reach those Hosts itself, with a pairing of its own.
+    pub fn set_hosts(&self, hosts: Vec<LinkedHost>) {
+        {
+            let mut held = lock(&self.inner.hosts);
+            if *held == hosts {
+                return;
+            }
+            *held = hosts;
+        }
+        let _ = self.inner.hub.send(HubMsg::Hosts);
     }
 
     /// An Activity sample (while the Host samples: the Mac's Panel, Memory Guard): each
@@ -374,6 +394,19 @@ impl Inner {
         }
     }
 
+    /// The Hosts this one's linked Tabs point at, for `hello` and `hosts`.
+    pub(crate) fn hosts(&self) -> Vec<LinkedHost> {
+        lock(&self.hosts).clone()
+    }
+
+    /// Whether a page at `origin` may call the API routes from a browser: a page another Host
+    /// on this tailnet serves (the phone's page, installed from the Mac, pairing with this
+    /// Host). `https://<machine>.<this tailnet>.ts.net`, with this Host's own tailnet.
+    pub(crate) fn tailnet_origin(&self, origin: &str) -> bool {
+        let ours = lock(&self.tailscale).dns_name.clone();
+        ours.is_some_and(|ours| same_tailnet(&ours, origin))
+    }
+
     /// Where uploads go: `<data dir>/uploads`, created.
     pub(crate) fn upload_dir(&self) -> Result<PathBuf, String> {
         let dir = self.host.paths.data_dir()?.join(UPLOAD_DIR);
@@ -485,6 +518,22 @@ fn hostname() -> String {
     }
 }
 
+/// Whether `origin` is `https://<machine>.<tailnet>`, a machine on the tailnet of `dns_name`
+/// (`<this machine>.<tailnet>`, as `bens-mac.tail1234.ts.net`): one label, then the same tailnet.
+fn same_tailnet(dns_name: &str, origin: &str) -> bool {
+    let Some((_, tailnet)) = dns_name.trim_end_matches('.').split_once('.') else {
+        return false;
+    };
+    let Some(host) = origin.strip_prefix("https://") else {
+        return false;
+    };
+    let Some((machine, rest)) = host.split_once('.') else {
+        return false;
+    };
+    let label = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    tailnet.contains('.') && label(machine) && rest.eq_ignore_ascii_case(tailnet)
+}
+
 pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -494,4 +543,28 @@ pub(crate) fn now_ms() -> u64 {
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_page_from_another_machine_on_this_tailnet_may_call_the_api() {
+        let ours = "bennet.tail1234.ts.net";
+        assert!(same_tailnet(ours, "https://bens-mac.tail1234.ts.net"));
+        assert!(same_tailnet("bennet.tail1234.ts.net.", "https://bens-mac.tail1234.ts.net"));
+        assert!(same_tailnet(ours, "https://bennet.tail1234.ts.net"), "this Host's own page");
+        assert!(same_tailnet(ours, "https://Bens-Mac.Tail1234.TS.net"));
+
+        assert!(!same_tailnet(ours, "http://bens-mac.tail1234.ts.net"), "not https");
+        assert!(!same_tailnet(ours, "https://bens-mac.tail9999.ts.net"), "another tailnet");
+        assert!(!same_tailnet(ours, "https://tail1234.ts.net"), "no machine");
+        assert!(!same_tailnet(ours, "https://a.b.tail1234.ts.net"), "two labels");
+        assert!(!same_tailnet(ours, "https://evil.example/.tail1234.ts.net"));
+        assert!(!same_tailnet(ours, "https://bens-mac.tail1234.ts.net:8443"), "a port");
+        assert!(!same_tailnet(ours, "https://bens-mac.tail1234.ts.net.evil.example"));
+        assert!(!same_tailnet("localhost", "https://bens-mac.localhost"), "no tailnet to match");
+        assert!(!same_tailnet("bennet.net", "https://mac.net"), "a bare suffix is no tailnet");
+    }
 }

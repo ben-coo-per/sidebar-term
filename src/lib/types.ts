@@ -110,6 +110,20 @@ export interface HostInfo {
   home: string | null;
 }
 
+/**
+ * A Host another Host's linked Tabs point at, as that Host tells a client that shows them
+ * (`hello.hosts` in the Host protocol): where the client reaches it itself. No token: the client
+ * pairs with it on its own.
+ */
+export interface LinkedHost {
+  /** What a linked Tab's `link.hostId` names. */
+  id: string;
+  /** The Host's Remote server: `https://dell.tail1234.ts.net`. */
+  url: string;
+  /** The Host's name as last heard; null before its first `hello`. */
+  name: string | null;
+}
+
 export interface SessionExit {
   sessionId: SessionId;
   code: number | null;

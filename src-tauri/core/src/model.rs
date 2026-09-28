@@ -501,6 +501,20 @@ pub struct HostInfo {
     pub home: Option<String>,
 }
 
+/// A Host this one's linked Tabs point at, as this Host's clients are told of it (`hello.hosts`
+/// in the Host protocol): where a client reaches it itself. The Mac app's webview, which holds
+/// the pairings, says which there are (`Remote::set_hosts`); the token it holds is never here.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedHost {
+    /// What a linked Tab's `link.hostId` names.
+    pub id: String,
+    /// The Host's Remote server: `https://dell.tail1234.ts.net`.
+    pub url: String,
+    /// The Host's name as last heard; `None` before its first `hello`.
+    pub name: Option<String>,
+}
+
 /// What Tailscale says about this Mac, read from its CLI (`remote/tailscale.rs`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

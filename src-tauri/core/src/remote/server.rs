@@ -19,9 +19,12 @@
 //!   places them under its own Claude config dir, `projects/<key of cwd>/`, and never
 //!   anywhere else (`handoff::place`); `{path}` is the transcript's path there.
 //!   All three answer CORS preflights for the Mac app's webview, whose page is another origin
-//!   (`tauri://localhost`; `http://localhost:1420` in dev); no other origin is allowed.
+//!   (`tauri://localhost`; `http://localhost:1420` in dev), and for a page served by another
+//!   Host on this Host's tailnet (`https://<machine>.<tailnet>.ts.net`: the phone's page,
+//!   installed from the Mac, pairing with this Host too); no other origin is allowed.
 //! - `GET /ws`: a client's connection. The first text frame must be `{"t":"auth","token"}`
-//!   within five seconds. Then, from the client: `attach` / `detach` `{sessionId}`, `input`
+//!   within five seconds; `"links": true` on it asks for this Host's linked Tabs too (the
+//!   phone, which reaches their Hosts itself). Then, from the client: `attach` / `detach` `{sessionId}`, `input`
 //!   `{sessionId, data}`, `ping`, and the commands, each with a client-chosen `id` answered by
 //!   `ok {id, result?}` or `error {id, message}`: `resize {sessionId, cols, rows}` (only for
 //!   the one client attached), `tab_new`, `tab_close`, `tab_rename`, `tab_move`,
@@ -30,9 +33,12 @@
 //!   absolute path exists on this Host, and is a directory: Handoff asks before choosing where
 //!   a Tab lands), `answer {sessionId, pendingId, option}` (answer the question an agent is
 //!   waiting on) and `release {sessionId, pendingId}` (let the agent ask it in its Terminal
-//!   instead). From the Host: `hello {host, device, layout, sessions, agentEvents}`, `layout
-//!   {layout}` on change (the layout without this Host's linked Tabs, which a client cannot
-//!   reach through it; ADR 0003), `session {session}` on each change to a Session's facts,
+//!   instead). From the Host: `hello {host, device, layout, sessions, agentEvents, hosts}`,
+//!   `layout {layout}` on change (the layout without this Host's linked Tabs, which a client
+//!   cannot reach through it, unless it asked for them; ADR 0003 and 0004), `hosts {hosts}`
+//!   when the Hosts those point at change (to a client that asked for linked Tabs; no command
+//!   reaches one through this Host either way), `session {session}` on each change to a
+//!   Session's facts,
 //!   `activity {sessions}` while the Host samples, `agent_event {event}` when an agent did
 //!   something, `attached {sessionId, cols,
 //!   rows}` followed by a binary replay, `resized`, `exit {sessionId}`, `error {message}` (no
@@ -62,12 +68,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast::error::RecvError;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 /// The origins the API routes answer CORS preflights for: the Mac app's webview page
 /// (Tauri's custom scheme on macOS) and its dev server (`pnpm dev`, either spelling of the
-/// loopback). A browser on the tailnet is not one.
+/// loopback). A page served by a Host on this tailnet is another (`Inner::tailnet_origin`).
 const APP_ORIGINS: [&str; 3] = ["tauri://localhost", "http://localhost:1420", "http://127.0.0.1:1420"];
 /// WebSocket pings, which also check every attached Session is still attached.
 const PING_EVERY: Duration = Duration::from_secs(5);
@@ -108,7 +114,7 @@ pub fn start(inner: Arc<Inner>, port: u16) -> Result<Handle, String> {
             "/api/conversation",
             post(conversation).layer(DefaultBodyLimit::max(UPLOAD_MAX)),
         )
-        .layer(api_cors());
+        .layer(api_cors(inner.clone()));
     let router = Router::new()
         .route("/", get(root))
         .merge(api)
@@ -130,12 +136,16 @@ pub fn start(inner: Arc<Inner>, port: u16) -> Result<Handle, String> {
     Ok(Handle { task })
 }
 
-/// CORS for the API routes, for the Mac app's webview only (`APP_ORIGINS`): a browser lets a
-/// cross-origin `fetch` through only when the preflight names its origin. What admits a client
-/// is unchanged: the pairing code, then the token.
-fn api_cors() -> CorsLayer {
+/// CORS for the API routes, for the Mac app's webview (`APP_ORIGINS`) and the pages Hosts on
+/// this tailnet serve: a browser lets a cross-origin `fetch` through only when the preflight
+/// names its origin. What admits a client is unchanged: the pairing code, then the token.
+fn api_cors(inner: Arc<Inner>) -> CorsLayer {
     CorsLayer::new()
-        .allow_origin(APP_ORIGINS.map(HeaderValue::from_static))
+        .allow_origin(AllowOrigin::predicate(move |origin: &HeaderValue, _| {
+            origin
+                .to_str()
+                .is_ok_and(|o| APP_ORIGINS.contains(&o) || inner.tailnet_origin(o))
+        }))
         .allow_methods([Method::POST, Method::OPTIONS])
         .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
 }
@@ -350,7 +360,12 @@ async fn ws(State(inner): State<Arc<Inner>>, ws: WebSocketUpgrade) -> Response {
 #[derive(Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case", rename_all_fields = "camelCase")]
 enum ClientMsg {
-    Auth { token: String },
+    Auth {
+        token: String,
+        /// The client shows this Host's linked Tabs, and reaches their Hosts itself.
+        #[serde(default)]
+        links: bool,
+    },
     Attach { session_id: SessionId },
     Detach { session_id: SessionId },
     Input { session_id: SessionId, data: String },
@@ -397,7 +412,8 @@ async fn run_command(inner: &Arc<Inner>, msg: ClientMsg) -> Option<(u64, Outcome
                     .map(|tab| json!(tab))
             }),
         ),
-        // A client never sees this Host's linked Tabs (`client_snapshot`), so it cannot name one.
+        // No client acts on this Host's linked Tabs through it: most never see them
+        // (`client_snapshot`), and one that asked for them reaches their Hosts itself.
         ClientMsg::TabClose { id, tab_id } => (
             id,
             Box::new(move || {
@@ -510,8 +526,17 @@ async fn send_output(sink: &mut Sink, id: SessionId, bytes: &[u8]) -> bool {
     sink.send(Message::Binary(Bytes::from(frame))).await.is_ok()
 }
 
-async fn send_layout(sink: &mut Sink, inner: &Inner) -> bool {
-    send_json(sink, json!({ "t": "layout", "layout": inner.layout().client_snapshot() })).await
+/// The layout as a client sees it: with this Host's linked Tabs only for one that asked.
+fn layout_for(inner: &Inner, links: bool) -> crate::model::LayoutSnapshot {
+    if links {
+        inner.layout().snapshot()
+    } else {
+        inner.layout().client_snapshot()
+    }
+}
+
+async fn send_layout(sink: &mut Sink, inner: &Inner, links: bool) -> bool {
+    send_json(sink, json!({ "t": "layout", "layout": layout_for(inner, links) })).await
 }
 
 /// The facts of Session `id`, if it is still known (a Session gone since the notification is
@@ -546,9 +571,9 @@ async fn connection(inner: Arc<Inner>, socket: WebSocket) {
 
     // Authenticate first, or go away.
     let first = tokio::time::timeout(AUTH_TIMEOUT, stream.next()).await;
-    let token = match first {
+    let (token, links) = match first {
         Ok(Some(Ok(Message::Text(text)))) => match serde_json::from_str::<ClientMsg>(&text) {
-            Ok(ClientMsg::Auth { token }) => token,
+            Ok(ClientMsg::Auth { token, links }) => (token, links),
             _ => {
                 close(&mut sink, CLOSE_UNAUTHORIZED, "auth first").await;
                 return;
@@ -577,9 +602,10 @@ async fn connection(inner: Arc<Inner>, socket: WebSocket) {
         "t": "hello",
         "host": inner.host_info(),
         "device": device,
-        "layout": inner.layout().client_snapshot(),
+        "layout": layout_for(&inner, links),
         "sessions": inner.layout().facts(),
         "agentEvents": inner.agents().recent(),
+        "hosts": if links { inner.hosts() } else { Vec::new() },
     });
     if !send_json(&mut sink, hello).await {
         return;
@@ -686,7 +712,10 @@ async fn connection(inner: Arc<Inner>, socket: WebSocket) {
             }
             msg = hub.recv() => {
                 let ok = match msg {
-                    Ok(HubMsg::Layout) => send_layout(&mut sink, &inner).await,
+                    Ok(HubMsg::Layout) => send_layout(&mut sink, &inner, links).await,
+                    Ok(HubMsg::Hosts) => {
+                        !links || send_json(&mut sink, json!({ "t": "hosts", "hosts": inner.hosts() })).await
+                    }
                     Ok(HubMsg::Session(id)) => send_session(&mut sink, &inner, id).await,
                     Ok(HubMsg::Activity(sessions)) => {
                         send_json(&mut sink, json!({ "t": "activity", "sessions": *sessions })).await
@@ -700,7 +729,10 @@ async fn connection(inner: Arc<Inner>, socket: WebSocket) {
                     }
                     // Fell behind: only the latest matters, so send the whole of it.
                     Err(RecvError::Lagged(_)) => {
-                        let mut ok = send_layout(&mut sink, &inner).await;
+                        let mut ok = send_layout(&mut sink, &inner, links).await;
+                        if links {
+                            ok = ok && send_json(&mut sink, json!({ "t": "hosts", "hosts": inner.hosts() })).await;
+                        }
                         for info in inner.layout().facts() {
                             ok = ok && send_json(&mut sink, json!({ "t": "session", "session": info })).await;
                         }
@@ -796,6 +828,10 @@ mod tests {
             serde_json::from_str(r#"{"t":"resize","id":3,"sessionId":4,"cols":100,"rows":30}"#).unwrap();
         assert!(matches!(m, ClientMsg::Resize { id: 3, session_id: 4, cols: 100, rows: 30 }));
         assert!(matches!(serde_json::from_str::<ClientMsg>(r#"{"t":"ping"}"#).unwrap(), ClientMsg::Ping));
+        let m: ClientMsg = serde_json::from_str(r#"{"t":"auth","token":"x"}"#).unwrap();
+        assert!(matches!(m, ClientMsg::Auth { links: false, .. }), "linked Tabs only when asked for");
+        let m: ClientMsg = serde_json::from_str(r#"{"t":"auth","token":"x","links":true}"#).unwrap();
+        assert!(matches!(m, ClientMsg::Auth { links: true, ref token } if token == "x"));
         let m: ClientMsg = serde_json::from_str(r#"{"t":"path_exists","id":5,"path":"/srv"}"#).unwrap();
         assert!(matches!(m, ClientMsg::PathExists { id: 5, ref path } if path == "/srv"));
         assert!(serde_json::from_str::<ClientMsg>(r#"{"t":"tab_close","tabId":"t"}"#).is_err(), "no id");

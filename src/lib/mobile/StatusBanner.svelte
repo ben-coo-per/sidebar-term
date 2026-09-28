@@ -1,17 +1,34 @@
-<!-- Connection state, shown while not online: reconnecting, or why the Host went away. -->
+<!-- Connection state, shown for each Host the phone is paired with while it is not online:
+     reconnecting, or why it went away. With `host`, that Host's only (the terminal screen). -->
 <script lang="ts">
-  import { mobile } from "./store.svelte";
+  import { LOCAL_HOST, type HostId } from "../host/ids";
+  import { mobile, type HostState } from "./store.svelte";
+
+  let { host = null }: { host?: HostId | null } = $props();
+
+  const away = $derived(
+    Object.values(mobile.hosts).filter((h) => h.paired && h.status !== "online" && (host === null || h.id === host)),
+  );
+
+  function nameOf(h: HostState): string {
+    return h.info?.name ?? h.name ?? (h.id === LOCAL_HOST ? "the Host" : new URL(h.url).host);
+  }
+
+  /** What is still shown of a Host that does not answer. */
+  function meanwhile(h: HostState): string {
+    return host === null && h.id === LOCAL_HOST && h.layout ? " Showing what it last said." : "";
+  }
 </script>
 
-{#if mobile.status !== "online"}
-  <div class="banner" class:connecting={mobile.status === "connecting"} role="status">
-    {#if mobile.status === "connecting"}
-      Connecting to the Host…
+{#each away as h (h.id)}
+  <div class="banner" class:connecting={h.status === "connecting"} role="status">
+    {#if h.status === "connecting"}
+      Connecting to {nameOf(h)}…
     {:else}
-      {mobile.statusDetail ?? "The Host is not reachable. Is Tailscale on, on both?"} Retrying…
+      {h.detail ?? `${nameOf(h)} is not reachable. Is Tailscale on, on both?`} Retrying…{meanwhile(h)}
     {/if}
   </div>
-{/if}
+{/each}
 
 <style>
   .banner {

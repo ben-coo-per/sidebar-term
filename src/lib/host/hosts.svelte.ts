@@ -7,6 +7,7 @@
 // go into the same mirror as the local Host's (src/lib/sessions.svelte.ts `applySessionInfo`); its Sessions' Terminals are the Terminal
 // manager's, reached through the transport made here. See docs/architecture.md "Hosts".
 
+import { remoteHostsSet } from "../ipc";
 import { loadSection, saveSection } from "../settings/store";
 import type { ActivitySession, ConversationFiles, HostInfo, PathExists, SessionId, SessionInfo } from "../types";
 import type { SessionTransport, TerminalSink } from "../terminal/manager";
@@ -71,6 +72,17 @@ function persist(): void {
     hosts.list.map(
       ({ id, url, token, name, checkoutRoot, repoPaths }): PairedHost => ({ id, url, token, name, checkoutRoot, repoPaths: { ...repoPaths } }),
     ),
+  );
+  publish();
+}
+
+/**
+ * Tell this Mac's Remote which Hosts there are and where (never the tokens), so a phone paired
+ * with this Mac can reach the linked Tabs' Hosts itself, with a pairing of its own (ADR 0004).
+ */
+function publish(): void {
+  void remoteHostsSet(hosts.list.map(({ id, url, name }) => ({ id, url, name }))).catch((e) =>
+    console.warn("hosts: could not tell Remote the paired Hosts", e),
   );
 }
 
@@ -197,6 +209,7 @@ export function initHosts(): () => void {
       }
       dropUnknownHosts(hosts.list.map((h) => h.id));
       hosts.ready = true;
+      publish();
     });
   // Back in the foreground (the window was hidden, the Mac slept): do not wait out a backoff.
   const onVisible = () => {

@@ -13,7 +13,7 @@ use sidebar_term_core::agents::Agents;
 use sidebar_term_core::layout::{Layout, TabNew};
 use sidebar_term_core::model::{
     AgentEvent, AgentKind, ClaudeConversation, ConversationFiles, Group, GuardSnapshot, HandoffProbe,
-    LayoutSnapshot, Pairing, RemoteSnapshot, ResumeEntry, SessionId, SessionInfo, Tab,
+    LayoutSnapshot, LinkedHost, Pairing, RemoteSnapshot, ResumeEntry, SessionId, SessionInfo, Tab,
     TabLink,
     EVENT_CAFFEINATE, EVENT_MEMORY_GUARD, EVENT_MENU_SETTINGS,
 };
@@ -431,6 +431,13 @@ fn remote_revoke(remote: State<'_, remote::Remote>, id: String) {
     remote.revoke(&id)
 }
 
+/// The paired Hosts, as the webview holds them (tokens left out): what Remote tells a phone
+/// that shows the linked Tabs, so it can reach their Hosts itself.
+#[tauri::command]
+fn remote_hosts_set(remote: State<'_, remote::Remote>, hosts: Vec<LinkedHost>) {
+    remote.set_hosts(hosts)
+}
+
 /// Paths of the files on the macOS drag pasteboard, i.e. those of the drop just received.
 #[tauri::command]
 fn drop_paths() -> Vec<String> {
@@ -607,6 +614,7 @@ pub fn run() {
             remote_pair_begin,
             remote_pair_cancel,
             remote_revoke,
+            remote_hosts_set,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -5,7 +5,7 @@
 // origin it was loaded from) and the Mac app for each paired Host (./hosts.svelte.ts, against
 // the Host's URL). No DOM beyond WebSocket and fetch; the stores own what is shown.
 
-import type { ActivitySession, AgentEvent, ConversationFiles, HostInfo, LayoutSnapshot, SessionId, SessionInfo } from "../types";
+import type { ActivitySession, AgentEvent, ConversationFiles, HostInfo, LayoutSnapshot, LinkedHost, SessionId, SessionInfo } from "../types";
 import {
   CLOSE_GOING_AWAY,
   CLOSE_UNAUTHORIZED,
@@ -31,6 +31,8 @@ export interface ClientEvents {
   /** `agentEvents`: the Host's recent agent events, oldest first; null from a Host older than Manager, which keeps none. */
   hello: (host: HostInfo, device: string, layout: LayoutSnapshot, sessions: SessionInfo[], agentEvents: AgentEvent[] | null) => void;
   layout: (layout: LayoutSnapshot) => void;
+  /** The Hosts the Host's linked Tabs point at: after each `hello`, and when they change. Only for a client that asked for `links`. */
+  hosts: (hosts: LinkedHost[]) => void;
   session: (session: SessionInfo) => void;
   activity: (sessions: ActivitySession[]) => void;
   /** An agent did something. */
@@ -102,6 +104,7 @@ export class RemoteClient implements HostClient {
     status: new Set(),
     hello: new Set(),
     layout: new Set(),
+    hosts: new Set(),
     session: new Set(),
     activity: new Set(),
     agentEvent: new Set(),
@@ -113,10 +116,14 @@ export class RemoteClient implements HostClient {
     unauthorized: new Set(),
   };
 
-  /** `base` is the Host's origin: `https://dell.tail1234.ts.net`, or `location.origin` on the phone. */
+  /**
+   * `base` is the Host's origin: `https://dell.tail1234.ts.net`, or `location.origin` on the
+   * phone. `links`: ask for the Host's linked Tabs and the Hosts they point at (the phone).
+   */
   constructor(
     private readonly base: string,
     private readonly token: string,
+    private readonly links = false,
   ) {}
 
   on<K extends keyof ClientEvents>(event: K, cb: ClientEvents[K]): () => void {
@@ -152,7 +159,7 @@ export class RemoteClient implements HostClient {
     ws.binaryType = "arraybuffer";
     this.ws = ws;
     ws.onopen = () => {
-      this.send({ t: "auth", token: this.token });
+      this.send(this.links ? { t: "auth", token: this.token, links: true } : { t: "auth", token: this.token });
     };
     ws.onmessage = (ev) => this.receive(ev.data);
     ws.onclose = (ev) => {
@@ -273,11 +280,16 @@ export class RemoteClient implements HostClient {
         this.attempts = 0;
         this.emit("status", "online", null);
         this.emit("hello", msg.host, msg.device, msg.layout, msg.sessions, msg.agentEvents ?? null);
+        // A Host older than linked Tabs for clients sends none, and no Tab that needs one.
+        if (this.links) this.emit("hosts", msg.hosts ?? []);
         // Back after a drop: pick up where we were.
         for (const id of this.wanted) this.send({ t: "attach", sessionId: id });
         break;
       case "layout":
         this.emit("layout", msg.layout);
+        break;
+      case "hosts":
+        this.emit("hosts", msg.hosts);
         break;
       case "session":
         this.emit("session", msg.session);

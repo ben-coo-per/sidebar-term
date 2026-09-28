@@ -23,6 +23,7 @@ import {
   type Group,
   type HandoffProbe,
   type LayoutSnapshot,
+  type LinkedHost,
   type Pairing,
   type RemoteSnapshot,
   type GuardSnapshot,
@@ -337,6 +338,12 @@ export function remotePairCancel(): Promise<void> {
 export function remoteRevoke(id: string): Promise<void> {
   if (!inTauri) return mock.remoteRevoke(id);
   return invoke("remote_revoke", { id });
+}
+
+/** Tell Remote the paired Hosts (no tokens): what a phone that shows the linked Tabs reaches them by. */
+export function remoteHostsSet(hosts: LinkedHost[]): Promise<void> {
+  if (!inTauri) return Promise.resolve();
+  return invoke("remote_hosts_set", { hosts });
 }
 
 /** Remote's state changed: turned on or off, a phone connected or paired, a pairing expired. */

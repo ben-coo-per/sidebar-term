@@ -24,7 +24,8 @@ the bottom resumes each Claude Code conversation (`claude --resume <id>`) and re
 
 ## Phone
 
-Your Sessions from your phone: see the sidebar, open any Tab, type, answer an agent's prompts.
+Your Sessions from your phone: Manager (every agent, the questions they wait on answered in
+place), the sidebar, any Tab's Terminal to type into.
 It is a web page the Mac app serves, installed on the home screen (no App Store, no expiry), and
 reachable only over your Tailscale network. Once:
 
@@ -36,13 +37,18 @@ reachable only over your Tailscale network. Once:
 3. Press **Pair a phone…** and scan the QR code with the phone's camera (or open the link and
    type the code). Name the phone; it is now paired until you remove it here.
 4. In Safari on the phone: Share → **Add to Home Screen**. Open it from there: full screen, and
-   the pairing is kept.
+   the pairing is kept. (The installed page keeps its own storage: a pairing made in Safari does
+   not carry over, so pair from the installed page, typing the code.)
+5. Tabs on a paired Host (Settings > Hosts): the list says "<Host> has N Tabs of yours". Press
+   **Pair**, and type a pairing code from that Host (on the daemon: see "Host daemon"). The phone
+   talks to that Host directly from then on, so its Tabs stay in reach while the Mac sleeps.
 
 Nothing listens while Remote is off. On, the server binds 127.0.0.1 only; Tailscale publishes it
 to your tailnet (never the internet) with a real certificate. Each phone needs a one-time pairing
 code and holds a token you can revoke in Settings. Details: `docs/architecture.md` "Host protocol".
 
-**Status and next steps.** The phone can see the sidebar and drive any Session (attach-and-drive).
+**Status and next steps.** The phone can see the sidebar and Manager across the Mac and its
+paired Hosts, drive any Session (attach-and-drive) and answer a hooked agent's questions.
 Still to do, in order:
 
 1. First real run: install Tailscale on the Mac and the phone (step 1 above; this Mac had none
@@ -56,6 +62,8 @@ Still to do, in order:
 4. Full control from the phone (create, close, rename, move Tabs): the Host protocol carries
    the commands (`docs/architecture.md` "Host protocol"); the phone's UI for them is #16.
 5. Notifications when an agent needs input (web push works for installed pages on iOS 16.4+).
+6. Start a Host's pairing from the Mac app (today the code comes from the Host itself), and
+   Usage in the phone's Manager (it is not in the Host protocol).
 
 ## Host daemon
 
