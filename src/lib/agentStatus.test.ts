@@ -1,176 +1,7 @@
 import { describe, expect, it } from "vitest";
-import {
-  computeAgentStatus,
-  computeAutomaticTitle,
-  CLAUDE_RUNNING_WINDOW_MS,
-  type AutomaticTitleInput,
-} from "./agentStatus";
+import { agentLabel, computeAutomaticTitle, type AutomaticTitleInput } from "./agentStatus";
 
-describe("computeAgentStatus", () => {
-  it("returns null when there is no agent", () => {
-    expect(
-      computeAgentStatus({ agent: null, title: "", now: 0, lastActivityAt: null, lastBellAt: null }),
-    ).toBeNull();
-  });
-
-  describe("codex", () => {
-    it("is running while the title starts with a braille spinner frame", () => {
-      expect(
-        computeAgentStatus({
-          agent: "codex",
-          title: "⠋ jack",
-          now: 0,
-          lastActivityAt: null,
-          lastBellAt: null,
-        }),
-      ).toBe("running");
-    });
-
-    it("needs input when the title contains Action Required", () => {
-      expect(
-        computeAgentStatus({
-          agent: "codex",
-          title: "[ ! ] Action Required",
-          now: 0,
-          lastActivityAt: null,
-          lastBellAt: null,
-        }),
-      ).toBe("needs-input");
-    });
-
-    it("is done once the spinner/prefix is gone", () => {
-      expect(
-        computeAgentStatus({ agent: "codex", title: "jack", now: 0, lastActivityAt: null, lastBellAt: null }),
-      ).toBe("done");
-    });
-
-    it("is done on an empty/cleared title", () => {
-      expect(
-        computeAgentStatus({ agent: "codex", title: "", now: 0, lastActivityAt: null, lastBellAt: null }),
-      ).toBe("done");
-    });
-  });
-
-  describe("gemini", () => {
-    it("is running when the title starts with ✦", () => {
-      expect(
-        computeAgentStatus({
-          agent: "gemini",
-          title: "✦ Working… (jack)",
-          now: 0,
-          lastActivityAt: null,
-          lastBellAt: null,
-        }),
-      ).toBe("running");
-    });
-
-    it("needs input when the title starts with ✋", () => {
-      expect(
-        computeAgentStatus({
-          agent: "gemini",
-          title: "✋ Action Required (jack)",
-          now: 0,
-          lastActivityAt: null,
-          lastBellAt: null,
-        }),
-      ).toBe("needs-input");
-    });
-
-    it("is done when the title starts with ◇", () => {
-      expect(
-        computeAgentStatus({
-          agent: "gemini",
-          title: "◇ Ready (jack)",
-          now: 0,
-          lastActivityAt: null,
-          lastBellAt: null,
-        }),
-      ).toBe("done");
-    });
-
-    it("falls back to done for an unrecognised title", () => {
-      expect(
-        computeAgentStatus({ agent: "gemini", title: "", now: 0, lastActivityAt: null, lastBellAt: null }),
-      ).toBe("done");
-    });
-  });
-
-  describe("claude", () => {
-    it("is running within the activity window", () => {
-      expect(
-        computeAgentStatus({
-          agent: "claude",
-          title: "",
-          now: 1000,
-          lastActivityAt: 1000 - (CLAUDE_RUNNING_WINDOW_MS - 1),
-          lastBellAt: null,
-        }),
-      ).toBe("running");
-    });
-
-    it("is done once the activity window has elapsed with no bell", () => {
-      expect(
-        computeAgentStatus({
-          agent: "claude",
-          title: "",
-          now: 10_000,
-          lastActivityAt: 10_000 - CLAUDE_RUNNING_WINDOW_MS,
-          lastBellAt: null,
-        }),
-      ).toBe("done");
-    });
-
-    it("needs input on a bell that lands after the last activity", () => {
-      expect(
-        computeAgentStatus({
-          agent: "claude",
-          title: "",
-          now: 10_000,
-          lastActivityAt: 5000,
-          lastBellAt: 5500,
-        }),
-      ).toBe("needs-input");
-    });
-
-    it("prefers running over a stale bell once new activity arrives", () => {
-      expect(
-        computeAgentStatus({
-          agent: "claude",
-          title: "",
-          now: 10_000,
-          lastActivityAt: 9999,
-          lastBellAt: 5500,
-        }),
-      ).toBe("running");
-    });
-
-    it("is done with neither activity nor a bell yet", () => {
-      expect(
-        computeAgentStatus({ agent: "claude", title: "", now: 0, lastActivityAt: null, lastBellAt: null }),
-      ).toBe("done");
-    });
-
-    it("is running while the title starts with either busy frame, even with no recent output", () => {
-      for (const title of ["◐ Fix the badge", "◑ Fix the badge"]) {
-        expect(
-          computeAgentStatus({ agent: "claude", title, now: 60_000, lastActivityAt: 0, lastBellAt: null }),
-        ).toBe("running");
-      }
-    });
-
-    it("is done under the idle prefix, even while output (keystroke echo) is flowing", () => {
-      expect(
-        computeAgentStatus({ agent: "claude", title: "✳ Fix the badge", now: 1000, lastActivityAt: 999, lastBellAt: null }),
-      ).toBe("done");
-    });
-
-    it("needs input under the idle prefix after a bell", () => {
-      expect(
-        computeAgentStatus({ agent: "claude", title: "✳ Fix the badge", now: 10_000, lastActivityAt: 5000, lastBellAt: 5500 }),
-      ).toBe("needs-input");
-    });
-  });
-});
+// The Agent status rules are the Host's now (src-tauri/core/src/status.rs), their tests with them.
 
 describe("computeAutomaticTitle", () => {
   const base: AutomaticTitleInput = {
@@ -182,7 +13,20 @@ describe("computeAutomaticTitle", () => {
     home: null,
   };
 
-  it("prefers the agent name above everything else", () => {
+  it("names an agent by its project and what it is at, above everything else", () => {
+    const git = { repoName: "jack", commonDir: "/j/.git", worktreeRoot: "/j", worktreeName: null, branch: "main", headShort: null };
+    expect(
+      computeAutomaticTitle({
+        ...base,
+        agent: "claude",
+        git,
+        oscTitle: "◐ Fix the pairing handshake",
+        foreground: "claude",
+        shellIsForeground: false,
+        cwd: "/Users/you/Dev/jack",
+      }),
+    ).toBe("jack · fix the pairing");
+    // Codex's title carries no subject: the project alone.
     expect(
       computeAutomaticTitle({
         ...base,
@@ -192,7 +36,7 @@ describe("computeAutomaticTitle", () => {
         shellIsForeground: false,
         cwd: "/Users/you/Dev/jack",
       }),
-    ).toBe("Codex");
+    ).toBe("jack");
   });
 
   it("falls back to the OSC title when there is no agent", () => {
@@ -236,5 +80,57 @@ describe("computeAutomaticTitle", () => {
 
   it("trims a trailing slash before taking the basename", () => {
     expect(computeAutomaticTitle({ ...base, cwd: "/Users/you/Dev/jack/" })).toBe("jack");
+  });
+});
+
+describe("agentLabel", () => {
+  const git = (repoName: string, worktreeName: string | null = null) => ({
+    repoName,
+    commonDir: `/r/${repoName}/.git`,
+    worktreeRoot: `/r/${repoName}`,
+    worktreeName,
+    branch: "main",
+    headShort: null,
+  });
+  const base = { customTitle: null, git: null, cwd: null, home: "/Users/you", oscTitle: null, agent: "claude" as const, lastPrompt: null };
+
+  it("names the project, and takes Claude Code's own summary from its title", () => {
+    expect(agentLabel({ ...base, git: git("sidebar-term"), oscTitle: "◐ Fix the badge colours in the sidebar" })).toEqual({
+      project: "sidebar-term",
+      description: "fix the badge",
+    });
+    expect(agentLabel({ ...base, git: git("jack", "navbar"), oscTitle: "✳ Refactor moveTabToHost." })).toEqual({
+      project: "jack/navbar",
+      description: "refactor moveTabToHost",
+    });
+  });
+
+  it("falls back to the last prompt, then to nothing", () => {
+    expect(agentLabel({ ...base, agent: "codex", git: git("api"), oscTitle: "⠋ api", lastPrompt: "Move the API to Postgres 17" })).toEqual({
+      project: "api",
+      description: "move the API",
+    });
+    expect(agentLabel({ ...base, agent: "gemini", cwd: "/Users/you/notes", oscTitle: "◇ Ready (notes)" })).toEqual({
+      project: "notes",
+      description: null,
+    });
+  });
+
+  it("says nothing that only repeats the project or the agent", () => {
+    expect(agentLabel({ ...base, git: git("jig"), oscTitle: "✳ Claude Code" }).description).toBeNull();
+    expect(agentLabel({ ...base, git: git("jig"), oscTitle: "◐ jig" }).description).toBeNull();
+  });
+
+  it("keeps a rename as it is", () => {
+    expect(agentLabel({ ...base, customTitle: "auth refactor", git: git("jig"), oscTitle: "◐ Other" })).toEqual({
+      project: "auth refactor",
+      description: null,
+    });
+  });
+
+  it("uses the folder, ~ for home, or the agent's name", () => {
+    expect(agentLabel({ ...base, cwd: "/Users/you" }).project).toBe("~");
+    expect(agentLabel({ ...base, cwd: "/tmp/scratch/" }).project).toBe("scratch");
+    expect(agentLabel(base).project).toBe("Claude Code");
   });
 });

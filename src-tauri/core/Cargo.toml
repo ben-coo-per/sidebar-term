@@ -1,0 +1,24 @@
+[package]
+name = "sidebar-term-core"
+version = "0.1.0"
+description = "The sidebar-term core: Sessions, the facts about them, Resume and the Remote server, linked into the Mac app and into sidebar-termd"
+authors = ["ben-coo-per"]
+edition = "2021"
+
+[lib]
+name = "sidebar_term_core"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+portable-pty = "=0.9.0"
+libc = "0.2"
+axum = { version = "0.8", features = ["ws", "multipart"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "time"] }
+sha2 = "0.10"
+rand = "0.9"
+base64 = "0.22"
+futures-util = "0.3"
+# CORS on the API routes, for the Mac app's webview (its own origins only; see remote/server.rs).
+tower-http = { version = "0.6", features = ["cors"] }

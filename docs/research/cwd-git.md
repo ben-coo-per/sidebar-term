@@ -341,6 +341,20 @@ container run via `docker run -it` the same rule applies (the Foreground process
 the docker client). This also covers `sudo -i` and `su` (cwd read returns EPERM):
 show the shell's last known cwd, no branch.
 
+## 6. Linux (the Host daemon, issue #26)
+
+The cwd source is `readlink /proc/<pid>/cwd` (`src-tauri/src/detect/os/linux.rs`), which the
+kernel answers with the canonical path (symlinks resolved, like libproc's vnode path; on
+Linux `/tmp` is usually a real directory, so nothing changes shape). It needs ptrace read
+access (`PTRACE_MODE_READ`: same uid, or `CAP_SYS_PTRACE`), so a `sudo`'d Foreground process
+reads as `None` and the probe falls back to the shell's cwd, exactly as on macOS. A directory
+deleted under the process reads as its former path (the kernel's ` (deleted)` suffix is
+stripped); `git::resolve` then finds nothing, so the Badge clears.
+
+Stages 2 to 4 need no port: the `.git` file reader is plain filesystem code, OSC 7 is a
+terminal matter, and polling is still the floor (`notify` has an inotify backend when
+FSEvents-style watching is added). Cost: one `readlink` per probe, microseconds.
+
 ## Sources
 
 - Apple libproc header: `/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/libproc.h` (`proc_pidinfo`, `proc_pidpath`, `proc_listchildpids`, "private interfaces ... subject to change").

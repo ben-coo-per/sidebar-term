@@ -5,7 +5,7 @@
 import { untrack } from "svelte";
 import { resumeForget, resumeLeftover, sessionInfo, writeSession } from "../ipc";
 import { layout } from "../layout.svelte";
-import { sessionState } from "../sessions.svelte";
+import { sessionOf } from "../sessions.svelte";
 import type { ResumeEntry } from "../types";
 import { resumeInput } from "./model";
 
@@ -67,7 +67,7 @@ $effect.root(() => {
   $effect(() => {
     const moot = resume.entries.filter((e) => {
       const tab = layout.tabs[e.key];
-      return !tab || Boolean(sessionState(tab.sessionId)?.info?.agent);
+      return !tab || Boolean(sessionOf(tab)?.info?.agent);
     });
     if (moot.length > 0) untrack(() => forget(moot.map((e) => e.key)));
   });

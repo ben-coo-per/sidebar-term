@@ -20,6 +20,7 @@
         "minHeight": 400,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
+        "trafficLightPosition": { "x": 16, "y": 18 },
         "dragDropEnabled": false,
         "backgroundThrottling": "disabled"
       }
@@ -40,9 +41,6 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ],
-    "resources": [
-      "reporters/*"
     ]
   }
 }

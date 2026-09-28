@@ -1,7 +1,9 @@
-<!-- The sidebar: Group headers + Tab rows, resizable, with the Panel beneath them and the shared
-     context menu and confirm dialog mounted once. Runs to the top of the window; its header is the
-     Tauri drag region (see docs/architecture.md "Window") and holds the Tray, right of the traffic
-     lights. -->
+<!-- The sidebar: this Mac's Group headers + Tab rows (local and linked Tabs alike; a linked Tab's
+     row carries its Host's chip, ADR 0003), resizable, with the Panel beneath them and the shared
+     context menu and confirm dialog mounted once.
+     Sits under the window bar (src/lib/window/WindowBar.svelte), which holds the Tabs / Manager
+     switch and the Tray. While agents wait on the user, a strip at the top of the Groups says how
+     many and opens Manager. -->
 <script lang="ts">
   import {
     layout,
@@ -12,8 +14,9 @@
     MAX_SIDEBAR_WIDTH,
     PANEL_MIN_SIDEBAR_WIDTH,
   } from "../layout.svelte";
+  import { LOCAL_HOST } from "../host/ids";
   import Panel from "../panel/Panel.svelte";
-  import Tray from "../tray/Tray.svelte";
+  import WaitingStrip from "../manager/WaitingStrip.svelte";
   import GroupHeader from "./GroupHeader.svelte";
   import TabRow from "./TabRow.svelte";
   import ContextMenu from "./ContextMenu.svelte";
@@ -29,7 +32,7 @@
     return key ? `${text} (${key})` : text;
   }
 
-  const totalTabs = $derived(Object.keys(layout.tabs).length);
+  const tabCount = $derived(layout.groups.reduce((n, g) => n + g.tabIds.length, 0));
 
   let resizing = $state(false);
 
@@ -53,17 +56,14 @@
 </script>
 
 <aside class="sidebar" style:width="{layout.sidebarWidth}px">
-  <div class="drag-region" data-tauri-drag-region>
-    <Tray />
-  </div>
-
   <div class="groups" role="tree" aria-label="Tabs">
+    <WaitingStrip />
     {#if !layout.ready}
       <!-- Startup: loading the persisted layout and respawning Sessions. -->
-    {:else if totalTabs === 0}
+    {:else if tabCount === 0}
       <div class="empty-state">
         <p class="empty-title">No Tabs open</p>
-        <button type="button" class="new-tab-btn" onclick={() => void newTab()}>
+        <button type="button" class="new-tab-btn" onclick={() => void newTab({ host: LOCAL_HOST })}>
           <PlusIcon size={11} />
           New Tab
         </button>
@@ -88,7 +88,7 @@
       <PlusIcon size={10} />
       Tab
     </button>
-    <button type="button" class="footer-btn" onclick={() => newGroup()} title={withHotkey("New Group", "group.new")}>
+    <button type="button" class="footer-btn" onclick={() => void newGroup()} title={withHotkey("New Group", "group.new")}>
       <PlusIcon size={10} />
       Group
     </button>
@@ -132,16 +132,6 @@
       sans-serif;
     color: var(--text-primary);
     min-width: 0;
-  }
-  .drag-region {
-    flex: none;
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    height: var(--titlebar-inset);
-    /* The Tray never runs under the traffic lights. */
-    padding: 0 6px 0 var(--traffic-lights-width);
-    -webkit-app-region: drag;
   }
   .groups {
     flex: 1 1 auto;

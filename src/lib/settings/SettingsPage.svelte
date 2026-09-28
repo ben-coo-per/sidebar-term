@@ -25,8 +25,10 @@
   import { GUARD_LIMITS, THAW_GAP } from "../guard/model";
   import { setSuiteProgress, suiteSettings } from "../suite/settings.svelte";
   import CloseIcon from "../sidebar/icons/CloseIcon.svelte";
+  import RemoteSection from "./RemoteSection.svelte";
+  import HostsSection from "./HostsSection.svelte";
 
-  const CATEGORIES: ActionCategory[] = ["Tabs", "Groups", "App"];
+  const CATEGORIES: ActionCategory[] = ["Tabs", "Groups", "Hosts", "App"];
   const byCategory = CATEGORIES.map((category) => ({
     category,
     actions: ACTIONS.filter((a) => a.category === category),
@@ -135,8 +137,6 @@
   }}
   use:focusOnMount
 >
-  <div class="drag-region" data-tauri-drag-region></div>
-
   <div class="content">
     <header class="page-header">
       <h1>Settings</h1>
@@ -170,6 +170,10 @@
         {/each}
       </ul>
     </section>
+
+    <RemoteSection />
+
+    <HostsSection />
 
     <section>
       <div class="section-header">
@@ -327,17 +331,13 @@
     outline: none;
     animation: fade var(--duration-fast) var(--ease-standard);
   }
-  .drag-region {
-    flex: none;
-    height: var(--titlebar-inset);
-    -webkit-app-region: drag;
-  }
   .content {
     flex: 1 1 auto;
     overflow-y: auto;
-    padding: 4px 32px 40px;
+    padding: 20px 32px 40px;
   }
-  .content > * {
+  /* :global so the sections that are their own components (Remote, Hosts) get the column too. */
+  .content > :global(*) {
     max-width: 560px;
     margin-left: auto;
     margin-right: auto;
@@ -360,7 +360,7 @@
     font-size: 20px;
     font-weight: 600;
   }
-  section + section {
+  .content > :global(section + section) {
     margin-top: 32px;
   }
   .section-header {

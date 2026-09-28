@@ -1,15 +1,21 @@
-<!-- A Tab row: Agent/plain icon, Agent status (or a snowflake while Memory Guard has it frozen),
-     Title (inline rename; bold while unread), Badge, the Session's CPU and memory (Settings), close button.
-     While a Suite runs under the Session, a 2 px bar sits under the Badge line and its count / ETA
-     takes the stats slot (a frozen Tab's `frozen · …` still wins; the bar stays). -->
+<!-- A Tab row, local or linked: Agent/plain icon, Agent status (or a snowflake while Memory Guard
+     has it frozen), Title (inline rename; bold while unread; an agent's reads as its project, then
+     a few muted words on what it is at), Badge, the Session's CPU and memory
+     (Settings), close button. Everything shown comes from the Tab's Host's SessionInfo, so a
+     linked Tab reads exactly as a local one, plus a chip with its Host's name by the Badge
+     (greyed, like the row, while that Host is not connected). While a Suite runs under the
+     Session (on whichever Host), a 2 px bar sits under the Badge line and its count / ETA takes
+     the stats slot (a frozen Tab's `frozen · …` still wins; the bar stays). -->
 <script lang="ts">
   import SuiteBar from "../suite/SuiteBar.svelte";
-  import { suiteForSession } from "../suite/suites.svelte";
+  import { suiteForTab } from "../suite/suites.svelte";
   import { suiteView } from "../suite/model";
   import type { Tab } from "../layout.svelte";
-  import { activateTab, layout, moveTab, newGroupFromTab, renameTab } from "../layout.svelte";
-  import { sessionState, setTabRead, tabIsUnread, tabTitle } from "../sessions.svelte";
+  import { activateTab, hostGroups, layout, moveTab, newGroupFromTab, newTab, renameTab } from "../layout.svelte";
+  import { sessionOf, setTabRead, tabAgentLabel, tabIsUnread, tabTitle } from "../sessions.svelte";
   import { AGENT_NAMES } from "../agentStatus";
+  import { isLocal, LOCAL_HOST } from "../host/ids";
+  import { hostActivity, hostState } from "../host/hosts.svelte";
   import RobotIcon from "./icons/RobotIcon.svelte";
   import TerminalIcon from "./icons/TerminalIcon.svelte";
   import CheckIcon from "./icons/CheckIcon.svelte";
@@ -26,10 +32,16 @@
   import { openContextMenu } from "./menu.svelte";
   import type { MenuItem } from "./ContextMenu.svelte";
   import { requestCloseTab } from "./closeTabFlow";
+  import { canHandOff, handoffHosts, moveTabToHost, newTabOnHost } from "../handoff/handoff.svelte";
+  import { hostName } from "../host/hosts.svelte";
 
   let { tab }: { tab: Tab } = $props();
 
-  const session = $derived(sessionState(tab.sessionId));
+  const local = $derived(isLocal(tab.host));
+  /** A linked Tab's Host is connected (a local Tab's always is). */
+  const online = $derived(local || hostState(tab.host)?.status === "online");
+  const hostLabel = $derived(local ? "" : hostName(tab.host));
+  const session = $derived(sessionOf(tab));
   const agent = $derived(session?.info?.agent ?? null);
   const status = $derived(session?.status ?? null);
   const finished = $derived(session?.finished ?? false);
@@ -37,8 +49,10 @@
   const remote = $derived(session?.info?.remote ?? false);
   const git = $derived(session?.info?.git ?? null);
   const title = $derived(tabTitle(tab));
+  const label = $derived(tabAgentLabel(tab));
   const isActive = $derived(layout.activeTabId === tab.id);
-  const frozen = $derived(frozenSession(tab.sessionId));
+  // Memory Guard is this Mac's: a paired Host's Tabs are never frozen from here.
+  const frozen = $derived(local ? frozenSession(tab.sessionId) : undefined);
   const stateLabel = $derived(
     frozen
       ? "frozen"
@@ -50,10 +64,15 @@
             ? "idle"
             : undefined,
   );
+  // This Mac's samples for a local Tab; the Host's `activity` messages for a paired Host's.
   const usage = $derived(
-    activitySettings.tabStats ? activity.snapshot?.sessions.find((s) => s.sessionId === tab.sessionId) : undefined,
+    !activitySettings.tabStats
+      ? undefined
+      : local
+        ? activity.snapshot?.sessions.find((s) => s.sessionId === tab.sessionId)
+        : hostActivity(tab.host, tab.sessionId),
   );
-  const suite = $derived(suiteForSession(tab.sessionId));
+  const suite = $derived(suiteForTab(tab));
   const suiteText = $derived(suite ? suiteView(suite) : null);
   /** Below this sidebar width the Suite text shrinks to its count, and below `HIDE_SUITE_TEXT_AT` goes. */
   const SHORT_SUITE_TEXT_AT = 240;
@@ -132,15 +151,50 @@
     }
   }
 
-  /** Freeze (not the Tab in view: going to a Tab thaws it) or Thaw. */
+  /** Freeze (not the Tab in view: going to a Tab thaws it) or Thaw. Local Tabs only: the Host protocol has no freeze. */
   function freezeItem(): MenuItem {
     const sessionId = tab.sessionId;
-    if (sessionId === null) return { label: "Freeze", disabled: true };
+    if (sessionId === null || !local) return { label: "Freeze", disabled: true };
     if (frozen) return { label: "Thaw", action: () => void thawSession(sessionId) };
     return { label: "Freeze", action: () => void freezeSession(sessionId), disabled: isActive };
   }
 
+  /**
+   * "New Tab on <Host>" and "Move Tab to <Host>" (Handoff): one entry per Group of each online
+   * paired Host (the Host's own Groups: where the Tab goes there, for its other clients), so the
+   * Group there is the user's choice; here the new Tab goes right after this one. Local Tabs
+   * only: a Session on a paired Host does not move.
+   */
+  function handoffItems(): MenuItem[] {
+    if (!canHandOff(tab)) return [];
+    const targets = handoffHosts().flatMap((h) =>
+      hostGroups(h.id).map((g) => ({ host: h.id, group: g, label: `${hostName(h.id)} · ${g.name}` })),
+    );
+    const none = [{ label: "No Host connected", disabled: true }];
+    return [
+      {
+        label: "New Tab on Host",
+        submenu: targets.length ? targets.map((t) => ({ label: t.label, action: () => void newTabOnHost(tab, t.host, t.group.id) })) : none,
+      },
+      {
+        label: "Move Tab to Host",
+        submenu: targets.length ? targets.map((t) => ({ label: t.label, action: () => void moveTabToHost(tab, t.host, t.group.id) })) : none,
+      },
+    ];
+  }
+
+  /** A linked Tab's explicit picks for a plain new Tab right after it: on its Host (as ⌘T would), or here. */
+  function newTabItems(): MenuItem[] {
+    if (local) return [];
+    return [
+      { label: `New Tab on ${hostLabel}`, action: () => void newTab({ after: tab.id }), disabled: !online },
+      { label: "New Local Tab", action: () => void newTab({ after: tab.id, host: LOCAL_HOST }) },
+    ];
+  }
+
   function menuItems(): MenuItem[] {
+    // Any Group, local and linked Tabs alike: a move places the Tab and never moves its Session
+    // (Handoff, below, does).
     const otherGroups = layout.groups.filter((g) => g.id !== tab.groupId);
     return [
       { label: "Rename", action: beginRename },
@@ -154,6 +208,8 @@
           : [{ label: "No other Groups", disabled: true }],
       },
       { label: "New Group from Tab", action: () => void newGroupFromTab(tab.id) },
+      ...newTabItems(),
+      ...handoffItems(),
       freezeItem(),
       { label: "Close", action: () => void requestCloseTab(tab.id), danger: true, separatorBefore: true },
     ];
@@ -170,6 +226,7 @@
   class:dragging={dnd.draggingTabId === tab.id}
   class:highlight={highlight || finished}
   class:unread={tab.unread}
+  class:offline={!online}
   role="button"
   tabindex="0"
   draggable="true"
@@ -208,11 +265,18 @@
         onclick={(e) => e.stopPropagation()}
       />
     {:else}
-      <span class="title" role="button" tabindex="-1" ondblclick={startEdit}>{title}</span>
+      <span class="title" role="button" tabindex="-1" ondblclick={startEdit}
+        >{#if label}{label.project}{#if label.description}<span class="description">{" "}{label.description}</span>{/if}{:else}{title}{/if}</span
+      >
     {/if}
-    {#if git || remote}
+    {#if git || remote || !local}
       <span class="badge-line">
-        <Badge {git} {remote} />
+        {#if !local}
+          <span class="host-chip" title={online ? `On ${hostLabel}` : `On ${hostLabel}, which is not connected`}>{hostLabel}</span>
+        {/if}
+        {#if git || remote}
+          <Badge {git} {remote} />
+        {/if}
       </span>
     {/if}
     {#if suiteText}
@@ -315,6 +379,11 @@
     white-space: nowrap;
     font-size: 12.5px;
   }
+  /* An agent's few words on what it is at: after its project, quieter, never bold. */
+  .description {
+    font-weight: 400;
+    color: var(--text-tertiary);
+  }
   .title-input {
     flex: 1 1 auto;
     min-width: 0;
@@ -336,8 +405,35 @@
   }
   .badge-line {
     display: flex;
+    align-items: center;
+    gap: 5px;
     min-width: 0;
     overflow: hidden;
+  }
+  /* The Host a linked Tab runs on. Local Tabs carry none. */
+  .host-chip {
+    flex: none;
+    max-width: 9em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10px;
+    line-height: 14px;
+    padding: 0 5px;
+    border-radius: 4px;
+    border: 1px solid var(--sidebar-border);
+    background: var(--sidebar-bg-raised);
+    color: var(--text-secondary);
+  }
+  /* A linked Tab whose Host is not connected keeps its place and its last facts, greyed. */
+  .row.offline .icon,
+  .row.offline .title,
+  .row.offline .badge-line,
+  .row.offline .stats {
+    opacity: 0.45;
+  }
+  .row.offline .host-chip {
+    border-style: dashed;
   }
   .close {
     flex: none;

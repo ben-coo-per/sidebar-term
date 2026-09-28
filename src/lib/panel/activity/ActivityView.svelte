@@ -6,7 +6,7 @@
 <script lang="ts">
   import { activity } from "./activity.svelte";
   import SuiteBar from "../../suite/SuiteBar.svelte";
-  import { suites } from "../../suite/suites.svelte";
+  import { localSuites } from "../../suite/suites.svelte";
   import { runnerLabel, sortSuites, suiteView } from "../../suite/model";
   import type { SuiteSnapshot } from "../../types";
   import {
@@ -21,6 +21,7 @@
   } from "./model";
   import { activateTab, layout, tabIdForSession, type Tab } from "../../layout.svelte";
   import { sessionState, tabTitle } from "../../sessions.svelte";
+  import { LOCAL_HOST, sessionKey } from "../../host/ids";
   import { tabColorVar } from "../../sidebar/repoColor";
   import type { ActivityProcess, ActivitySnapshot, SessionId } from "../../types";
 
@@ -36,13 +37,14 @@
       .filter((id): id is SessionId => id !== null),
   );
 
+  // Activity is the local Host's: every Session here is one of this Mac's.
   function tabOf(sessionId: SessionId): Tab | null {
-    const tabId = tabIdForSession(sessionId);
+    const tabId = tabIdForSession(sessionKey(LOCAL_HOST, sessionId));
     return tabId ? (layout.tabs[tabId] ?? null) : null;
   }
 
   function colorOf(sessionId: SessionId): string {
-    return tabColorVar(sessionState(sessionId)?.info?.git?.commonDir ?? null);
+    return tabColorVar(sessionState(sessionKey(LOCAL_HOST, sessionId))?.info?.git?.commonDir ?? null);
   }
 
   function tabLabel(sessionId: SessionId): string {
@@ -76,7 +78,7 @@
 
   function goToTab(p: ActivityProcess) {
     if (p.sessionId === null) return;
-    const tabId = tabIdForSession(p.sessionId);
+    const tabId = tabIdForSession(sessionKey(LOCAL_HOST, p.sessionId));
     if (tabId) activateTab(tabId);
   }
 
@@ -87,7 +89,7 @@
     }
   }
 
-  const tests = $derived(sortSuites(suites.list));
+  const tests = $derived(sortSuites(localSuites()));
 
   function suiteTabTitle(s: SuiteSnapshot): string {
     const tab = tabOf(s.sessionId);
@@ -95,7 +97,7 @@
   }
 
   function goToSuiteTab(s: SuiteSnapshot) {
-    const tabId = tabIdForSession(s.sessionId);
+    const tabId = tabIdForSession(sessionKey(LOCAL_HOST, s.sessionId));
     if (tabId) activateTab(tabId);
   }
 

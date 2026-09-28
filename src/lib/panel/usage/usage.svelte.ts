@@ -1,5 +1,6 @@
-// The latest UsageSnapshot, read only while the Panel is showing (its header carries a summary
-// even while the Usage view is closed), plus a clock for the "resets in" times.
+// The latest UsageSnapshot, read only while something shows it (the Panel, whose header carries a
+// summary even while the Usage view is closed, or the window bar), plus a clock for the
+// "resets in" times.
 
 import { onUsage, watchUsage } from "../../ipc";
 import type { AgentKind, UsageSnapshot } from "../../types";
@@ -12,20 +13,23 @@ export const usage = $state<{ snapshot: UsageSnapshot | null; now: number }>({
   now: Date.now(),
 });
 
-let watched: readonly AgentKind[] | null = null;
+/** One entry per watch in force, newest last: the newest one's agents are the ones read. */
+const watches: { agents: readonly AgentKind[] }[] = [];
 let stopListening: (() => void) | null = null;
 let clock: ReturnType<typeof setInterval> | null = null;
 
 /**
- * Read `agents`' usage; returns the function that stops. Watching again with other agents (the
- * Settings page changed them) replaces the watch without stopping in between, so the view keeps
- * its numbers until the new snapshot, which Rust sends at once.
+ * Read `agents`' usage; returns the function that stops. Several may watch at once; reading stops
+ * when the last one stops. Watching again with other agents (the Settings page changed them)
+ * replaces the watch without stopping in between, so the view keeps its numbers until the new
+ * snapshot, which Rust sends at once.
  */
 export function watch(agents: readonly AgentKind[]): () => void {
-  watched = agents;
+  const entry = { agents };
+  watches.push(entry);
   if (!stopListening) {
     const listening = onUsage((snapshot) => {
-      if (watched === null) return;
+      if (watches.length === 0) return;
       usage.snapshot = snapshot;
       usage.now = Date.now();
     });
@@ -34,11 +38,15 @@ export function watch(agents: readonly AgentKind[]): () => void {
   }
   void watchUsage(true, [...agents]);
   return () => {
-    if (watched !== agents) return;
-    watched = null;
+    const at = watches.indexOf(entry);
+    if (at === -1) return;
+    watches.splice(at, 1);
     // A re-watch in the same update (new agents) lands before this runs and cancels the stop.
     queueMicrotask(() => {
-      if (watched !== null) return;
+      if (watches.length > 0) {
+        void watchUsage(true, [...watches[watches.length - 1].agents]);
+        return;
+      }
       void watchUsage(false, []);
       stopListening?.();
       stopListening = null;

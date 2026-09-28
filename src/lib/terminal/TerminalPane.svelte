@@ -1,30 +1,31 @@
-<!-- Shows the active Session's Terminal. OWNER: terminal agent. CONTRACT: props are fixed. -->
+<!-- Shows the Session in view's Terminal, on whichever Host. OWNER: terminal agent. CONTRACT: props are fixed. -->
 <script lang="ts">
   import { terminals } from "./manager";
   import { TERMINAL_BACKGROUND } from "./theme";
-  import { carriesFiles, resolveDroppedPaths, shellEscape } from "./drop";
-  import type { SessionId } from "../types";
+  import { carriesFiles } from "./drop";
+  import type { SessionKey } from "../host/ids";
 
-  let { sessionId }: { sessionId: SessionId | null } = $props();
+  let { sessionKey }: { sessionKey: SessionKey | null } = $props();
   let el: HTMLDivElement;
   let dropTarget = $state(false);
 
   $effect(() => {
-    const id = sessionId;
-    if (id === null) return;
-    terminals.mount(id, el);
+    const key = sessionKey;
+    if (key === null) return;
+    terminals.mount(key, el);
     // `terminals.fit` coalesces to one fit per animation frame and only resizes the pty when the
     // grid changed, so a sidebar drag costs one fit per frame.
-    const ro = new ResizeObserver(() => terminals.fit(id));
+    const ro = new ResizeObserver(() => terminals.fit(key));
     ro.observe(el);
     // Clicks on the padding or the slack right/below the grid would otherwise blur the Terminal.
     const onMouseDown = (ev: MouseEvent) => {
       if (ev.target !== el && ev.target !== el.firstElementChild) return;
       ev.preventDefault();
-      terminals.focus(id);
+      terminals.focus(key);
     };
-    const onClick = () => terminals.focus(id);
-    // Dropped files paste as shell-escaped paths (see ./drop.ts).
+    const onClick = () => terminals.focus(key);
+    // Dropped files paste as shell-escaped paths on the Session's Host (see ./drop.ts; a paired
+    // Host's are uploaded there first).
     const onDragOver = (ev: DragEvent) => {
       if (!carriesFiles(ev)) return;
       ev.preventDefault();
@@ -38,10 +39,7 @@
       if (!carriesFiles(ev)) return;
       ev.preventDefault();
       dropTarget = false;
-      const files = Array.from(ev.dataTransfer!.files);
-      void resolveDroppedPaths(files).then((paths) => {
-        if (paths.length) terminals.paste(id, paths.map(shellEscape).join(" ") + " ");
-      });
+      void terminals.dropFiles(key, Array.from(ev.dataTransfer!.files));
     };
     el.addEventListener("mousedown", onMouseDown);
     el.addEventListener("click", onClick);
@@ -56,7 +54,7 @@
       el.removeEventListener("dragleave", onDragLeave);
       el.removeEventListener("drop", onDrop);
       dropTarget = false;
-      terminals.unmount(id);
+      terminals.unmount(key);
     };
   });
 </script>

@@ -1,8 +1,10 @@
-<!-- A Group header: chevron, name (inline rename), Tab count, its go-to-Group Hotkey, drag
-     handle, context menu. -->
+<!-- A Group header: chevron, name (inline rename), Tab count (local and linked), its go-to-Group
+     Hotkey, drag handle, context menu. -->
 <script lang="ts">
   import type { Group } from "../layout.svelte";
   import { deleteGroup, layout, newTab, renameGroup, toggleGroupCollapsed } from "../layout.svelte";
+  import { isLocal } from "../host/ids";
+  import { hostName } from "../host/hosts.svelte";
   import ChevronIcon from "./icons/ChevronIcon.svelte";
   import { dnd, startGroupDrag, endDrag, overGroupHeader, dropOnGroupHeader } from "./dnd.svelte";
   import { openContextMenu } from "./menu.svelte";
@@ -13,8 +15,10 @@
 
   let { group }: { group: Group } = $props();
 
-  const position = $derived(layout.groups.indexOf(group) + 1);
+  const position = $derived(layout.groups.findIndex((g) => g.id === group.id) + 1);
   const hotkey = $derived(position >= 1 && position <= GROUP_JUMP_COUNT ? hotkeyLabel(groupJumpAction(position)) : "");
+  /** The last Group cannot be deleted. */
+  const last = $derived(layout.groups.length <= 1);
 
   let editing = $state(false);
   let draft = $state("");
@@ -55,17 +59,22 @@
   });
 
   async function handleDelete() {
-    if (layout.groups.length <= 1) return;
+    if (last) return;
     if (group.tabIds.length > 0) {
+      // Linked Tabs close on their Host, as their close button would.
+      const hosts = group.tabIds.flatMap((id) => (layout.tabs[id] && !isLocal(layout.tabs[id].host) ? [layout.tabs[id].host] : []));
+      const names = [...new Set(hosts)].map(hostName).join(", ");
       const ok = await requestConfirm({
         message: `Delete "${group.name}"?`,
-        detail: `This closes ${group.tabIds.length} tab${group.tabIds.length === 1 ? "" : "s"} in this group.`,
+        detail:
+          `This closes ${group.tabIds.length} tab${group.tabIds.length === 1 ? "" : "s"} in this group` +
+          (hosts.length > 0 ? ` (${hosts.length} on ${names}, closed there too).` : "."),
         confirmLabel: "Delete Group",
         danger: true,
       });
       if (!ok) return;
     }
-    deleteGroup(group.id);
+    void deleteGroup(group.id);
   }
 
   function menuItems(): MenuItem[] {
@@ -77,7 +86,7 @@
         label: "Delete Group",
         action: handleDelete,
         danger: true,
-        disabled: layout.groups.length <= 1,
+        disabled: last,
         separatorBefore: true,
       },
     ];

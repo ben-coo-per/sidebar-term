@@ -12,8 +12,12 @@ _Avoid_: Terminal, shell instance, pane
 The sidebar entry for one session. It has a title, an icon and a badge, and belongs to exactly one group.
 _Avoid_: Item, row, entry
 
+**Linked Tab**:
+A Tab in the Mac's Groups whose Session runs on a paired Host: it points at that Host's Tab and has no Session on the Mac. The Host owns the Tab, its Session and its Title; the Mac only places it, and its row carries a chip with the Host's name. A Tab made on the Host from elsewhere is linked into a Group named after the Host.
+_Avoid_: Remote Tab (a remote hop is an ssh Session), mirrored Tab, proxy Tab
+
 **Group**:
-A user-named, user-ordered container of tabs in the sidebar. Groups are manual; the app never creates or reorders them on its own.
+A user-named, user-ordered container of tabs in the sidebar. Groups are manual; the app never reorders them, and creates one on its own only for a paired Host's Tabs made elsewhere (named after the Host), when no Group has that name.
 _Avoid_: Folder, workspace, section
 
 **Agent session**:
@@ -49,7 +53,7 @@ The resizable area at the bottom of the sidebar, beneath the groups. An accordio
 _Avoid_: Drawer, dock, footer, pane
 
 **Tray**:
-The row of small icon buttons and indicators at the top of the sidebar, beside the traffic lights. Shown whenever the sidebar is.
+The row of small icon buttons and indicators at the right of the window bar, in Tabs and Manager alike.
 _Avoid_: Toolbar, titlebar buttons, status bar
 
 **Caffeinate**:
@@ -84,14 +88,53 @@ _Avoid_: Activity monitor (that is Apple's app), stats, usage
 The panel view showing how much of each chosen coding agent's usage limits is spent: one bar per limit window (Claude Code's 5 hours and week, Codex's), with the time until it resets. Which agents it shows is chosen on the Settings page.
 _Avoid_: Quota, credits, stats, Activity (that is CPU and memory)
 
-**Suite**:
-A test run the app has recognised under a Session: a runner (vitest, jest, mocha, Playwright, pytest, cargo test, cargo-nextest, go test) started by the user or by an agent's shell tool. Its Tab shows a thin bar and its count and ETA while it runs, and the result for a few seconds after; the Activity view lists every running one.
-_Avoid_: Test run, job, task, progress bar (that is the Suite's bar, not the Suite)
+**Remote**:
+A Host serving its Sessions, Tabs and Groups to clients: while on, a server on 127.0.0.1 that Tailscale Serve publishes to the tailnet, speaking the Host protocol, and the phone's page at `/m`. Off by default on the Mac; turned on in Settings. Always on in the daemon.
+_Avoid_: Mobile app, remote access server, web UI
 
+**Host protocol**:
+The messages between a Host and a client over Remote's WebSocket: the Host's layout and each Session's facts (Agent status included), output and input, the Tab and Group commands with their replies, plus a file upload. The phone speaks it today; the Mac app will, for a remote Host.
+_Avoid_: Remote protocol, API, wire format
+
+**Pairing**:
+Letting one phone in: Settings shows a code (as a QR link, or to type); the phone presents it once and gets a token it sends on every connection. A pairing code lasts ten minutes and five wrong tries.
+_Avoid_: Login, sign-in, registration
+
+**Paired phone**:
+A phone that holds a token this Mac accepts; listed in Settings, where it can be removed. Removing it makes its next connection fail, and it must pair again.
+_Avoid_: Device, client (except in code, where it is any connection)
+
+**Attach**:
+A client's Terminal taking a Session's output: what the Session printed before, then the live output, with its typing going to the Session's pty. A phone attaches over Remote at the Host's grid size and never resizes the pty; the Mac webview attaches in-process to the local Host's Sessions (which the Host spawns with their Tabs) and sizes them.
+_Avoid_: Connect (that is the phone reaching the Mac at all), open (that is a Tab), mirror
+
+**Suite**:
+A test run a Host has recognised under a Session: a runner (vitest, jest, mocha, Playwright, pytest, cargo test, cargo-nextest, go test) started by the user or by an agent's shell tool. Its Tab shows a thin bar and its count and ETA while it runs, and the result for a few seconds after; the Activity view lists every running one.
+_Avoid_: Test run, job, task, progress bar (that is the Suite's bar, not the Suite)
 **Host**:
-A machine running the sidebar-term core, whose Sessions, Tabs and Groups can be shown and driven from a client. The Mac app is its own local Host; a second machine runs the core as a headless daemon (`sidebar-termd`). A client shows each paired Host as a section of the sidebar.
+A machine running the sidebar-term core, whose Sessions, Tabs and Groups can be shown and driven from a client. The Mac app is its own local Host; a second machine runs the core as a headless daemon (`sidebar-termd`). The Mac shows a paired Host's Tabs as linked Tabs in its own Groups.
 _Avoid_: Server, remote machine, node, peer
+
+**Manager**:
+The window's second mode, beside Tabs: every Agent session as a Lane, the questions agents wait on (answered in place when the agent is Hooked), finished work not looked at, and every agent's Agent events. Its Tabs are the sidebar's; opening one goes back to Tabs.
+_Avoid_: Dashboard, overview, mission control
+
+**Lane**:
+One Agent session's row in Manager: its Title, then its Agent status over time (working, waiting on you, idle at prompt), then what it is doing now.
+_Avoid_: Track, timeline, swimlane
+
+**Hooked**:
+An Agent session whose agent reports to its Host through hooks (a Claude Code started through sidebar-term's `claude`): its questions come with their answers and can be answered from Manager. Every other agent is **screen-only**: only its Agent status and its screen are known.
+_Avoid_: Integrated, instrumented, connected
+
+**Agent event**:
+One thing an agent did, as its Host recorded it: a tool it used, a question it asked, an answer given, or (for a screen-only agent) a change of its Agent status. Manager lists every agent's, newest first.
+_Avoid_: Log, activity (that is CPU and memory), history (that is a Lane's status over time)
 
 **Handoff**:
 Moving a Tab to another Host: its Session is killed here after its Resume entry is recorded, a Tab is created on the Host at the matching checkout, and the entry is rerun there. Code moves by push and checkout, never by copying files.
 _Avoid_: Migrate, transfer, sync
+
+**Checkout root**:
+The directory on a Host under which its repos are checked out, set per Host in Settings: a Tab in repo `x` lands in `<root>/x` there on a Handoff or a New Tab on that Host, unless an override names that repo's checkout elsewhere.
+_Avoid_: Workspace, projects dir, base path

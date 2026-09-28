@@ -1,0 +1,29 @@
+# sidebar-termd: the sidebar-term Host daemon, as a systemd user service.
+#
+#   mkdir -p ~/.config/systemd/user && cp packaging/systemd/sidebar-termd.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now sidebar-termd
+#   loginctl enable-linger "$USER"     # keep it running with no one logged in
+#
+# Pair a phone or the Mac: `systemctl --user kill --kill-whom=main -s USR1 sidebar-termd`, then read the code with
+# `journalctl --user -u sidebar-termd -n 3`. Logs: `journalctl --user -u sidebar-termd -f`.
+# The daemon keeps its files in $XDG_DATA_HOME/sidebar-term (~/.local/share/sidebar-term) and
+# serves the phone page from the `web/` directory in there (pnpm build's build/); see README.md.
+
+[Unit]
+Description=sidebar-term Host daemon (Sessions served over Tailscale)
+Documentation=https://github.com/ben-coo-per/sidebar-term
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/sidebar-termd
+# SIGTERM: the daemon records Resume entries and hangs up every Session, then exits.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=2
+Environment=RUST_BACKTRACE=1
+
+[Install]
+WantedBy=default.target
