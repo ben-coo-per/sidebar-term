@@ -89,6 +89,8 @@ interface LayoutState {
   /** Tabs (the sidebar and one Terminal) or Manager (every agent's lane). Per window, persisted. */
   mode: WindowMode;
   managerZoom: ManagerZoom;
+  /** The Tab whose Terminal Manager shows (the selected one), if any. Not persisted. */
+  managerTabId: string | null;
   /** True once the local Host's first snapshot and the sidebar settings are in. Gates persistence. */
   ready: boolean;
 }
@@ -108,6 +110,7 @@ export const layout = $state<LayoutState>({
   panel: { ...DEFAULT_PANEL },
   mode: "tabs",
   managerZoom: DEFAULT_MANAGER_ZOOM,
+  managerTabId: null,
   ready: false,
 });
 
@@ -378,6 +381,16 @@ export async function initLayout(): Promise<void> {
 
 export function activeTab(): Tab | null {
   return layout.activeTabId ? (layout.tabs[layout.activeTabId] ?? null) : null;
+}
+
+/** The Tab whose Terminal Manager shows, or null while it shows none. */
+export function managerTab(): Tab | null {
+  return layout.managerTabId ? (layout.tabs[layout.managerTabId] ?? null) : null;
+}
+
+/** The Tab whose Terminal shows now: the active Tab in Tabs mode, Manager's in Manager. */
+export function tabInView(): Tab | null {
+  return layout.mode === "manager" ? managerTab() : activeTab();
 }
 
 /** The Host of the Tab in view; the local Host while nothing is. */
@@ -667,6 +680,16 @@ export function setMode(mode: WindowMode): void {
   if (layout.mode === mode) return;
   layout.mode = mode;
   scheduleSave();
+}
+
+/**
+ * Show a Tab's Terminal in Manager (null: none), clearing its unread mark as going to it does.
+ * The active Tab stays: Tabs mode comes back to where the user left it.
+ */
+export function showInManager(tabId: string | null): void {
+  const tab = tabId === null ? null : layout.tabs[tabId];
+  layout.managerTabId = tab ? tab.id : null;
+  if (tab) setTabUnread(tab.id, false);
 }
 
 export function toggleMode(): void {

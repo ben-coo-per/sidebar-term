@@ -3,7 +3,7 @@
 // is passed in. See docs/architecture.md "Manager".
 
 import type { ManagerZoom } from "../sidebar/settings";
-import type { AgentEvent, AgentEventKind, AgentStatus, StatusChange } from "../types";
+import type { AgentEvent, AgentStatus, StatusChange } from "../types";
 
 export const ZOOM_LABELS: Record<ManagerZoom, string> = { "15m": "15m", "1h": "1h", "4h": "4h", start: "Since start" };
 
@@ -110,20 +110,6 @@ export function holdOrder(shown: string[], next: string[], frozen: boolean): str
   const had = new Set(kept);
   return [...kept, ...next.filter((k) => !had.has(k))];
 }
-
-/** How a feed row's dot reads, by what the agent did. */
-export type EventTone = "waiting" | "working" | "muted" | "failed";
-
-export const EVENT_TONES: Record<AgentEventKind, EventTone> = {
-  asked: "waiting",
-  edit: "working",
-  read: "working",
-  command: "working",
-  failed: "failed",
-  answered: "muted",
-  started: "muted",
-  idle: "muted",
-};
 
 const EDIT = /^(?:Updated|Wrote) (.+?)(?: \((?:\+(\d+))?(?: ?−(\d+))?\))?$/;
 

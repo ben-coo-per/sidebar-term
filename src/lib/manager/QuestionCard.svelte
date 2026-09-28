@@ -1,8 +1,9 @@
 <!-- A card for one agent waiting on the user. A hooked agent's question comes with its detail
      (the diff of an edit, the command to run) and its answers as buttons, 1-9, the first the
      default. An agent without one (screen-only, or a question its hooks could not carry) shows
-     the last lines of its screen and one way on: open its Tab to answer there. The oldest card
-     has the focus ring: its keys answer. -->
+     the last lines of its screen and the way to answer: its Terminal, which Manager shows and
+     gives the keys. Either card can open its Tab. The oldest card has the focus ring: its keys
+     answer. -->
 <script lang="ts">
   import type { Lane } from "./state.svelte";
   import { formatDuration, lastLines } from "./model";
@@ -21,12 +22,15 @@
     now,
     focused,
     onanswer,
+    onshow,
     onopen,
   }: {
     lane: Lane;
     now: number;
     focused: boolean;
     onanswer: (index: number) => void;
+    /** Show the Tab's Terminal in Manager, with the keys. */
+    onshow: () => void;
     onopen: () => void;
   } = $props();
 
@@ -76,8 +80,9 @@
       {#each screen as line, i (i)}<div class="line">{line}</div>{:else}<div class="line"> </div>{/each}
     </div>
     <div class="actions">
-      <button type="button" class="btn primary" onclick={onopen}>Open Tab to answer<span class="n">↵</span></button>
-      <span class="note">{lane.hooked ? "Answer in its Tab" : "No hooks: answer in its Tab"}</span>
+      <button type="button" class="btn primary" onclick={onshow}>Answer in its Terminal</button>
+      <span class="spacer"></span>
+      <button type="button" class="link" onclick={onopen}>Open Tab</button>
     </div>
   {/if}
 </div>
@@ -227,10 +232,5 @@
   }
   .link:hover {
     text-decoration: underline;
-  }
-  .note {
-    font-size: 11px;
-    color: var(--text-tertiary);
-    white-space: nowrap;
   }
 </style>

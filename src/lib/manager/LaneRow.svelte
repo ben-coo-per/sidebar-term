@@ -1,8 +1,9 @@
 <!-- One agent Tab as a lane: its status icon, its project (bold while unread) and a few words on
      what it is at; under them a Host chip on a paired Host, a "screen only" chip when the agent has
      no hooks, and its repo's dot with the branch; then its status
-     history across the window; then what it is doing and for how long. Hover (or the lane focus)
-     swaps that for "Open Tab ↵"; a click opens the Tab. -->
+     history across the window; then what it is doing and for how long. A click selects the lane:
+     Manager shows its Terminal. Hover (or the selection) swaps the last column for "Open Tab",
+     the way to its Tab in Tabs mode (↵ for the selected lane). -->
 <script lang="ts">
   import type { Lane } from "./state.svelte";
   import { formatDuration, segments } from "./model";
@@ -16,9 +17,17 @@
     lane,
     now,
     span,
-    focused,
+    selected,
+    onselect,
     onopen,
-  }: { lane: Lane; now: number; span: number; focused: boolean; onopen: (lane: Lane) => void } = $props();
+  }: {
+    lane: Lane;
+    now: number;
+    span: number;
+    selected: boolean;
+    onselect: (lane: Lane) => void;
+    onopen: (lane: Lane) => void;
+  } = $props();
 
   const segs = $derived(segments(lane.history, now, span));
   const age = $derived(formatDuration(now - lane.since));
@@ -27,12 +36,17 @@
 
 <div
   class="lane"
-  class:focused
+  class:selected
   role="button"
   tabindex="-1"
+  aria-pressed={selected}
   title="{lane.title} · {AGENT_NAMES[lane.agent]}: {status}"
-  onclick={() => onopen(lane)}
-  onkeydown={(e) => e.key === "Enter" && onopen(lane)}
+  onclick={() => onselect(lane)}
+  onkeydown={(e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    onopen(lane);
+  }}
 >
   <span class="label">
     <span class="icon {lane.kind}">
@@ -65,7 +79,17 @@
   </div>
 
   <span class="status {lane.kind}">{status}</span>
-  <span class="open">Open Tab<kbd class="hotkey">↵</kbd></span>
+  <button
+    type="button"
+    class="open"
+    tabindex="-1"
+    onclick={(e) => {
+      e.stopPropagation();
+      onopen(lane);
+    }}
+  >
+    Open Tab{#if selected}<kbd class="hotkey">↵</kbd>{/if}
+  </button>
 </div>
 
 <style>
@@ -83,10 +107,10 @@
     outline: none;
   }
   .lane:hover,
-  .lane.focused {
+  .lane.selected {
     background: var(--sidebar-bg-raised);
   }
-  .lane.focused {
+  .lane.selected {
     box-shadow: inset 2px 0 0 var(--focus-ring);
   }
   .label {
@@ -142,7 +166,7 @@
     color: var(--text-primary);
   }
   .lane:hover .title,
-  .lane.focused .title {
+  .lane.selected .title {
     color: var(--text-primary);
   }
   .meta {
@@ -213,20 +237,33 @@
     color: var(--text-secondary);
   }
   .open {
+    appearance: none;
     display: none;
-    justify-content: flex-end;
+    justify-self: end;
     align-items: center;
     gap: 6px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    background: none;
+    font: inherit;
     font-size: 11.5px;
     color: var(--accent-strong);
     white-space: nowrap;
+    cursor: default;
+  }
+  .open:hover {
+    text-decoration: underline;
+  }
+  .open:hover .hotkey {
+    text-decoration: none;
   }
   .lane:hover .status,
-  .lane.focused .status {
+  .lane.selected .status {
     display: none;
   }
   .lane:hover .open,
-  .lane.focused .open {
+  .lane.selected .open {
     display: flex;
   }
   .hotkey {

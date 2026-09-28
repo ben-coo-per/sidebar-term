@@ -1,5 +1,6 @@
 // Every Host's agent events (what its agents did: tools used, questions asked, answers given,
-// a screen-only agent's changes of status), for Manager's feed. The local Host's come from
+// a screen-only agent's changes of status): an agent's name takes its few words from the last
+// prompt among them, and Manager's finished rows what the last turn changed. The local Host's come from
 // `agent_events` and the `agent-event` event; a paired Host's from its `hello` and
 // `agent_event` messages (src/lib/host/hosts.svelte.ts). Each Host keeps its last 500
 // (src-tauri/core/src/agents/); so does this client, per Host.
@@ -31,13 +32,6 @@ export function addAgentEvent(host: HostId, event: AgentEvent): void {
 
 export function dropHostAgentEvents(host: HostId): void {
   delete feed.byHost[host];
-}
-
-/** Every Host's events, newest first. */
-export function newestFirst(): HostAgentEvent[] {
-  return Object.values(feed.byHost)
-    .flat()
-    .sort((a, b) => b.at - a.at);
 }
 
 /** Read the local Host's events and follow them; returns the function that stops. */

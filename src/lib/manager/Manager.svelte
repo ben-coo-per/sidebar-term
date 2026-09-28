@@ -1,20 +1,27 @@
 <!-- Manager: the full window, for running several agents at once (docs/architecture.md "Manager").
      Under the window bar (src/lib/window/WindowBar.svelte: Tabs / Manager, the zoom, Usage, the
-     Tray), top to bottom: every agent Tab as a lane across the window of time, then two columns: what
-     needs the user (questions answered in place, the answers just sent, finished work not looked
-     at) and every agent's events. A lane or card opens its Tab in Tabs mode.
+     Tray), top to bottom: every agent Tab as a lane across the window of time, then two columns:
+     the narrow one what needs the user (questions answered in place, the answers just sent,
+     finished work not looked at), the wide one the selected Tab's Terminal (SelectedTab.svelte),
+     to type into as in Tabs mode. A click on a lane or a finished row selects its Tab, as does
+     "Answer in its Terminal" on the card of an agent whose question Manager cannot answer;
+     "Open Tab", on a lane, a card, a finished row or the Terminal's bar, opens it in Tabs mode.
 
-     Keys (none with a modifier; the Hotkeys keep those): 1-9 answer the focused card, Tab /
-     Shift-Tab move the card focus, ↑ / ↓ move a lane focus, ↵ opens the focused lane's Tab, else
-     the focused card's, Esc drops the lane focus. -->
+     Keys (none with a modifier; the Hotkeys keep those), while the Terminal does not have the
+     focus: 1-9 answer the focused card, Tab / Shift-Tab move the card focus and the selection
+     with it, ↑ / ↓ select a lane, ↵ opens the selected Tab, else the focused card's, Esc drops
+     the selection. A click selects and gives the Terminal the focus: the keys are then the
+     Session's, Esc too, until a click outside it. -->
 <script lang="ts">
-  import { layout } from "../layout.svelte";
+  import { tick } from "svelte";
+  import { layout, managerTab, showInManager, tabSessionKey, type Tab } from "../layout.svelte";
   import { settingsPage } from "../settings/visibility.svelte";
+  import { terminals } from "../terminal/manager";
   import CheckIcon from "../sidebar/icons/CheckIcon.svelte";
-  import SpinnerIcon from "../sidebar/icons/SpinnerIcon.svelte";
   import LaneRow from "./LaneRow.svelte";
+  import SelectedTab from "./SelectedTab.svelte";
+  import SentRow from "./SentRow.svelte";
   import QuestionCard from "./QuestionCard.svelte";
-  import AgentFeed from "./AgentFeed.svelte";
   import {
     answer,
     finished,
@@ -22,10 +29,11 @@
     lanes,
     manager,
     moveCardFocus,
-    moveLaneFocus,
+    moveSelection,
     openTab,
     rememberOrder,
     runClock,
+    select,
     waiting,
     type Lane,
   } from "./state.svelte";
@@ -43,6 +51,14 @@
   const cards = $derived(waiting());
   const focused = $derived(focusedCard(cards));
   const done = $derived(finished());
+  const selected = $derived(managerTab());
+  // The selected Tab's lane; none once its agent left (its Terminal stays).
+  const selectedLane = $derived(selected ? (shown.find((l) => l.tab.id === selected.id) ?? null) : null);
+
+  // A selected Tab that closed is no longer selected.
+  $effect(() => {
+    if (layout.managerTabId && !selected) showInManager(null);
+  });
 
   $effect(() => rememberOrder(shown.map((l) => l.tab.id)));
   $effect(() => runClock());
@@ -50,17 +66,22 @@
   let root: HTMLDivElement | undefined = $state();
   let lanesEl: HTMLDivElement | undefined = $state();
   let needsEl: HTMLDivElement | undefined = $state();
-  let feedEl: HTMLDivElement | undefined = $state();
 
-  // Keys come here, not to the Terminal that had the focus; the columns scroll where they were.
-  $effect(() => {
+  /** The keys are Manager's: taken from whatever had the focus, a Terminal just mounted too. */
+  async function takeKeys() {
+    await tick();
     (document.activeElement as HTMLElement | null)?.blur?.();
     root?.focus({ preventScroll: true });
+  }
+
+  // Keys come here, not to a Terminal, until the user clicks into one; the columns scroll where
+  // they were.
+  $effect(() => {
+    void takeKeys();
     if (lanesEl) lanesEl.scrollTop = manager.scroll.lanes;
     if (needsEl) needsEl.scrollTop = manager.scroll.needs;
-    if (feedEl) feedEl.scrollTop = manager.scroll.feed;
     return () => {
-      manager.scroll = { lanes: lanesEl?.scrollTop ?? 0, needs: needsEl?.scrollTop ?? 0, feed: feedEl?.scrollTop ?? 0 };
+      manager.scroll = { lanes: lanesEl?.scrollTop ?? 0, needs: needsEl?.scrollTop ?? 0 };
     };
   });
 
@@ -79,18 +100,28 @@
     } else if (e.key === "Tab") {
       e.preventDefault();
       moveCardFocus(cards, e.shiftKey ? -1 : 1);
+      void takeKeys();
     } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
-      moveLaneFocus(shown, e.key === "ArrowDown" ? 1 : -1);
+      moveSelection(shown, e.key === "ArrowDown" ? 1 : -1);
+      void takeKeys();
     } else if (e.key === "Enter") {
-      const lane = shown.find((l) => l.tab.id === manager.laneFocus) ?? focused;
-      if (lane) {
+      const tab = selected ?? focused?.tab;
+      if (tab) {
         e.preventDefault();
-        openTab(lane.tab);
+        openTab(tab);
       }
-    } else if (e.key === "Escape" && manager.laneFocus) {
-      manager.laneFocus = null;
+    } else if (e.key === "Escape" && selected) {
+      select(null);
     }
+  }
+
+  /** Select with the pointer: the Tab's Terminal takes the keys, as on going to a Tab. */
+  async function pick(tab: Tab) {
+    select(tab.id);
+    await tick();
+    const key = tabSessionKey(tab);
+    if (key) terminals.focus(key);
   }
 
   function open(lane: Lane) {
@@ -117,7 +148,7 @@
     </div>
     <div class="rows" bind:this={lanesEl}>
       {#each shown as lane (lane.tab.id)}
-        <LaneRow {lane} now={manager.now} {span} focused={manager.laneFocus === lane.tab.id} onopen={open} />
+        <LaneRow {lane} now={manager.now} {span} selected={selectedLane === lane} onselect={(l) => void pick(l.tab)} onopen={open} />
       {:else}
         <p class="empty">No agents running. Start Claude Code, Codex or Gemini in a Tab and it shows here.</p>
       {/each}
@@ -134,11 +165,7 @@
       <span class="heading" class:waiting={cards.length > 0}>Needs you<span class="count">({cards.length})</span></span>
 
       {#each manager.sent as s (s.pendingId)}
-        <div class="sent" class:fading={s.fading}>
-          <span class="sent-icon"><CheckIcon size={14} /></span>
-          <span class="sent-text">Sent <span class="choice">“{s.choice}”</span> to {s.title}</span>
-          {#if !s.resumed}<span class="resuming"><SpinnerIcon size={14} />resuming</span>{/if}
-        </div>
+        <SentRow sent={s} />
       {/each}
 
       {#if cards.length === 0}
@@ -151,6 +178,7 @@
           now={manager.now}
           focused={focused === lane}
           onanswer={(i) => void answer(lane, i)}
+          onshow={() => void pick(lane.tab)}
           onopen={() => openTab(lane.tab)}
         />
       {/each}
@@ -158,21 +186,44 @@
       {#if done.length > 0}
         <span class="heading finished-heading">Finished, not looked at<span class="count">({done.length})</span></span>
         {#each done as f (f.tab.id)}
-          <div class="finished" role="button" tabindex="-1" onclick={() => openTab(f.tab)} onkeydown={(e) => e.key === "Enter" && openTab(f.tab)}>
+          <div
+            class="finished"
+            role="button"
+            tabindex="-1"
+            onclick={() => void pick(f.tab)}
+            onkeydown={(e) => {
+              if (e.key !== "Enter") return;
+              e.preventDefault();
+              openTab(f.tab);
+            }}
+          >
             <span class="finished-icon"><CheckIcon size={14} /></span>
             <span class="finished-title" title={f.title}>{f.project}</span>
             {#if f.description}<span class="finished-description">{f.description}</span>{/if}
             <span class="finished-summary">{f.summary}</span>
             <span class="finished-since">{formatDuration(manager.now - f.since)} ago</span>
-            <span class="link">Open Tab</span>
+            <button
+              type="button"
+              class="link"
+              tabindex="-1"
+              onclick={(e) => {
+                e.stopPropagation();
+                openTab(f.tab);
+              }}
+            >
+              Open Tab
+            </button>
           </div>
         {/each}
       {/if}
     </div>
 
-    <div class="column feed-column" bind:this={feedEl}>
-      <span class="heading">Activity<span class="sub">· every agent, newest first</span></span>
-      <AgentFeed />
+    <div class="viewer">
+      {#if selected}
+        <SelectedTab tab={selected} lane={selectedLane} now={manager.now} onopen={() => openTab(selected)} onclose={() => select(null)} />
+      {:else}
+        <span class="nothing">Select an agent to see its Terminal here, and type into it.</span>
+      {/if}
     </div>
   </div>
 </div>
@@ -223,16 +274,12 @@
   .heading.waiting {
     color: var(--status-needs-input);
   }
-  .count,
-  .sub {
+  .count {
     font-weight: 400;
     letter-spacing: 0;
     text-transform: none;
     font-variant-numeric: tabular-nums;
     color: var(--text-tertiary);
-  }
-  .sub {
-    margin-left: 2px;
   }
   .ticks {
     position: relative;
@@ -300,7 +347,8 @@
     flex: 1 1 auto;
     min-height: 0;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: minmax(300px, 34%) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
     border-top: 1px solid var(--sidebar-border);
   }
   .column {
@@ -311,52 +359,21 @@
     gap: 10px;
     padding: 12px 16px;
   }
-  .feed-column {
-    gap: 0;
+  .viewer {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
     border-left: 1px solid var(--sidebar-divider);
   }
-  .feed-column > .heading {
-    margin-bottom: 8px;
+  .viewer > .nothing {
+    margin: auto;
+    padding: 16px;
   }
   .nothing {
     padding: 2px 0 6px;
     font-size: 12.5px;
     color: var(--text-tertiary);
-  }
-  .sent {
-    flex: none;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: 32px;
-    padding: 0 12px;
-    border: 1px dashed var(--scrollbar-thumb);
-    border-radius: var(--radius-md);
-    font-size: 12px;
-    color: var(--text-secondary);
-    transition: opacity var(--duration-medium) var(--ease-standard);
-  }
-  .sent.fading {
-    opacity: 0;
-  }
-  .sent-icon {
-    display: flex;
-  }
-  .sent-text {
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .choice {
-    color: var(--text-primary);
-  }
-  .resuming {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    color: var(--status-running);
   }
   .finished-heading {
     margin-top: 6px;
@@ -411,8 +428,17 @@
     font-variant-numeric: tabular-nums;
   }
   .link {
+    appearance: none;
     flex: none;
+    padding: 0;
+    border: none;
+    background: none;
+    font: inherit;
     font-size: 11.5px;
     color: var(--accent-strong);
+    cursor: default;
+  }
+  .link:hover {
+    text-decoration: underline;
   }
 </style>

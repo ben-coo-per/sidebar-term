@@ -175,7 +175,8 @@ answers it (see "Host daemon" for the daemon's answer).
 - `src/lib/terminal/TerminalPane.svelte` — shows the Session in view's Terminal.
 - `src/lib/manager/` — Manager (see "Manager"): `state.svelte.ts` (lanes, cards, Sent rows,
   focus, answering and opening Tabs), `feed.svelte.ts` (every Host's agent events), `model.ts`
-  (the pure rules: segments, order, ticks, durations), `Manager.svelte` and its parts, and the
+  (the pure rules: segments, order, ticks, durations), `Manager.svelte` and its parts
+  (`SelectedTab.svelte`: the selected Tab's Terminal), and the
   Tabs-mode `ModeSwitch.svelte` and `WaitingStrip.svelte`.
 - `src/lib/layout.svelte.ts` — the mirror of this Mac's layout (`layout_get`, then every `layout`
   event) as `layout.groups` and `layout.tabs`, local and linked Tabs alike (each knows the Host
@@ -823,14 +824,24 @@ the sidebar, and a Tab it opens opens in Tabs mode.
   of Agent status, about 5 h of it, the change in force at the window's start kept), so a paired
   Host's lanes and a phone's would match. Order: waiting (longest first), working, idle, held
   while the pointer is over the lanes. A lane's Title is bold under the Tab's Unread rule.
+- **The selected Tab**: a click on a lane or a finished row, "Answer in its Terminal" on a card
+  (or ↑ / ↓ over the lanes, or Tab over the cards) selects its Tab, and Manager shows that Tab's Terminal in its wide column
+  (`SelectedTab.svelte`): the same Terminal as in Tabs mode, fitted to the column, so the pty
+  takes that size while it shows. It is `layout.managerTabId`, not persisted, and not the active
+  Tab: Tabs mode comes back to the Tab the user left. While Manager shows, it is the Tab in view
+  (`tabInView`): selecting it clears its Unread, what its agent does is not marked, Memory Guard
+  does not freeze it, and Close Tab and Mark Unread act on it. A click gives the Terminal the
+  focus, and the keys are then the Session's, Esc among them, until a click outside it; selecting
+  with the keys leaves them with Manager. Esc (with Manager) or the bar's × drops the selection.
+  A Tab whose agent left stays selected; one that closed does not. A lane does not open its Tab:
+  "Open Tab" does (on the lane, a card, a finished row, the Terminal's bar), and ↵ for the
+  selected Tab. A question the Host holds stays on its card: selecting its Tab does not let go.
 - **Needs you**: a card per waiting agent, oldest first. A **hooked** agent's question (below)
   shows its detail and its answers; 1-9 answer the focused card, Tab moves the focus. The answer
   goes to the agent through its hook; a "Sent" row stands in for the card until the agent leaves
   Needs input, then fades. A screen-only agent's card shows the last 3 lines of its Terminal and
-  "Open Tab to answer". Below: Tabs whose agent finished or stopped while nobody looked, with what
-  its last turn changed.
-- **Activity**: every Host's agent events, newest first (the heading is the design's; it is not
-  the Panel's Activity view).
+  "Answer in its Terminal", which selects its Tab and gives the Terminal the focus. Below: Tabs whose agent finished or stopped while nobody looked, with what
+  its last turn changed. The column is the narrow one (34% of the window, 300 px at least).
 - In Tabs mode a strip at the top of the Groups says how many agents wait, and opens Manager.
 
 **Hooks** (`core/src/agents/`). Every Session's `PATH` starts with `<data dir>/claude-hooks/bin`,
@@ -849,7 +860,7 @@ Tab from Manager, and whenever the Tab it belongs to is in view in Tabs mode, so
 user is looking at always shows in its Terminal. With no Host to reach, the hook prints nothing
 and Claude Code asks as usual. A `claude` that is not the wrapper (an alias, a `PATH` rebuilt by
 the shell's startup files), Codex and Gemini are **screen-only**: their status changes are the
-feed, and their cards open the Tab.
+feed, and their cards are answered in the Terminal.
 
 ## Window
 
