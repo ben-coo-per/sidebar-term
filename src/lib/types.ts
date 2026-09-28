@@ -195,8 +195,16 @@ export interface AgentUsage {
   plan: string | null;
   /** When `windows` were read (Claude Code) or recorded by the agent (Codex), epoch ms. */
   updatedAt: number | null;
-  /** Why the numbers are missing or stale; `windows` then hold the last good ones, if any. */
+  /**
+   * Why the numbers are missing or stale; `windows` then hold the last good ones, if any. Never
+   * set for a rate limit (see `rateLimitedUntil`).
+   */
   error: string | null;
+  /**
+   * The agent's usage endpoint rate-limited the last read: `windows` hold the last good numbers
+   * (`updatedAt` says how old) and no read is made before this time, epoch ms.
+   */
+  rateLimitedUntil: number | null;
 }
 
 /** Usage limits of the agents chosen in Settings, in the order asked for. Pushed on `usage`. */

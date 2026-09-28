@@ -130,7 +130,9 @@ answers it (see "Host daemon" for the daemon's answer).
   tree (listed, with start times, by `activity.rs`'s OS module); `frozen.json` for thawing after a
   crash (see "Tray").
 - `usage.rs` — `Usage`: thread idle until watched, then every 5 s reads the chosen agents' usage
-  limits and emits `usage` on change (see "Panel"). App-only: the daemon never starts it.
+  limits (Claude Code's only when its schedule is due, every 10 min, backing off on a 429; its
+  last answer in `usage.json`) and emits `usage` on change (see "Panel"). App-only: the daemon
+  never starts it.
 - `remote/` — Remote (see "Host protocol"): `mod.rs` the `Remote` state (on/off, pairing, the
   relay of layout and Session changes to clients, the upload dir), `server.rs` the axum routes
   and the WebSocket protocol on the Host's runtime, `tap.rs` each Session's recent output,
@@ -144,7 +146,7 @@ answers it (see "Host daemon" for the daemon's answer).
 - `resume.rs` — `Resume`: a thread records every keyed Session's Resume entry to `resume.json`
   each second it changes, and a last time on exit (see "Resume").
 - `store.rs` — atomic JSON read/write of `layout.json`, `settings.json`, `resume.json`,
-  `remote.json` and `frozen.json` in the Host's data dir (`Paths`).
+  `remote.json`, `frozen.json` and `usage.json` in the Host's data dir (`Paths`).
 - `paths.rs` — which paths printed in a Terminal name a file on this Host.
 - `model.rs` — the types every event and command carries; mirrored by `src/lib/types.ts`.
 
@@ -358,17 +360,28 @@ memory (`35% · 1.21 GB`), from the same samples.
 **Usage** shows, for each agent chosen on the Settings page (Claude Code and Codex by default),
 one thin bar per limit window: its label (`5h`, `Week`), percent used and time until it resets.
 Bars are neutral grey, amber from 80% and red from 95%. A window whose reset time has passed reads
-0%. Numbers older than 5 minutes say how old; an agent whose numbers could not be read says why,
-with its last numbers dimmed. Closed, the header shows each agent's fullest window
-(`Claude 48%  Codex 3%`). Gemini CLI has no usage source yet.
+0%. Numbers older than 10 minutes say how old (`as of 12m ago`); an agent whose numbers could not
+be read says why, with its last numbers dimmed; one whose endpoint rate-limited the app keeps its
+last numbers undimmed with a muted "Waiting for the limit to clear" line, never an error. Closed,
+the header shows each agent's fullest window (`Claude 48%  Codex 3%`). Gemini CLI has no usage
+source yet.
 
 - Claude Code: `GET https://api.anthropic.com/api/oauth/usage` (undocumented; what Claude Code's
-  `/usage` calls; `anthropic-beta: oauth-2025-04-20`), every 60 s (5 min after a 429), with the
-  OAuth access token from the login Keychain item `Claude Code-credentials` (read with
-  `/usr/bin/security`; `~/.claude/.credentials.json` as fallback). Answer: `five_hour`,
-  `seven_day`, `seven_day_opus`, `seven_day_sonnet`, each `{utilization: percent, resets_at: RFC
-  3339}` or null. The token is only read, never refreshed: refreshing would rotate Claude Code's
-  refresh token and sign it out. It reaches `/usr/bin/curl` on stdin, never in argv.
+  `/usage` calls; `anthropic-beta: oauth-2025-04-20`), with the OAuth access token from the login
+  Keychain item `Claude Code-credentials` (read with `/usr/bin/security`;
+  `~/.claude/.credentials.json` as fallback). Answer: `five_hour`, `seven_day`, `seven_day_opus`,
+  `seven_day_sonnet`, each `{utilization: percent, resets_at: RFC 3339}` or null. The token is
+  only read, never refreshed: refreshing would rotate Claude Code's refresh token and sign it out.
+  It reaches `/usr/bin/curl` on stdin, never in argv. The endpoint is tightly rate-limited
+  (measured: a second request within a minute of a successful one gets a 429 with `retry-after:
+  0` and no rate-limit headers; requests 3 min and more apart succeed) and shared with Claude
+  Code's own `/usage`, and Claude Code keeps no local copy of the answer, so: read every 10 min
+  while the Panel shows, never while hidden, one read at a time; the last answer and when it was
+  read are kept in `usage.json` in the app data dir, shown at once on launch or Panel open and read
+  again only once 10 min old; on a 429 the numbers are kept and the next read waits the longer of
+  `Retry-After` and an exponential backoff (10, 20, 40 min... with up to +50% jitter, capped at 1
+  h), reset by the next success; any other failure backs off the same way. The schedule
+  (`ClaudeSchedule`) is pure and unit-tested.
 - Codex: the last `payload.rate_limits` record (`primary` / `secondary`: `used_percent`,
   `window_minutes`, `resets_at` epoch s) in the most recently written of its session logs,
   `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, newest 14 day directories. Codex writes one per

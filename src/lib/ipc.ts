@@ -279,7 +279,8 @@ export function onGuard(cb: (snapshot: GuardSnapshot) => void): Promise<Unlisten
 
 /**
  * Start (or change the agents of) or stop reading Usage. While on, `onUsage` fires right away and
- * then whenever a number changes. Reading Claude Code's usage calls api.anthropic.com every minute.
+ * then whenever a number changes. Reading Claude Code's usage calls api.anthropic.com every 10
+ * minutes (its last answer is kept across launches and shown until then), backing off on a 429.
  */
 export function watchUsage(on: boolean, agents: AgentKind[]): Promise<void> {
   if (!inTauri) return mock.watchUsage(on, agents);

@@ -18,6 +18,9 @@ pub const RESUME: &str = "resume.json";
 pub const REMOTE: &str = "remote.json";
 /// Processes Memory Guard has frozen, for the next launch to thaw after a crash (`guard.rs`).
 pub const FROZEN: &str = "frozen.json";
+/// Claude Code's last usage answer and when it was read, so a launch shows it without a request
+/// (`usage.rs`).
+pub const USAGE: &str = "usage.json";
 
 pub fn path(paths: &dyn Paths, file: &str) -> Result<PathBuf, String> {
     Ok(paths.data_dir()?.join(file))
