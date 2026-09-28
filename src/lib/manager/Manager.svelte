@@ -447,7 +447,6 @@
   .swatch {
     width: 10px;
     height: 8px;
-    border-radius: 2px;
   }
   .swatch.running {
     background: var(--status-running);
