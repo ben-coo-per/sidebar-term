@@ -4,7 +4,7 @@
   import { setMode } from "../layout.svelte";
   import { hotkeyLabel } from "../hotkeys.svelte";
   import RobotIcon from "../sidebar/icons/RobotIcon.svelte";
-  import { waiting } from "./manager.svelte";
+  import { waiting } from "./state.svelte";
 
   const count = $derived(waiting().length);
   const key = $derived(hotkeyLabel("view.manager"));

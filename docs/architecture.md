@@ -171,7 +171,7 @@ answers it (see "Host daemon" for the daemon's answer).
   the one in view, WebGL on the mounted Terminal with DOM fallback, fit and resize, flow control,
   dropped files through the transport, title/bell events.
 - `src/lib/terminal/TerminalPane.svelte` — shows the Session in view's Terminal.
-- `src/lib/manager/` — Manager (see "Manager"): `manager.svelte.ts` (lanes, cards, Sent rows,
+- `src/lib/manager/` — Manager (see "Manager"): `state.svelte.ts` (lanes, cards, Sent rows,
   focus, answering and opening Tabs), `feed.svelte.ts` (every Host's agent events), `model.ts`
   (the pure rules: segments, order, ticks, durations), `Manager.svelte` and its parts, and the
   Tabs-mode `ModeSwitch.svelte` and `WaitingStrip.svelte`.

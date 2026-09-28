@@ -35,7 +35,7 @@
     runClock,
     waiting,
     type Lane,
-  } from "./manager.svelte";
+  } from "./state.svelte";
   import { formatDuration, laneStart, ticks, windowSpan, ZOOM_LABELS } from "./model";
 
   const shown = $derived(lanes());

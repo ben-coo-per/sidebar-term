@@ -3,7 +3,7 @@
      history across the window; then what it is doing and for how long. Hover (or the lane focus)
      swaps that for "Open Tab ↵"; a click opens the Tab. -->
 <script lang="ts">
-  import type { Lane } from "./manager.svelte";
+  import type { Lane } from "./state.svelte";
   import { formatDuration, segments } from "./model";
   import { AGENT_NAMES } from "../agentStatus";
   import RobotIcon from "../sidebar/icons/RobotIcon.svelte";

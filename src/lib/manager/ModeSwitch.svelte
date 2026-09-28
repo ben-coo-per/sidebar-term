@@ -3,7 +3,7 @@
 <script lang="ts">
   import { layout, setMode, type WindowMode } from "../layout.svelte";
   import { hotkeyLabel } from "../hotkeys.svelte";
-  import { waiting } from "./manager.svelte";
+  import { waiting } from "./state.svelte";
   import Segmented from "./Segmented.svelte";
 
   const count = $derived(waiting().length);
