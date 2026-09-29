@@ -4,6 +4,7 @@
 
 import { invoke, Channel, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   EVENT_ACTIVITY,
   EVENT_AGENT_EVENT,
@@ -364,6 +365,12 @@ export function onRemote(cb: (snapshot: RemoteSnapshot) => void): Promise<Unlist
 export function onMenuSettings(cb: () => void): Promise<UnlistenFn> {
   if (!inTauri) return Promise.resolve(() => {});
   return listen(EVENT_MENU_SETTINGS, () => cb());
+}
+
+/** The number on the app's Dock icon; 0 removes it. A no-op outside Tauri. */
+export function setDockBadge(count: number): Promise<void> {
+  if (!inTauri) return Promise.resolve();
+  return getCurrentWindow().setBadgeCount(count > 0 ? count : undefined);
 }
 
 /**

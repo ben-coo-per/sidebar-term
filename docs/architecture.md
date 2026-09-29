@@ -1006,6 +1006,8 @@ Tab it opens opens in Tabs mode.
   Needs input, then fades. A screen-only agent's card shows the last 3 lines of its Terminal and
   "Answer in its Terminal", which selects its Tab and gives the Terminal the focus. Below: Tabs whose agent finished or stopped while nobody looked, with what
   its last turn changed. The column is the narrow one (34% of the window, 300 px at least).
+  Its count of cards is also the app's Dock badge (`setDockBadge`, from the app shell), in
+  either mode; none at 0.
 - **Usage**: the Panel's Usage view (`UsageView.svelte`: every chosen agent's limits as bars,
   "Panel"), held at the bottom of the Needs you column, as tall as its bars and 45% of the
   column at most; Needs you scrolls above it. Its bars are square, as the lanes'. The window
