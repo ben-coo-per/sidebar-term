@@ -200,9 +200,11 @@ export async function moveTabToHost(tab: Tab, host: HostId, groupId?: string): P
   // The conversation, once the dying Claude Code has stopped writing it.
   let conversationMoved = false;
   let reason = "";
-  if (probe.entry?.kind === "claude" && landing.kind !== "home") {
-    const target = landing.kind === "checkout" ? landing.cwd : landing.path;
-    if (probe.conversation) {
+  if (probe.entry?.kind === "claude") {
+    // Not in a repo (or no map for the Host): it resumes from the Host's home.
+    const target = landing.kind === "clone" ? landing.path : landing.cwd;
+    if (target === null) reason = `${name}'s home is not known`;
+    else if (probe.conversation) {
       try {
         const files = await handoffConversationRead(probe.conversation);
         await hostPutConversation(host, target, probe.conversation.id, files);
@@ -212,7 +214,7 @@ export async function moveTabToHost(tab: Tab, host: HostId, groupId?: string): P
         reason = reasonOf(e);
       }
     } else reason = "its transcript was not found on this Mac";
-  } else if (probe.entry?.kind === "claude") reason = `${name} has no checkout for it`;
+  }
 
   const newSession = await sessionOfTab(newTabId);
   if (newSession === null) {
