@@ -936,7 +936,8 @@ there. It does not: the Tab opens at the Checkout root (else the Host's home) an
    it resumes from, then, only once the Host has answered with its path,
    `handoff_conversation_forget` removes the Mac's copy (two copies under two keys that are not
    the current one make `claude --resume` refuse on purpose). The project's `memory/` goes with
-   it; it stays on the Mac too (other Sessions of the repo read it).
+   it; it stays on the Mac too (other Sessions of the repo read it). Not in a repo, or no map
+   for the Host: it goes to the Host's home, where the new Tab opens.
 6. Once the new Tab's shell reports itself (4 s at most), what to type goes in, on a cleared
    prompt. It is the Resume banner's rule (`resumeLine` in `src/lib/resume/model.ts`) with the
    cwd mapped from the local Worktree onto the Host's checkout and `git switch <branch> && `
@@ -945,7 +946,7 @@ there. It does not: the Tab opens at the Checkout root (else the Host's home) an
    `git clone … && cd -- <path> && git switch … && <line>`, not run.
 
 **Fallback.** When the conversation could not move (its transcript was not found, the upload
-failed, the Host has no checkout for it), a fresh `claude` is typed instead, with the entry's
+failed, the Host's home is not known), a fresh `claude` is typed instead, with the entry's
 flags and a one-line handoff note as its first prompt ("Handed off from my Mac in `<repo>` on
 `<branch>`. The Claude Code conversation `<id>` stayed there (`<reason>`). Where we left off: "),
 the cursor left inside the quote and no Enter, for the user to finish; a dialog says the
