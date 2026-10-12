@@ -20,6 +20,7 @@
   import { watch as watchActivity } from "$lib/panel/activity/activity.svelte";
   import { onMenuSettings, setDockBadge } from "$lib/ipc";
   import { waiting } from "$lib/manager/state.svelte";
+  import { tabIsUnread } from "$lib/sessions.svelte";
   import { initDropGuard } from "$lib/terminal/drop";
   import SettingsPage from "$lib/settings/SettingsPage.svelte";
   import Manager from "$lib/manager/Manager.svelte";
@@ -78,10 +79,15 @@
   // Mac's: a linked Tab in view leaves no local Session in view; Manager shows the selected Tab's.
   $effect(() => setVisibleSession(localSessionId(managerMode ? managerTab() : active)));
 
-  // The Dock icon carries how many agents wait on the user, as Manager's Needs you counts them,
-  // in either mode and while the window is hidden.
-  const needsYou = $derived(layout.ready ? waiting().length : 0);
-  $effect(() => void setDockBadge(needsYou));
+  // The Dock icon carries how many Tabs want the user: Manager's Needs you cards and Unread Tabs,
+  // each Tab once, in either mode and while the window is hidden.
+  const wantsYou = $derived.by(() => {
+    if (!layout.ready) return 0;
+    const ids = new Set(waiting().map((l) => l.tab.id));
+    for (const tab of Object.values(layout.tabs)) if (tabIsUnread(tab)) ids.add(tab.id);
+    return ids.size;
+  });
+  $effect(() => void setDockBadge(wantsYou));
 
   // Tabs show their CPU and memory from Activity samples, taken only while something shows them.
   $effect(() => {
