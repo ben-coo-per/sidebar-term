@@ -5,7 +5,7 @@
 // origin it was loaded from) and the Mac app for each paired Host (./hosts.svelte.ts, against
 // the Host's URL). No DOM beyond WebSocket and fetch; the stores own what is shown.
 
-import type { ActivitySession, AgentEvent, ConversationFiles, HostInfo, LayoutSnapshot, LinkedHost, SessionId, SessionInfo } from "../types";
+import type { ActivitySession, AgentEvent, ConversationFiles, HostInfo, HostPressure, LayoutSnapshot, LinkedHost, SessionId, SessionInfo } from "../types";
 import {
   CLOSE_GOING_AWAY,
   CLOSE_UNAUTHORIZED,
@@ -28,6 +28,13 @@ export type ConnectionStatus = "connecting" | "online" | "offline";
 export interface ClientEvents {
   /** `detail` says why we are offline, when the Host said. */
   status: (status: ConnectionStatus, detail: string | null) => void;
+  /**
+   * Online, but the Host has not answered for a while (true), or answers again (false): it is
+   * busy or short of memory, not gone. Only while online; going offline ends it without a call.
+   */
+  slow: (slow: boolean) => void;
+  /** How hard the Host's Sessions press on their memory: with `hello` and every few seconds; null from a Host that does not say. */
+  pressure: (pressure: HostPressure | null) => void;
   /** `agentEvents`: the Host's recent agent events, oldest first; null from a Host older than Manager, which keeps none. */
   hello: (host: HostInfo, device: string, layout: LayoutSnapshot, sessions: SessionInfo[], agentEvents: AgentEvent[] | null) => void;
   layout: (layout: LayoutSnapshot) => void;
@@ -52,7 +59,10 @@ export interface ClientEvents {
 export interface HostClient {
   on<K extends keyof ClientEvents>(event: K, cb: ClientEvents[K]): () => void;
   connect(): void;
-  /** Try now instead of waiting out the backoff. */
+  /**
+   * Try now instead of waiting out the backoff; when connected, check the Host still answers
+   * (after a sleep the socket can look open long after the connection died).
+   */
   reconnectNow(): void;
   close(): void;
   attach(sessionId: SessionId): void;
@@ -92,6 +102,21 @@ export async function pairWithHost(base: string, code: string, name: string): Pr
 }
 
 const BACKOFF_MS = [1000, 2000, 4000, 8000, 15000];
+/**
+ * Liveness. A connection that died while the Mac slept (or the network changed) gives no close
+ * for a minute or more, and the socket reads OPEN all along: what is shown goes stale and what is
+ * typed is lost. The Host's own WebSocket pings never reach the page, so the client sends
+ * protocol pings and drops a connection that hears nothing back in time.
+ *
+ * In time depends on what is likely. After a silence (the Mac slept, or woke: `reconnectNow`
+ * with nothing heard for a while) the connection is probably dead, and no answer within
+ * `SLOW_AFTER_MS` drops it. Otherwise the Host was answering a moment ago and is more likely
+ * busy than gone (its Sessions short of memory stall it for seconds at a time): no answer within
+ * `SLOW_AFTER_MS` makes it `slow`, still online, and only `DROP_AFTER_MS` drops it.
+ */
+const PING_EVERY_MS = 5000;
+const SLOW_AFTER_MS = 4000;
+const DROP_AFTER_MS = 20000;
 
 export class RemoteClient implements HostClient {
   private ws: WebSocket | null = null;
@@ -100,8 +125,18 @@ export class RemoteClient implements HostClient {
   private retry: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
   private replies = new Replies();
+  private heartbeat: ReturnType<typeof setInterval> | null = null;
+  /** The unanswered ping's deadline, and when it was armed. */
+  private deadline: ReturnType<typeof setTimeout> | null = null;
+  private probedAt = 0;
+  /** When the Host was last heard from, and whether the ping out now drops at its first deadline. */
+  private heardAt = 0;
+  private strict = false;
+  private slow = false;
   private listeners: { [K in keyof ClientEvents]: Set<ClientEvents[K]> } = {
     status: new Set(),
+    slow: new Set(),
+    pressure: new Set(),
     hello: new Set(),
     layout: new Set(),
     hosts: new Set(),
@@ -162,29 +197,97 @@ export class RemoteClient implements HostClient {
       this.send(this.links ? { t: "auth", token: this.token, links: true } : { t: "auth", token: this.token });
     };
     ws.onmessage = (ev) => this.receive(ev.data);
-    ws.onclose = (ev) => {
-      if (this.ws !== ws) return;
-      this.ws = null;
-      this.replies.fail("The connection dropped.");
-      if (ev.code === CLOSE_UNAUTHORIZED) {
-        this.emit("status", "offline", "No longer paired with this Host.");
-        this.emit("unauthorized");
-        return;
-      }
-      if (this.closed) return;
-      const detail = ev.code === CLOSE_GOING_AWAY ? "Remote was turned off on the Host." : null;
-      this.emit("status", "offline", detail);
-      this.scheduleReconnect();
-    };
+    ws.onclose = (ev) => this.lost(ws, ev.code);
     ws.onerror = () => {
       /* onclose follows */
     };
   }
 
+  /** `ws` closed (`code`), or stopped answering (null): offline, and try again. */
+  private lost(ws: WebSocket, code: number | null) {
+    if (this.ws !== ws) return;
+    this.ws = null;
+    this.stopHeartbeat();
+    this.slow = false;
+    this.replies.fail("The connection dropped.");
+    if (code === CLOSE_UNAUTHORIZED) {
+      this.emit("status", "offline", "No longer paired with this Host.");
+      this.emit("unauthorized");
+      return;
+    }
+    if (this.closed) return;
+    const detail =
+      code === CLOSE_GOING_AWAY ? "Remote was turned off on the Host." : code === null ? "The Host stopped answering." : null;
+    this.emit("status", "offline", detail);
+    this.scheduleReconnect();
+  }
+
   reconnectNow(): void {
-    if (this.ws || this.closed) return;
+    if (this.closed) return;
+    if (this.ws) {
+      // Nothing heard for a while: the Mac was asleep or off the network, so expect the worst.
+      if (Date.now() - this.heardAt > 2 * PING_EVERY_MS) this.strict = true;
+      this.probe();
+      return;
+    }
     this.attempts = 0;
     this.connect();
+  }
+
+  private startHeartbeat() {
+    this.stopHeartbeat();
+    this.heartbeat = setInterval(() => this.probe(), PING_EVERY_MS);
+  }
+
+  private stopHeartbeat() {
+    if (this.heartbeat !== null) clearInterval(this.heartbeat);
+    this.heartbeat = null;
+    if (this.deadline !== null) clearTimeout(this.deadline);
+    this.deadline = null;
+  }
+
+  /** Ping, unless a ping is out already; a connection that answers nothing in time is dropped. */
+  private probe() {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN || this.deadline !== null) return;
+    this.send({ t: "ping" });
+    this.probedAt = Date.now();
+    this.deadline = setTimeout(() => this.overdue(ws), SLOW_AFTER_MS);
+  }
+
+  /** The ping out has had no answer in time: slow, or dropped (see `DROP_AFTER_MS`). */
+  private overdue(ws: WebSocket) {
+    this.deadline = null;
+    const waited = Date.now() - this.probedAt;
+    // Armed just before a sleep: the Host had no chance to answer. Ask again, expecting the worst.
+    if (!this.slow && waited > 2 * SLOW_AFTER_MS) {
+      this.strict = true;
+      this.probe();
+      return;
+    }
+    if (!this.strict && waited < DROP_AFTER_MS) {
+      this.setSlow(true);
+      this.deadline = setTimeout(() => this.overdue(ws), DROP_AFTER_MS - waited);
+      return;
+    }
+    ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+    ws.close();
+    this.lost(ws, null);
+  }
+
+  private setSlow(slow: boolean) {
+    if (this.slow === slow) return;
+    this.slow = slow;
+    this.emit("slow", slow);
+  }
+
+  /** Anything from the Host shows the connection is alive. */
+  private heard() {
+    this.heardAt = Date.now();
+    this.strict = false;
+    if (this.deadline !== null) clearTimeout(this.deadline);
+    this.deadline = null;
+    this.setSlow(false);
   }
 
   private scheduleReconnect() {
@@ -200,6 +303,7 @@ export class RemoteClient implements HostClient {
     this.closed = true;
     if (this.retry !== null) clearTimeout(this.retry);
     this.retry = null;
+    this.stopHeartbeat();
     const ws = this.ws;
     this.ws = null;
     ws?.close();
@@ -263,6 +367,7 @@ export class RemoteClient implements HostClient {
   }
 
   private receive(data: unknown) {
+    this.heard();
     if (data instanceof ArrayBuffer) {
       const frame = decodeOutputFrame(data);
       if (frame) this.emit("output", frame.sessionId, frame.bytes);
@@ -278,8 +383,10 @@ export class RemoteClient implements HostClient {
     switch (msg.t) {
       case "hello":
         this.attempts = 0;
+        this.startHeartbeat();
         this.emit("status", "online", null);
         this.emit("hello", msg.host, msg.device, msg.layout, msg.sessions, msg.agentEvents ?? null);
+        this.emit("pressure", msg.pressure ?? null);
         // A Host older than linked Tabs for clients sends none, and no Tab that needs one.
         if (this.links) this.emit("hosts", msg.hosts ?? []);
         // Back after a drop: pick up where we were.
@@ -299,6 +406,9 @@ export class RemoteClient implements HostClient {
         break;
       case "agent_event":
         this.emit("agentEvent", msg.event);
+        break;
+      case "pressure":
+        this.emit("pressure", msg.pressure);
         break;
       case "attached":
         this.emit("attached", msg.sessionId, msg.cols, msg.rows);

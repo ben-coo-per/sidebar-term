@@ -276,6 +276,52 @@ pub struct ActivitySnapshot {
     pub processes: Vec<ActivityProcess>,
 }
 
+/// How hard a Host's Sessions press on their memory budget (`cgroup.rs`), as its clients show it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PressureLevel {
+    /// Well within the budget.
+    Ok,
+    /// Near the budget, or stalling now and then: Sessions slow down.
+    Tight,
+    /// At the budget: Sessions spend much of their time waiting on memory.
+    Throttled,
+}
+
+/// One Session's share of its Host's Sessions memory.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMemory {
+    pub session_id: SessionId,
+    /// Bytes charged to the Session's cgroup (its processes' memory, page cache included).
+    pub mem: u64,
+    /// Bytes of it in swap.
+    pub swap: u64,
+}
+
+/// Memory of a Host's Sessions, all together and the biggest few: payload of `pressure` in the
+/// Host protocol, sent every few seconds by a Host that runs its Sessions in their own cgroup
+/// (the Linux daemon), so a client can say why a Host is slow and which Session is the cause.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostPressure {
+    pub level: PressureLevel,
+    /// Bytes every Session uses together.
+    pub mem: u64,
+    /// Where the kernel starts throttling them (`memory.high`); `None`: no limit.
+    pub high: Option<u64>,
+    /// The hard limit, where the kernel kills (`memory.max`); `None`: no limit.
+    pub max: Option<u64>,
+    pub swap: u64,
+    pub swap_max: Option<u64>,
+    /// Percent of the last 10 s some / all of the Sessions' processes waited on memory
+    /// (`memory.pressure`, "some" and "full" avg10).
+    pub some: f32,
+    pub full: f32,
+    /// The Sessions using the most memory, most first; at most three.
+    pub top: Vec<SessionMemory>,
+}
+
 /// One Session Memory Guard, or the user, has frozen (every process in it stopped with SIGSTOP).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -15,13 +15,24 @@
 //! pairing at any time: `systemctl --user kill --kill-whom=main -s USR1 sidebar-termd` (without
 //! `--kill-whom=main` the signal reaches every Session's processes and kills them), then read the
 //! code in the journal. Everything is logged to stderr.
+//!
+//! `--cgroups` (Linux, with `Delegate=yes` in the unit: `packaging/systemd/`) splits the
+//! daemon's cgroup so the Sessions' memory limit never throttles the daemon itself, puts each
+//! Session in a cgroup of its own, and sends clients a `pressure` sample every few seconds
+//! (`cgroup.rs`). `--sessions-memory-high`, `--sessions-memory-max` and `--sessions-swap-max`
+//! (`9G`, `512M`, bytes) set the limits on all the Sessions together. `--close-idle-after
+//! <hours>` (default 24, `0` never) closes Tabs whose Sessions sat idle that long (`idle.rs`),
+//! logging how to resume each.
 
 use sidebar_term_core::agents::Agents;
+use sidebar_term_core::cgroup::{self, Cgroups, Limits};
+use sidebar_term_core::idle::{Candidate, IdleCloser};
 use sidebar_term_core::host::{Asset, Assets, Events, Host, Paths};
 use sidebar_term_core::journal::{self, Journal};
 use sidebar_term_core::layout::Layout;
 use sidebar_term_core::model::{
-    LayoutSnapshot, RemoteSnapshot, SessionExit, EVENT_LAYOUT, EVENT_REMOTE, EVENT_SESSION_EXIT,
+    HostPressure, LayoutSnapshot, PressureLevel, RemoteSnapshot, SessionExit, EVENT_LAYOUT,
+    EVENT_REMOTE, EVENT_SESSION_EXIT,
 };
 use sidebar_term_core::remote::{Remote, Taps};
 use sidebar_term_core::resume::{self, Resume};
@@ -29,6 +40,7 @@ use sidebar_term_core::session::SessionManager;
 use sidebar_term_core::{monitor, store};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::broadcast;
 
@@ -39,19 +51,44 @@ const APP_IDENTIFIER: &str = "com.bencooper.sidebarterm";
 
 const USAGE: &str = "\
 usage: sidebar-termd [--data-dir <dir>] [--port <n>] [--web-root <dir>] [--pair]
+                     [--cgroups [--sessions-memory-high <size>] [--sessions-memory-max <size>]
+                                [--sessions-swap-max <size>]]
+                     [--close-idle-after <hours>]
 
   --data-dir <dir>   where the Host keeps remote.json, resume.json, ... (default: see README)
   --port <n>         the port the Remote server binds on 127.0.0.1; kept in remote.json
   --web-root <dir>   the built phone page (pnpm build's build/); default <data dir>/web
   --pair             start a pairing at launch and print its code (SIGUSR1 does it any time)
+  --cgroups          Linux, cgroup v2, a delegated cgroup (Delegate=yes): run the daemon and
+                     the Sessions in cgroups of their own, so the Sessions' memory limit never
+                     throttles the daemon (packaging/systemd/README.md)
+  --sessions-memory-high <size>, --sessions-memory-max <size>, --sessions-swap-max <size>
+                     limits on every Session together (9G, 512M, bytes); with --cgroups
+  --close-idle-after <hours>
+                     close Tabs idle that long, logging how to resume each (default 24; 0 never)
   --help, --version";
 
-#[derive(Debug, Default, PartialEq, Eq)]
+/// `--close-idle-after` when not given.
+const CLOSE_IDLE_AFTER_HOURS: f64 = 24.0;
+/// How often the Sessions' memory is sampled and sent to clients.
+const PRESSURE_EVERY: Duration = Duration::from_secs(2);
+/// How often empty Session cgroups are swept, in samples.
+const SWEEP_EVERY: u32 = 30;
+/// How often idle Tabs are looked for.
+const IDLE_EVERY: Duration = Duration::from_secs(60);
+/// How often Tailscale is asked again while it does not publish the server.
+const TAILSCALE_EVERY: Duration = Duration::from_secs(60);
+
+#[derive(Debug, Default, PartialEq)]
 struct Args {
     data_dir: Option<PathBuf>,
     port: Option<u16>,
     web_root: Option<PathBuf>,
     pair: bool,
+    cgroups: bool,
+    limits: Limits,
+    /// Hours; `None`: the default.
+    close_idle_after: Option<f64>,
     help: bool,
     version: bool,
 }
@@ -74,10 +111,32 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
                 );
             }
             "--pair" => out.pair = true,
+            "--cgroups" => out.cgroups = true,
+            flag @ ("--sessions-memory-high" | "--sessions-memory-max" | "--sessions-swap-max") => {
+                let raw = value(flag)?;
+                let size = cgroup::parse_size(&raw).ok_or_else(|| format!("{flag} {raw}: not a size (9G, 512M, bytes)"))?;
+                match flag {
+                    "--sessions-memory-high" => out.limits.high = Some(size),
+                    "--sessions-memory-max" => out.limits.max = Some(size),
+                    _ => out.limits.swap_max = Some(size),
+                }
+            }
+            "--close-idle-after" => {
+                let raw = value("--close-idle-after")?;
+                out.close_idle_after = Some(
+                    raw.parse::<f64>()
+                        .ok()
+                        .filter(|h| h.is_finite() && *h >= 0.0)
+                        .ok_or_else(|| format!("--close-idle-after {raw}: not a number of hours"))?,
+                );
+            }
             "--help" | "-h" => out.help = true,
             "--version" | "-V" => out.version = true,
             other => return Err(format!("unknown argument {other}")),
         }
+    }
+    if out.limits != Limits::default() && !out.cgroups {
+        return Err("the --sessions-* limits need --cgroups".into());
     }
     Ok(out)
 }
@@ -246,6 +305,137 @@ fn log_event(event: &Event) {
     }
 }
 
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+fn gb(bytes: u64) -> String {
+    format!("{:.1} GB", bytes as f64 / (1u64 << 30) as f64)
+}
+
+/// The Tab a Session belongs to, named as the log names it: its rename, else its cwd.
+fn tab_of(layout: &Layout, session_id: u32) -> Option<(String, String)> {
+    let snap = layout.snapshot();
+    let tab = snap.tabs.values().find(|t| t.session_id == Some(session_id))?;
+    let name = tab
+        .custom_title
+        .clone()
+        .or_else(|| layout.fact(session_id).and_then(|f| f.cwd))
+        .or_else(|| tab.last_cwd.clone())
+        .unwrap_or_else(|| tab.id.clone());
+    Some((tab.id.clone(), name))
+}
+
+/// One line on the Sessions' memory, when its level changes.
+fn log_pressure(p: &HostPressure, layout: &Layout) {
+    let limit = p.high.or(p.max).map_or("no limit".to_owned(), gb);
+    let top = p.top.first().map_or(String::new(), |t| {
+        let name = tab_of(layout, t.session_id).map_or(String::new(), |(_, n)| format!(" ({n})"));
+        format!("; most: Session {}{name} {}", t.session_id, gb(t.mem))
+    });
+    log(&format!(
+        "Sessions' memory {:?}: {} of {limit}, swap {}, stalled {:.0}% (all) / {:.0}% (some){top}",
+        p.level,
+        gb(p.mem),
+        gb(p.swap),
+        p.full,
+        p.some
+    ));
+}
+
+/// Sample the Sessions' memory for the clients every [`PRESSURE_EVERY`], log each change of
+/// level, and sweep away the cgroups of Sessions that are gone.
+fn spawn_pressure(cgroups: Arc<Cgroups>, remote: Arc<Remote>, layout: Arc<Layout>, sessions: Arc<SessionManager>) {
+    let started = std::thread::Builder::new()
+        .name("pressure".into())
+        .spawn(move || {
+            let mut last = PressureLevel::Ok;
+            let mut n: u32 = 0;
+            loop {
+                if let Some(p) = cgroups.sample() {
+                    if p.level != last {
+                        log_pressure(&p, &layout);
+                        last = p.level;
+                    }
+                    remote.publish_pressure(&p);
+                }
+                n = n.wrapping_add(1);
+                if n.is_multiple_of(SWEEP_EVERY) {
+                    let live: Vec<u32> = sessions.probe_targets().iter().map(|t| t.session_id).collect();
+                    cgroups.sweep(&live);
+                }
+                std::thread::sleep(PRESSURE_EVERY);
+            }
+        });
+    if let Err(e) = started {
+        log(&format!("pressure: could not start the thread: {e}"));
+    }
+}
+
+/// Every [`IDLE_EVERY`], close the Tabs whose Sessions sat idle `after` (`idle.rs`), logging
+/// each one's Resume entry first so its work can be picked up again by hand.
+fn spawn_idle_close(after: Duration, layout: Arc<Layout>, sessions: Arc<SessionManager>) {
+    let after_ms = after.as_millis() as u64;
+    let started = std::thread::Builder::new()
+        .name("idle-close".into())
+        .spawn(move || {
+            let mut closer = IdleCloser::default();
+            loop {
+                std::thread::sleep(IDLE_EVERY);
+                let snap = layout.snapshot();
+                let live: Vec<(String, _, u64)> = snap
+                    .tabs
+                    .values()
+                    .filter_map(|t| {
+                        let sid = t.session_id?;
+                        Some((t.id.clone(), layout.fact(sid)?, sessions.last_io(sid)?))
+                    })
+                    .collect();
+                let candidates: Vec<Candidate> = live
+                    .iter()
+                    .map(|(tab_id, info, last_io)| Candidate { tab_id, info, last_io: *last_io })
+                    .collect();
+                let close = closer.tick(now_ms(), after_ms, &candidates, snap.active_tab_id.as_deref(), snap.tabs.len());
+                for tab_id in close {
+                    let Some(sid) = snap.tabs.get(&tab_id).and_then(|t| t.session_id) else { continue };
+                    let name = tab_of(&layout, sid).map_or(tab_id.clone(), |(_, n)| n);
+                    let resume = sessions
+                        .probe_target(sid)
+                        .and_then(|t| sidebar_term_core::detect::resume::entry(&tab_id, &t))
+                        .map_or("nothing to resume".to_owned(), |e| {
+                            format!("resume with `{}` in {}", e.line, e.cwd.as_deref().unwrap_or("its cwd"))
+                        });
+                    log(&format!(
+                        "closing Tab {tab_id} ({name}): idle {:.0} h; {resume}",
+                        after.as_secs_f64() / 3600.0
+                    ));
+                    if let Err(e) = layout.tab_close(&tab_id) {
+                        log(&format!("closing Tab {tab_id}: {e}"));
+                    }
+                }
+            }
+        });
+    if let Err(e) = started {
+        log(&format!("idle close: could not start the thread: {e}"));
+    }
+}
+
+/// While Tailscale does not publish the server (it was not up when the daemon started), ask it
+/// again every [`TAILSCALE_EVERY`]; the `remote` event logs the URL once it does.
+fn spawn_tailscale_retry(remote: Arc<Remote>) {
+    let started = std::thread::Builder::new()
+        .name("tailscale-retry".into())
+        .spawn(move || loop {
+            std::thread::sleep(TAILSCALE_EVERY);
+            remote.retry_tailscale();
+        });
+    if let Err(e) = started {
+        log(&format!("tailscale: could not start the retry thread: {e}"));
+    }
+}
+
 /// Until SIGTERM or SIGINT: log the core's events, and start a pairing on SIGUSR1.
 async fn run(mut events: broadcast::Receiver<Event>, remote: &Remote) -> Result<(), String> {
     let mut term = signal(SignalKind::terminate()).map_err(|e| format!("SIGTERM: {e}"))?;
@@ -292,6 +482,28 @@ fn main() {
         std::process::exit(2);
     };
     let web_root = args.web_root.unwrap_or_else(|| data_dir.join("web"));
+    // First, before any thread or Session: the daemon moves into its own cgroup.
+    let cgroups = if args.cgroups {
+        match Cgroups::setup(args.limits) {
+            Ok(cg) => {
+                let show = |v: Option<u64>| v.map_or("none".to_owned(), gb);
+                log(&format!(
+                    "cgroups: daemon apart from the Sessions in {}; their limits: high {}, max {}, swap {}",
+                    cg.sessions_dir().display(),
+                    show(args.limits.high),
+                    show(args.limits.max),
+                    show(args.limits.swap_max)
+                ));
+                Some(Arc::new(cg))
+            }
+            Err(e) => {
+                log(&format!("cgroups: not split ({e}); the Sessions share the daemon's cgroup and its limits"));
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -326,6 +538,12 @@ fn main() {
     // no use for yet: Activity and Memory Guard (not wired in yet), Usage (app-only), Caffeinate (app-only).
     let taps = Arc::new(Taps::default());
     let sessions = Arc::new(SessionManager::new(taps.clone(), host.events.clone()));
+    if let Some(cg) = &cgroups {
+        let for_spawn = cg.clone();
+        sessions.set_spawn_hook(Box::new(move |id, argv| for_spawn.wrap(id, argv)));
+        let for_exit = cg.clone();
+        sessions.on_exit(Arc::new(move |id| for_exit.release(id)));
+    }
     // Claude Code's hooks, up before the layout spawns the first Session.
     let agents = Agents::start(&host);
     let for_env = agents.clone();
@@ -401,6 +619,15 @@ fn main() {
     if args.pair {
         pair(&remote);
     }
+    spawn_tailscale_retry(remote.clone());
+    if let Some(cg) = cgroups {
+        spawn_pressure(cg, remote.clone(), layout.clone(), sessions.clone());
+    }
+    let idle_hours = args.close_idle_after.unwrap_or(CLOSE_IDLE_AFTER_HOURS);
+    if idle_hours > 0.0 {
+        log(&format!("closing Tabs idle {idle_hours} h or more"));
+        spawn_idle_close(Duration::from_secs_f64(idle_hours * 3600.0), layout.clone(), sessions.clone());
+    }
 
     let outcome = runtime.block_on(run(log_reader, &remote));
     if let Err(e) = &outcome {
@@ -437,10 +664,26 @@ mod tests {
                 port: Some(5000),
                 web_root: Some("/w".into()),
                 pair: true,
-                help: false,
-                version: false,
+                ..Args::default()
             }
         );
+        let limited = args(&[
+            "--cgroups",
+            "--sessions-memory-high", "9G",
+            "--sessions-memory-max", "10G",
+            "--sessions-swap-max", "2G",
+            "--close-idle-after", "36",
+        ])
+        .unwrap();
+        assert!(limited.cgroups);
+        assert_eq!(
+            limited.limits,
+            Limits { high: Some(9 << 30), max: Some(10 << 30), swap_max: Some(2 << 30) }
+        );
+        assert_eq!(limited.close_idle_after, Some(36.0));
+        assert!(args(&["--sessions-memory-high", "9G"]).unwrap_err().contains("need --cgroups"));
+        assert!(args(&["--cgroups", "--sessions-memory-max", "lots"]).unwrap_err().contains("not a size"));
+        assert!(args(&["--close-idle-after", "-1"]).unwrap_err().contains("hours"));
         assert!(args(&["--help"]).unwrap().help);
         assert!(args(&["-V"]).unwrap().version);
         assert!(args(&["--port"]).unwrap_err().contains("needs a value"));

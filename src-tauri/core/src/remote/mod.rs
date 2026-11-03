@@ -25,7 +25,7 @@ use crate::agents::Agents;
 use crate::host::{Assets, Host};
 use crate::layout::{Layout, Update};
 use crate::model::{
-    ActivitySnapshot, HostInfo, LinkedHost, Pairing, RemoteDevice, RemoteSnapshot, SessionId,
+    ActivitySnapshot, HostInfo, HostPressure, LinkedHost, Pairing, RemoteDevice, RemoteSnapshot, SessionId,
     TailscaleState, EVENT_REMOTE,
 };
 use crate::session::SessionManager;
@@ -60,6 +60,8 @@ pub(crate) enum HubMsg {
     Activity(Arc<serde_json::Value>),
     /// An agent did something (`agents/`): one `AgentEvent`.
     AgentEvent(Arc<serde_json::Value>),
+    /// A sample of the Sessions' memory (`cgroup.rs`): one `HostPressure`.
+    Pressure(Arc<serde_json::Value>),
     /// The Hosts this one's linked Tabs point at changed (`Remote::set_hosts`).
     Hosts,
     /// Remote is turning off: every connection closes.
@@ -87,6 +89,8 @@ pub(crate) struct Inner {
     /// The Hosts this one's linked Tabs point at, as the Mac app's webview last said; none on
     /// the daemon, which links no Tabs.
     hosts: Mutex<Vec<LinkedHost>>,
+    /// The latest `HostPressure`, for `hello`; `None` on a Host that does not sample it.
+    pressure: Mutex<Option<Arc<serde_json::Value>>>,
 }
 
 /// Why a phone's pairing request was refused.
@@ -141,6 +145,7 @@ impl Remote {
                 tailscale: Mutex::new(TailscaleState::default()),
                 url: Mutex::new(None),
                 hosts: Mutex::new(Vec::new()),
+                pressure: Mutex::new(None),
             }),
         }
     }
@@ -225,6 +230,37 @@ impl Remote {
         let _ = self.inner.hub.send(HubMsg::Hosts);
     }
 
+    /// A sample of the Sessions' memory: kept for `hello`, and sent to every client as
+    /// `pressure`.
+    pub fn publish_pressure(&self, pressure: &HostPressure) {
+        match serde_json::to_value(pressure) {
+            Ok(v) => {
+                let v = Arc::new(v);
+                *lock(&self.inner.pressure) = Some(v.clone());
+                let _ = self.inner.hub.send(HubMsg::Pressure(v));
+            }
+            Err(e) => eprintln!("remote: the pressure sample does not serialize: {e}"),
+        }
+    }
+
+    /// While Remote is on but Tailscale is not publishing it (Tailscale was not up yet when
+    /// Remote turned on: a user unit cannot wait for `tailscaled`), ask again. True once it
+    /// publishes. Blocking: runs the Tailscale CLI.
+    pub fn retry_tailscale(&self) -> bool {
+        if !lock(&self.inner.store).enabled || lock(&self.inner.server).is_none() {
+            return false;
+        }
+        if lock(&self.inner.url).is_some() {
+            return true;
+        }
+        self.inner.publish();
+        let published = lock(&self.inner.url).is_some();
+        if published {
+            self.inner.changed();
+        }
+        published
+    }
+
     /// An Activity sample (while the Host samples: the Mac's Panel, Memory Guard): each
     /// Session's CPU and memory goes to every client as `activity`.
     pub fn publish_activity(&self, snapshot: &ActivitySnapshot) {
@@ -269,6 +305,13 @@ impl Inner {
                 }
             }
         }
+        self.publish();
+        Ok(())
+    }
+
+    /// Ask Tailscale Serve to publish the server, and note where it does (`url`) or why not.
+    fn publish(&self) {
+        let port = lock(&self.store).port();
         self.refresh_tailscale();
         let (cli, dns_name) = {
             let ts = lock(&self.tailscale);
@@ -288,7 +331,6 @@ impl Inner {
         if let Some(e) = ts_error {
             lock(&self.tailscale).error = Some(e);
         }
-        Ok(())
     }
 
     fn turn_off(&self) -> Result<(), String> {
@@ -395,6 +437,10 @@ impl Inner {
     }
 
     /// The Hosts this one's linked Tabs point at, for `hello` and `hosts`.
+    pub(crate) fn pressure(&self) -> Option<Arc<serde_json::Value>> {
+        lock(&self.pressure).clone()
+    }
+
     pub(crate) fn hosts(&self) -> Vec<LinkedHost> {
         lock(&self.hosts).clone()
     }

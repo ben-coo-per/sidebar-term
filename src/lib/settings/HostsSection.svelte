@@ -6,6 +6,7 @@
   import {
     addHost,
     hostName,
+    hostStrain,
     hosts,
     reconnectHost,
     removeHost,
@@ -109,6 +110,9 @@
             {hostName(h.id)}
           </span>
           <span class="detail" class:error={!h.paired}>{h.url} · {stateLine(h)}</span>
+          {#if h.paired && hostStrain(h.id)}
+            <span class="detail warn">{hostStrain(h.id)?.text}</span>
+          {/if}
         </span>
         <span class="controls">
           {#if h.paired && h.status === "offline"}

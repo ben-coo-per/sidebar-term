@@ -1,0 +1,14 @@
+# A drop-in with this machine's limits on the Sessions: copy to
+# ~/.config/systemd/user/sidebar-termd.service.d/memory.conf and size it to the machine (README.md).
+# These numbers are bennet's: 15.7 GB of RAM, of which system.slice (Tailscale, SSH, Docker)
+# needs about 3.5 GB and the daemon itself well under 100 MB.
+[Service]
+# No MemoryHigh= / MemoryMax= / MemorySwapMax= here: on the service they would throttle the
+# daemon with its Sessions. The daemon puts these on sessions/, every Session together:
+#   high   the kernel throttles Sessions past it (they slow down, nothing is killed)
+#   max    the hard stop: the kernel OOM-kills the biggest Session process (OOMPolicy=continue)
+#   swap   how far the Sessions may push into swap before max applies in full
+ExecStart=
+ExecStart=%h/.local/bin/sidebar-termd --cgroups --sessions-memory-high 9G --sessions-memory-max 10G --sessions-swap-max 2G
+# Tabs idle this long close (logging how to resume each); 0 never. Default 24.
+#ExecStart=%h/.local/bin/sidebar-termd --cgroups ... --close-idle-after 24

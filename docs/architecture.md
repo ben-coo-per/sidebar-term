@@ -794,6 +794,28 @@ Tauri). `detect/` and `activity.rs` read `/proc` on Linux (`detect/os/linux.rs`,
 `packaging/systemd/sidebar-termd.service` runs it under `systemctl --user`; with
 `loginctl enable-linger` it runs with no one logged in (README "Host daemon").
 
+**Memory (`--cgroups`, `core/src/cgroup.rs`).** The unit delegates its cgroup. The daemon moves
+into `daemon/` (protected by `memory.low`) and starts each Session's shell in a leaf of its own
+under `sessions/`, which carries the limits (`--sessions-memory-high` / `-max`, `--sessions-swap-max`).
+A `sh` wrapper writes its own pid into the leaf, then execs the shell (`SessionManager::set_spawn_hook`).
+Sessions at their limit are throttled; the daemon, outside that group, is not. Every 2 s it sends
+clients a `pressure` message (`HostPressure`: use against the limits, the stall percentages from
+`memory.pressure`, the 3 Sessions using the most), also in `hello`. Clients colour the Host's chip
+and name the biggest Session. Layout, deploy notes and the stress test: `packaging/systemd/README.md`.
+
+**Idle close (`--close-idle-after`, default 24 h; `core/src/idle.rs`).** Once a minute the daemon
+closes Tabs whose Sessions sat idle that long, logging each one's Resume entry first. Idle means
+an agent at its prompt (Agent status Done, nothing pending) or a shell with nothing in the
+foreground, with no input or output for the whole time (`SessionManager::last_io`). The active
+Tab and the last Tab never close.
+
+**Clients that drop.** The daemon logs why each client connection ended: closed by the client,
+failed, fell behind a Session's output, or a send failed. A client that keeps reconnecting says
+which in the journal. The client itself (`src/lib/host/client.ts`) marks a Host it heard from a
+moment ago `slow` after 4 s without an answer, and drops it only after 20 s. After a silence (the
+Mac slept) it still drops after 4 s. While Tailscale does not publish the server (it was not up
+when the daemon started), the daemon asks again every minute.
+
 ## Hosts
 
 The Mac app as a client of other Hosts (#29, ADR 0002; one sidebar since #49, ADR 0003): a paired

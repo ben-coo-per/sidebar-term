@@ -158,6 +158,35 @@ export interface ActivitySession {
   processes: number;
 }
 
+/** How hard a Host's Sessions press on their memory budget. Mirrors `PressureLevel` in model.rs. */
+export type PressureLevel = "ok" | "tight" | "throttled";
+
+/** One Session's share of its Host's Sessions memory. */
+export interface SessionMemory {
+  sessionId: SessionId;
+  /** Bytes charged to the Session's cgroup (its processes' memory, page cache included). */
+  mem: number;
+  /** Bytes of it in swap. */
+  swap: number;
+}
+
+/** Memory of a Host's Sessions, all together and the biggest few: the Host protocol's `pressure`. Mirrors `HostPressure`. */
+export interface HostPressure {
+  level: PressureLevel;
+  mem: number;
+  /** Where the kernel starts throttling them; null: no limit. */
+  high: number | null;
+  /** The hard limit; null: no limit. */
+  max: number | null;
+  swap: number;
+  swapMax: number | null;
+  /** Percent of the last 10 s some / all of the Sessions' processes waited on memory. */
+  some: number;
+  full: number;
+  /** The Sessions using the most memory, most first; at most three. */
+  top: SessionMemory[];
+}
+
 /** CPU and memory of the whole Mac, with each Session's share. Pushed on the `activity` event. */
 export interface ActivitySnapshot {
   /** Logical cores: the machine's capacity is cpuCount * 100 percent. */

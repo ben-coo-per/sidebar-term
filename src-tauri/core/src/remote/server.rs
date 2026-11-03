@@ -84,6 +84,8 @@ const CLOSE_UNAUTHORIZED: u16 = 4401;
 const CLOSE_AUTH_TIMEOUT: u16 = 4408;
 const CLOSE_FELL_BEHIND: u16 = 4429;
 const CLOSE_GOING_AWAY: u16 = 1001;
+/// Why a connection ended when sending to the client failed (it went away mid-send).
+const SEND_FAILED: &str = "sending to the client failed";
 
 /// The running server; `stop` ends it (connections close on the hub's `Shutdown`).
 pub struct Handle {
@@ -616,6 +618,7 @@ async fn connection(inner: Arc<Inner>, socket: WebSocket) {
         "sessions": inner.layout().facts(),
         "agentEvents": inner.agents().recent(),
         "hosts": if links { inner.hosts() } else { Vec::new() },
+        "pressure": inner.pressure().map(|p| (*p).clone()),
     });
     if !send_json(&mut sink, hello).await {
         return;
@@ -626,20 +629,24 @@ async fn connection(inner: Arc<Inner>, socket: WebSocket) {
     let mut attached: HashMap<SessionId, u64> = HashMap::new();
     let mut ping = tokio::time::interval(PING_EVERY);
     ping.tick().await; // the first tick is immediate
+    let since = std::time::Instant::now();
 
-    loop {
+    // Why the connection ended, for the log: a client that keeps dropping says why here.
+    let reason: &str = loop {
         tokio::select! {
             msg = stream.next() => {
                 let text = match msg {
                     Some(Ok(Message::Text(text))) => text,
-                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    Some(Ok(Message::Close(_))) => break "the client closed it",
+                    Some(Err(_)) => break "the connection failed",
+                    None => break "the connection ended",
                     Some(Ok(_)) => continue,
                 };
                 let parsed = match serde_json::from_str::<ClientMsg>(&text) {
                     Ok(m) => m,
                     Err(e) => {
                         if !send_json(&mut sink, json!({ "t": "error", "message": format!("bad message: {e}") })).await {
-                            break;
+                            break SEND_FAILED;
                         }
                         continue;
                     }
@@ -648,7 +655,7 @@ async fn connection(inner: Arc<Inner>, socket: WebSocket) {
                     ClientMsg::Auth { .. } => {}
                     ClientMsg::Ping => {
                         if !send_json(&mut sink, json!({ "t": "pong" })).await {
-                            break;
+                            break SEND_FAILED;
                         }
                     }
                     ClientMsg::Attach { session_id } => {
@@ -662,12 +669,12 @@ async fn connection(inner: Arc<Inner>, socket: WebSocket) {
                                     "t": "attached", "sessionId": session_id, "cols": a.cols, "rows": a.rows
                                 })).await && send_output(&mut sink, session_id, &a.scrollback).await;
                                 if !ok {
-                                    break;
+                                    break SEND_FAILED;
                                 }
                             }
                             None => {
                                 if !send_json(&mut sink, json!({ "t": "exit", "sessionId": session_id })).await {
-                                    break;
+                                    break SEND_FAILED;
                                 }
                             }
                         }
@@ -680,7 +687,7 @@ async fn connection(inner: Arc<Inner>, socket: WebSocket) {
                     ClientMsg::Input { session_id, data } => {
                         if let Err(e) = inner.write_input(session_id, &data) {
                             if !send_json(&mut sink, json!({ "t": "error", "message": e })).await {
-                                break;
+                                break SEND_FAILED;
                             }
                         }
                     }
@@ -692,20 +699,20 @@ async fn connection(inner: Arc<Inner>, socket: WebSocket) {
                             Err(format!("not attached to Session {session_id}"))
                         };
                         if !send_reply(&mut sink, id, outcome).await {
-                            break;
+                            break SEND_FAILED;
                         }
                     }
                     command => {
                         if let Some((id, outcome)) = run_command(&inner, command).await {
                             if !send_reply(&mut sink, id, outcome).await {
-                                break;
+                                break SEND_FAILED;
                             }
                         }
                     }
                 }
             }
             frame = rx.recv() => {
-                let Some((id, frame)) = frame else { break };
+                let Some((id, frame)) = frame else { break "its output channel closed" };
                 let ok = match frame {
                     Frame::Output(bytes) => send_output(&mut sink, id, &bytes).await,
                     Frame::Resized { cols, rows } => send_json(&mut sink, json!({
@@ -717,7 +724,7 @@ async fn connection(inner: Arc<Inner>, socket: WebSocket) {
                     }
                 };
                 if !ok {
-                    break;
+                    break SEND_FAILED;
                 }
             }
             msg = hub.recv() => {
@@ -733,9 +740,12 @@ async fn connection(inner: Arc<Inner>, socket: WebSocket) {
                     Ok(HubMsg::AgentEvent(event)) => {
                         send_json(&mut sink, json!({ "t": "agent_event", "event": *event })).await
                     }
+                    Ok(HubMsg::Pressure(pressure)) => {
+                        send_json(&mut sink, json!({ "t": "pressure", "pressure": *pressure })).await
+                    }
                     Ok(HubMsg::Shutdown) | Err(RecvError::Closed) => {
                         close(&mut sink, CLOSE_GOING_AWAY, "remote off").await;
-                        break;
+                        break "Remote turned off";
                     }
                     // Fell behind: only the latest matters, so send the whole of it.
                     Err(RecvError::Lagged(_)) => {
@@ -750,7 +760,7 @@ async fn connection(inner: Arc<Inner>, socket: WebSocket) {
                     }
                 };
                 if !ok {
-                    break;
+                    break SEND_FAILED;
                 }
             }
             _ = ping.tick() => {
@@ -769,7 +779,7 @@ async fn connection(inner: Arc<Inner>, socket: WebSocket) {
                 }
                 if fell_behind {
                     close(&mut sink, CLOSE_FELL_BEHIND, "fell behind").await;
-                    break;
+                    break "it fell too far behind a Session's output";
                 }
                 let mut ok = true;
                 for id in ended {
@@ -777,15 +787,19 @@ async fn connection(inner: Arc<Inner>, socket: WebSocket) {
                     ok &= send_json(&mut sink, json!({ "t": "exit", "sessionId": id })).await;
                 }
                 if !ok || sink.send(Message::Ping(Bytes::new())).await.is_err() {
-                    break;
+                    break SEND_FAILED;
                 }
             }
         }
-    }
+    };
 
     for (id, sub) in attached {
         taps.detach(id, sub);
     }
+    eprintln!(
+        "remote: {device} disconnected after {}s: {reason}",
+        since.elapsed().as_secs()
+    );
 }
 
 /// The phone's page and the built assets.

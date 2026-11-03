@@ -1,4 +1,4 @@
-# sidebar-termd: the sidebar-term Host daemon, as a systemd user service.
+# sidebar-termd: the sidebar-term Host daemon, as a systemd user service. See README.md here.
 #
 #   mkdir -p ~/.config/systemd/user && cp packaging/systemd/sidebar-termd.service ~/.config/systemd/user/
 #   systemctl --user daemon-reload && systemctl --user enable --now sidebar-termd
@@ -8,16 +8,30 @@
 # `journalctl --user -u sidebar-termd -n 3`. Logs: `journalctl --user -u sidebar-termd -f`.
 # The daemon keeps its files in $XDG_DATA_HOME/sidebar-term (~/.local/share/sidebar-term) and
 # serves the phone page from the `web/` directory in there (pnpm build's build/); see README.md.
+#
+# Memory: the daemon runs apart from its Sessions (--cgroups, below): the service's cgroup is
+# delegated to it, it keeps daemon/ for itself and puts every Session under sessions/. Limits on
+# the Sessions go on the daemon's command line (--sessions-memory-high ...: memory.conf.example),
+# never as MemoryHigh= / MemoryMax= here: those would throttle the daemon with its Sessions.
 
 [Unit]
 Description=sidebar-term Host daemon (Sessions served over Tailscale)
 Documentation=https://github.com/ben-coo-per/sidebar-term
-After=network-online.target tailscaled.service
+# A user unit cannot order itself after tailscaled (a system unit); the daemon asks Tailscale
+# again every minute until it publishes the server.
+After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/sidebar-termd
+ExecStart=%h/.local/bin/sidebar-termd --cgroups
+# The cgroup is the daemon's to split; systemd starts it in daemon/ (systemd 254+; older ones
+# warn about the line and the daemon moves itself there).
+Delegate=yes
+DelegateSubgroup=daemon
+# One OOM-killed process (the kernel picks the biggest Session process) must not stop the
+# daemon and every Session with it.
+OOMPolicy=continue
 # SIGTERM: the daemon records Resume entries and hangs up every Session, then exits.
 KillSignal=SIGTERM
 TimeoutStopSec=15
