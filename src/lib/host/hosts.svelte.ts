@@ -9,16 +9,17 @@
 
 import { remoteHostsSet } from "../ipc";
 import { loadSection, saveSection } from "../settings/store";
-import type { ActivitySession, ConversationFiles, HostInfo, PathExists, SessionId, SessionInfo } from "../types";
+import type { ActivitySession, ConversationFiles, HostInfo, HostPressure, PathExists, SessionId, SessionInfo } from "../types";
 import type { SessionTransport, TerminalSink } from "../terminal/manager";
-import { applyHostSnapshot, dropHost, dropUnknownHosts, type LayoutCommands } from "../layout.svelte";
-import { applySessionInfo, forgetSession, sessionState, setHostHome } from "../sessions.svelte";
+import { applyHostSnapshot, dropHost, dropUnknownHosts, layout, type LayoutCommands } from "../layout.svelte";
+import { applySessionInfo, forgetSession, sessionState, setHostHome, tabTitle } from "../sessions.svelte";
 import { screenOnlyEvent } from "../manager/history";
 import { addAgentEvent, dropHostAgentEvents, setHostAgentEvents } from "../manager/feed.svelte";
 import type { ConnectionStatus, HostClient } from "./client";
 import { openHostClient, pairHost } from "./connect";
 import { sessionKey, type HostId } from "./ids";
 import { cleanPath, newHostId, normalizeHostUrl, parseHostsSection, type PairedHost } from "./settings";
+import { describeStrain, type Strain } from "./strain";
 
 /** The name a Host records for this Mac at pairing (its list of paired clients). */
 const DEVICE_NAME = "Mac app";
@@ -36,6 +37,10 @@ export interface HostState extends PairedHost {
   device: string | null;
   /** Each Session's CPU and memory, from the Host's last `activity` message. */
   activity: Record<SessionId, ActivitySession>;
+  /** Online, but late to answer (`ClientEvents.slow`). */
+  slow: boolean;
+  /** Its Sessions' memory, as last heard (kept while offline: it may be why); null from a Host that does not say. */
+  pressure: HostPressure | null;
 }
 
 export const hosts = $state<{ list: HostState[]; ready: boolean }>({ list: [], ready: false });
@@ -58,6 +63,21 @@ export function hostName(id: HostId): string {
   const h = hostState(id);
   if (!h) return id;
   return h.info?.name ?? h.name ?? new URL(h.url).host;
+}
+
+/**
+ * Why a paired Host is slow, if it is: its Sessions short of memory (naming the Tab using the
+ * most) or late answers. While it is offline, what it last said, which may be why.
+ */
+export function hostStrain(id: HostId): Strain | null {
+  const h = hostState(id);
+  if (!h) return null;
+  const strain = describeStrain(h.pressure, h.slow, (sid) => {
+    const tab = Object.values(layout.tabs).find((t) => t.host === id && t.sessionId === sid);
+    return tab ? `“${tabTitle(tab)}”` : null;
+  });
+  if (!strain || h.status === "online") return strain;
+  return strain.level === "slow" ? null : { ...strain, text: `Last heard: ${strain.text}` };
 }
 
 /** A Session's CPU and memory on its Host, if the Host samples Activity. */
@@ -127,6 +147,13 @@ function connect(state: HostState): void {
     client.on("status", (status, detail) => {
       state.status = status;
       state.detail = detail;
+      if (status !== "online") state.slow = false;
+    }),
+    client.on("slow", (slow) => {
+      state.slow = slow;
+    }),
+    client.on("pressure", (pressure) => {
+      state.pressure = pressure;
     }),
     client.on("hello", (info, device, layout, sessions, agentEvents) => {
       state.info = info;
@@ -200,6 +227,8 @@ export function initHosts(): () => void {
           ...paired,
           status: "offline",
           detail: null,
+          slow: false,
+          pressure: null,
           paired: true,
           info: null,
           device: null,
@@ -212,13 +241,18 @@ export function initHosts(): () => void {
       hosts.ready = true;
       publish();
     });
-  // Back in the foreground (the window was hidden, the Mac slept): do not wait out a backoff.
+  // Back in the foreground (the window was hidden or used again, the Mac woke, the network came
+  // back): do not wait out a backoff, and check a connection that looks open still answers.
   const onVisible = () => {
     if (document.visibilityState === "visible") for (const c of connections.values()) c.client.reconnectNow();
   };
   document.addEventListener("visibilitychange", onVisible);
+  window.addEventListener("focus", onVisible);
+  window.addEventListener("online", onVisible);
   return () => {
     document.removeEventListener("visibilitychange", onVisible);
+    window.removeEventListener("focus", onVisible);
+    window.removeEventListener("online", onVisible);
     for (const id of [...connections.keys()]) disconnect(id);
   };
 }
@@ -253,6 +287,8 @@ export async function addHost(url: string, code: string): Promise<void> {
     repoPaths: {},
     status: "offline",
     detail: null,
+    slow: false,
+    pressure: null,
     paired: true,
     info: null,
     device: paired.device,

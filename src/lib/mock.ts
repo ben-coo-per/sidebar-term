@@ -1338,6 +1338,8 @@ export function hostClient(url: string, token: string): HostClient {
   const listeners: { [K in keyof ClientEvents]: Set<ClientEvents[K]> } = {
     hosts: new Set(),
     status: new Set(),
+    slow: new Set(),
+    pressure: new Set(),
     hello: new Set(),
     layout: new Set(),
     session: new Set(),

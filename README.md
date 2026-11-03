@@ -91,7 +91,10 @@ machine: `systemctl --user kill --kill-whom=main -s USR1 sidebar-termd`, then re
 `journalctl --user -u sidebar-termd -n 3` (the line with "pairing code"; the code lasts ten
 minutes). A phone that opens this Host's own page (`https://<host>.<tailnet>.ts.net/m`) pairs
 with a code from this Host, not from the Mac. Flags (`sidebar-termd --help`): `--data-dir`, `--port`,
-`--web-root`, `--pair`. On a Mac, for a smoke test, `cargo run --bin sidebar-termd -- --web-root build --pair`
+`--web-root`, `--pair`, `--cgroups` with the `--sessions-memory-*` limits, `--close-idle-after`.
+The unit runs the daemon apart from its Sessions, so Sessions at their memory limit never stall it,
+and closes Tabs idle for 24 hours: see `packaging/systemd/README.md` for the layout, the limits and
+moving a running box to it. On a Mac, for a smoke test, `cargo run --bin sidebar-termd -- --web-root build --pair`
 keeps its files in `~/Library/Application Support/com.bencooper.sidebarterm/daemon`, apart from
 the app's. It turns Remote on, so with Tailscale on that Mac it also points the Mac's Serve rule
 at itself; `tailscale serve --https=443 off` undoes that afterwards.

@@ -13,7 +13,7 @@
 import { pairWithHost, RemoteClient, type ConnectionStatus } from "../host/client";
 import { LOCAL_HOST, type HostId } from "../host/ids";
 import { hostNameFromUrl, normalizeHostUrl } from "../host/settings";
-import type { AgentEvent, HostInfo, LayoutSnapshot, LinkedHost, SessionId, SessionInfo } from "../types";
+import type { AgentEvent, HostInfo, HostPressure, LayoutSnapshot, LinkedHost, SessionId, SessionInfo } from "../types";
 import { lanes as sortedLanes, type Lane, type Lanes } from "./lanes";
 import { findRow, groupRows, unpairedHosts, type Facts, type GroupRows, type HostViews, type TabRow, type Unpaired } from "./rows";
 
@@ -47,6 +47,10 @@ export interface HostState {
   status: ConnectionStatus;
   /** Why it is offline, when it said. */
   detail: string | null;
+  /** Online, but late to answer. */
+  slow: boolean;
+  /** Its Sessions' memory, as last heard; null from a Host that does not say. */
+  pressure: HostPressure | null;
   info: HostInfo | null;
   /** Its layout, whole; an older revision than the one held is ignored. */
   layout: LayoutSnapshot | null;
@@ -195,7 +199,7 @@ function keepLastHeard(): void {
 // --- Hosts -------------------------------------------------------------------------------------
 
 function newHost(id: HostId, url: string, name: string | null, paired: boolean): HostState {
-  return { id, url, name, paired, status: "offline", detail: null, info: null, layout: null, sessions: {}, events: [] };
+  return { id, url, name, paired, status: "offline", detail: null, slow: false, pressure: null, info: null, layout: null, sessions: {}, events: [] };
 }
 
 /** Take a layout snapshot unless an older one arrives after a newer (the two channels do not order). */
@@ -224,6 +228,13 @@ function connect(id: HostId, token: string): void {
   c.on("status", (status, detail) => {
     host.status = status;
     host.detail = detail;
+    if (status !== "online") host.slow = false;
+  });
+  c.on("slow", (slow) => {
+    host.slow = slow;
+  });
+  c.on("pressure", (pressure) => {
+    host.pressure = pressure;
   });
   c.on("hello", (info, device, layout, sessions, agentEvents) => {
     host.info = info;

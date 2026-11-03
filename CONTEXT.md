@@ -68,6 +68,14 @@ _Avoid_: Load balancer, throttle, governor, auto-pause
 A Tab whose Session Memory Guard, or the user from the Tab's context menu, has stopped: every process in it is suspended (SIGSTOP) until it is thawed (SIGCONT). It keeps its memory but uses no CPU and does not grow. Going to it thaws it.
 _Avoid_: Paused (that is flow control), suspended, sleeping
 
+**Idle close**:
+A Host closing a Tab whose Session sat idle (an agent at its prompt, or a shell with nothing running) with no input or output for a long time: 24 hours by default, on the daemon. Its Resume entry is logged first, so the work can be picked up again by hand. Never the active Tab or the last one.
+_Avoid_: Reap, garbage-collect, expire, auto-quit
+
+**Pressure**:
+How hard a Host's Sessions press on their shared memory budget (ok, tight, throttled), sampled every few seconds on a daemon that runs them in cgroups of their own. Clients show it on the Host's chip and name the Session using the most. Sessions under pressure slow down; the Host itself keeps answering.
+_Avoid_: Load, memory warning, health
+
 **Resume**:
 Starting again, in the same Tab, what its Session was running when the app last closed (a crash, a quit, a restart to install): a Claude Code conversation (`claude --resume <id>`) or any other command, rerun from its command line. Codex and Gemini conversations are not resumed.
 _Avoid_: Restore, recover, reopen (and not the flow-control resume of a paused Session)

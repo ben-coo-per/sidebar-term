@@ -6,7 +6,7 @@
 // status included) whole; a client derives what a row shows from them (src/lib/mobile/rows.ts
 // on the phone, src/lib/sessions.svelte.ts on the Mac).
 
-import type { AgentEvent, HostInfo, LayoutSnapshot, LinkedHost, PathExists, SessionId, SessionInfo, ActivitySession, Tab, Group } from "../types";
+import type { AgentEvent, HostInfo, HostPressure, LayoutSnapshot, LinkedHost, PathExists, SessionId, SessionInfo, ActivitySession, Tab, Group } from "../types";
 
 // --- Messages -----------------------------------------------------------------------------------
 
@@ -52,7 +52,19 @@ export type ClientMessage =
 
 /** Text frames the Host sends. Output comes as binary frames (see `decodeOutputFrame`). */
 export type ServerMessage =
-  | { t: "hello"; host: HostInfo; device: string; layout: LayoutSnapshot; sessions: SessionInfo[]; agentEvents?: AgentEvent[]; hosts?: LinkedHost[] }
+  | {
+      t: "hello";
+      host: HostInfo;
+      device: string;
+      layout: LayoutSnapshot;
+      sessions: SessionInfo[];
+      agentEvents?: AgentEvent[];
+      hosts?: LinkedHost[];
+      /** The latest `pressure`, from a Host that samples it (and once it has). */
+      pressure?: HostPressure | null;
+    }
+  /** The Host's Sessions' memory, every few seconds, from a Host that runs them in cgroups of their own (sidebar-termd --cgroups). */
+  | { t: "pressure"; pressure: HostPressure }
   /** The Hosts this one's linked Tabs point at changed (to a client that asked for `links`). */
   | { t: "hosts"; hosts: LinkedHost[] }
   /** An agent did something. */

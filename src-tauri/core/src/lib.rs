@@ -12,10 +12,12 @@
 
 pub mod activity;
 pub mod agents;
+pub mod cgroup;
 pub mod detect;
 pub mod guard;
 pub mod handoff;
 pub mod host;
+pub mod idle;
 pub mod journal;
 pub mod layout;
 pub mod model;

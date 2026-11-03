@@ -10,7 +10,7 @@
   import { sessionOf, setTabRead, tabAgentLabel, tabIsUnread, tabTitle } from "../sessions.svelte";
   import { AGENT_NAMES } from "../agentStatus";
   import { isLocal, LOCAL_HOST } from "../host/ids";
-  import { hostActivity, hostState } from "../host/hosts.svelte";
+  import { hostActivity, hostState, hostStrain } from "../host/hosts.svelte";
   import RobotIcon from "./icons/RobotIcon.svelte";
   import TerminalIcon from "./icons/TerminalIcon.svelte";
   import CheckIcon from "./icons/CheckIcon.svelte";
@@ -36,6 +36,11 @@
   /** A linked Tab's Host is connected (a local Tab's always is). */
   const online = $derived(local || hostState(tab.host)?.status === "online");
   const hostLabel = $derived(local ? "" : hostName(tab.host));
+  /** Why the Host is slow (short of memory, naming the Tab using the most; or late answers). */
+  const strain = $derived(local ? null : hostStrain(tab.host));
+  const chipTitle = $derived(
+    `On ${hostLabel}${online ? "" : ", which is not connected"}${strain ? `. ${strain.text}` : ""}`,
+  );
   const session = $derived(sessionOf(tab));
   const agent = $derived(session?.info?.agent ?? null);
   const status = $derived(session?.status ?? null);
@@ -251,7 +256,7 @@
     {#if git || remote || !local}
       <span class="badge-line">
         {#if !local}
-          <span class="host-chip" title={online ? `On ${hostLabel}` : `On ${hostLabel}, which is not connected`}>{hostLabel}</span>
+          <span class="host-chip {strain?.level ?? ''}" title={chipTitle}>{hostLabel}</span>
         {/if}
         {#if git || remote}
           <Badge {git} {remote} />
@@ -410,6 +415,17 @@
   }
   .row.offline .host-chip {
     border-style: dashed;
+  }
+  /* A Host whose Sessions are short of memory, or slow to answer: its hover says why. */
+  .host-chip.slow,
+  .host-chip.tight {
+    border-color: color-mix(in srgb, var(--status-needs-input) 60%, transparent);
+    color: var(--status-needs-input);
+  }
+  .host-chip.throttled {
+    border-color: var(--status-needs-input);
+    background: color-mix(in srgb, var(--status-needs-input) 18%, var(--sidebar-bg-raised));
+    color: var(--status-needs-input);
   }
   .close {
     flex: none;

@@ -40,7 +40,7 @@ use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -119,6 +119,11 @@ pub type ExitHook = Arc<dyn Fn(SessionId) + Send + Sync>;
 /// Runs on every spawn with the Session's environment, before the shell starts.
 pub type EnvHook = Box<dyn Fn(&mut BTreeMap<OsString, OsString>) + Send + Sync>;
 
+/// Runs on every spawn with the new Session's id and the command about to start, and may wrap
+/// it (the daemon: a `sh` that moves itself into the Session's cgroup, then execs the shell,
+/// so the shell's pid and everything it starts are in that cgroup from the first instruction).
+pub type SpawnHook = Box<dyn Fn(SessionId, &mut Vec<OsString>) + Send + Sync>;
+
 impl SessionManager {
     pub fn new(taps: Arc<Taps>, events: Arc<dyn Events>) -> Self {
         Self {
@@ -129,6 +134,16 @@ impl SessionManager {
             exit_hooks: Arc::default(),
             env_hook: Mutex::new(None),
         }
+    }
+
+    /// Let `hook` wrap the command of every Session spawned from now on.
+    pub fn set_spawn_hook(&self, hook: SpawnHook) {
+        *lock(&self.host.spawn_hook) = Some(hook);
+    }
+
+    /// When the Session last had input or output, epoch ms; `None` for a Session that is gone.
+    pub fn last_io(&self, id: SessionId) -> Option<u64> {
+        self.host.last_io(id)
     }
 
     /// Let `hook` add to the environment of every Session spawned from now on.
@@ -395,6 +410,8 @@ fn session_env(
 #[derive(Default)]
 pub(crate) struct PtyHost {
     registry: Arc<Registry>,
+    /// Wraps each new Session's command (`SessionManager::set_spawn_hook`).
+    spawn_hook: Mutex<Option<SpawnHook>>,
 }
 
 #[derive(Default)]
@@ -414,6 +431,20 @@ struct Session {
     input: mpsc::Sender<Vec<u8>>,
     gate: Gate,
     proc: Mutex<Proc>,
+    /// When the Session last had input or output, epoch ms.
+    last_io: AtomicU64,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+impl Session {
+    fn touch(&self) {
+        self.last_io.store(now_ms(), Ordering::Relaxed);
+    }
 }
 
 struct Proc {
@@ -615,6 +646,9 @@ impl PtyHost {
         // which Session they come from with it). One that fails to spawn leaves a gap.
         let id = self.registry.next_id.fetch_add(1, Ordering::SeqCst) + 1;
         spec.env.insert(SESSION_ID_VAR.into(), id.to_string().into());
+        if let Some(hook) = lock(&self.spawn_hook).as_ref() {
+            hook(id, &mut spec.argv);
+        }
         let mut child = slave
             .spawn_command(spec.command())
             .map_err(|e| format!("spawning {} failed: {e:#}", spec.argv[0].to_string_lossy()))?;
@@ -649,6 +683,7 @@ impl PtyHost {
                 hup_at: None,
                 sigkilled: false,
             }),
+            last_io: AtomicU64::new(now_ms()),
         });
         // Register before the reader starts: the reader is what unregisters.
         lock(&self.registry.sessions).insert(id, session.clone());
@@ -681,6 +716,7 @@ impl PtyHost {
         if data.is_empty() {
             return Ok(());
         }
+        s.touch();
         s.input
             .send(data.to_vec())
             .map_err(|_| format!("session {id} input is closed"))
@@ -737,6 +773,10 @@ impl PtyHost {
 
     pub fn probe_target(&self, id: SessionId) -> Option<ProbeTarget> {
         lock(&self.registry.sessions).get(&id).map(|s| s.probe())
+    }
+
+    pub fn last_io(&self, id: SessionId) -> Option<u64> {
+        self.get(id).map(|s| s.last_io.load(Ordering::Relaxed))
     }
 
     /// SIGHUP every Session. Does not wait: on process exit every master closes and the kernel
@@ -871,6 +911,9 @@ fn reader_loop<O, E>(
             continue; // paused while we waited: park before reading
         }
         let open = coalesce(&mut src, fd, &mut buf, &mut chunk, &session.gate);
+        if !chunk.is_empty() {
+            session.touch();
+        }
         flush(&mut chunk);
         if !open {
             break;
