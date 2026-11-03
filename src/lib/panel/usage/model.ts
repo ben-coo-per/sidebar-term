@@ -87,10 +87,23 @@ export function waitingNote(a: AgentUsage, now: number): string {
   return `Waiting for the limit to clear${until}`;
 }
 
-/** The fullest of an agent's windows now, for the collapsed header; null when it has none. */
-export function peakPercent(a: AgentUsage, now: number): number | null {
-  if (a.windows.length === 0) return null;
-  return Math.max(...a.windows.map((w) => currentPercent(w, now)));
+/** The account-wide windows: every model counts against them, unlike a model's own week ("Fable wk"). */
+export const ACCOUNT_WINDOWS: readonly string[] = ["5h", "Week"];
+
+/**
+ * The fullest of an agent's account-wide windows now, for the collapsed header, with its label;
+ * the fullest of any window when it has none of those, and null when it has no windows at all.
+ * A tie goes to the earlier window (the 5-hour one).
+ */
+export function peakWindow(a: AgentUsage, now: number): { label: string; percent: number } | null {
+  const account = a.windows.filter((w) => ACCOUNT_WINDOWS.includes(w.label));
+  const pool = account.length > 0 ? account : a.windows;
+  let peak: { label: string; percent: number } | null = null;
+  for (const w of pool) {
+    const percent = currentPercent(w, now);
+    if (peak === null || percent > peak.percent) peak = { label: w.label, percent };
+  }
+  return peak;
 }
 
 /** The `usage` settings section -> the agents chosen, in display order. Every one by default. */

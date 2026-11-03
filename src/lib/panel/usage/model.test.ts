@@ -7,7 +7,7 @@ import {
   formatResetsIn,
   freshnessNote,
   parseUsageSection,
-  peakPercent,
+  peakWindow,
   usageLevel,
   waitingNote,
 } from "./model";
@@ -17,8 +17,8 @@ const MIN = 60_000;
 const HOUR = 60 * MIN;
 const NOW = 1_777_000_000_000;
 
-function win(usedPercent: number, resetsAt: number | null): UsageWindow {
-  return { label: "5h", usedPercent, resetsAt };
+function win(usedPercent: number, resetsAt: number | null, label = "5h"): UsageWindow {
+  return { label, usedPercent, resetsAt };
 }
 
 describe("usage model", () => {
@@ -59,17 +59,27 @@ describe("usage model", () => {
     expect(formatAgo(NOW - 3 * HOUR, NOW)).toBe("3h ago");
   });
 
-  it("peak is the fullest window now", () => {
+  it("peak is the fullest account-wide window now, with its label", () => {
     const a: AgentUsage = {
-      agent: "codex",
-      windows: [win(12, NOW + HOUR), win(97, NOW - 1)],
+      agent: "claude",
+      windows: [win(12, NOW + HOUR), win(30, NOW + 50 * HOUR, "Week"), win(97, NOW + HOUR, "Fable wk")],
       plan: null,
       updatedAt: null,
       error: null,
       rateLimitedUntil: null,
     };
-    expect(peakPercent(a, NOW)).toBe(12); // the 97% window has reset
-    expect(peakPercent({ ...a, windows: [] }, NOW)).toBeNull();
+    // A model's own week does not count, however full.
+    expect(peakWindow(a, NOW)).toEqual({ label: "Week", percent: 30 });
+    // A window that has reset reads 0.
+    const reset = { ...a, windows: [win(80, NOW - 1), win(30, NOW + 50 * HOUR, "Week")] };
+    expect(peakWindow(reset, NOW)).toEqual({ label: "Week", percent: 30 });
+    // A tie goes to the 5-hour window.
+    const tie = { ...a, windows: [win(40, NOW + HOUR), win(40, NOW + 50 * HOUR, "Week")] };
+    expect(peakWindow(tie, NOW)).toEqual({ label: "5h", percent: 40 });
+    // With no account-wide window, the fullest of the rest.
+    const other = { ...a, windows: [win(5, null, "Limit"), win(9, null, "1d")] };
+    expect(peakWindow(other, NOW)).toEqual({ label: "1d", percent: 9 });
+    expect(peakWindow({ ...a, windows: [] }, NOW)).toBeNull();
   });
 
   it("says how old stale numbers are, and when a rate limit is being waited out", () => {
