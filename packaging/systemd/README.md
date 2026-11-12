@@ -34,8 +34,12 @@ sidebar-termd.service/      delegated to the daemon; no processes of its own
   Sessions using the most. The Mac app colours the Host's chip on its linked Tabs and says why
   on hover and in Settings > Hosts. The phone shows a banner. The daemon logs each change of
   level, naming the biggest Session.
-- `<run>` is the daemon's pid. A leaf a previous run left populated (a process that outlived its
-  hangup) is never reused, and is removed once it empties.
+- **A Session's processes live as long as its Tab.** Closing a Tab hangs up its shell's process
+  group, which an agent that ignores SIGHUP, or a dev server started in the background, is not
+  in. Once the Session has exited the daemon kills whatever is still in its leaf (`cgroup.kill`),
+  logging how many processes it found, so a closed Tab never keeps its memory.
+- `<run>` is the daemon's pid. A leaf a previous run left populated is never reused; its
+  processes are killed at the next sweep, and the leaf is removed once it empties.
 - `OOMPolicy=continue` stays: when the Sessions hit `memory.max`, the kernel kills the biggest
   process in `sessions/`, and the service keeps running.
 

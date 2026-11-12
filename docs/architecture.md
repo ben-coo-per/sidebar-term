@@ -801,7 +801,12 @@ A `sh` wrapper writes its own pid into the leaf, then execs the shell (`SessionM
 Sessions at their limit are throttled; the daemon, outside that group, is not. Every 2 s it sends
 clients a `pressure` message (`HostPressure`: use against the limits, the stall percentages from
 `memory.pressure`, the 3 Sessions using the most), also in `hello`. Clients colour the Host's chip
-and name the biggest Session. Layout, deploy notes and the stress test: `packaging/systemd/README.md`.
+and name the biggest Session. The level (`cgroup::level`) follows use against the limit and the
+stalls; swap left full by an earlier stall counts only while the Sessions still stall at all.
+When a Session exits, whatever outlived its hangup in its leaf (an agent that ignores SIGHUP, a
+dev server it started) is killed through `cgroup.kill` (`Cgroups::release`), so a closed Tab
+never keeps its memory; the sweep does the same for leaves an earlier run left.
+Layout, deploy notes and the stress test: `packaging/systemd/README.md`.
 
 **Idle close (`--close-idle-after`, default 24 h; `core/src/idle.rs`).** Once a minute the daemon
 closes Tabs whose Sessions sat idle that long, logging each one's Resume entry first. Idle means
