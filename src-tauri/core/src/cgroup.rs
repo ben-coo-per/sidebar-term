@@ -18,9 +18,15 @@
 //! themselves and each other but never the daemon. Each Session gets its own leaf so the Host can
 //! tell its clients which Session uses the memory ([`Cgroups::sample`]: the `pressure` message).
 //! A Session's shell is moved into its leaf by a `sh` that writes its own pid there and then
-//! execs the shell ([`Cgroups::wrap`]), so nothing it starts is ever outside it. `<run>` is the
-//! daemon's pid: a leaf a previous run left populated (a process that outlived its hangup) is
-//! never reused for a new Session, and is removed once it empties ([`Cgroups::sweep`]).
+//! execs the shell ([`Cgroups::wrap`]), so nothing it starts is ever outside it.
+//!
+//! A Session's processes live as long as its Tab. The hangup reaches the shell's process group
+//! only, and a process that left it (an agent that ignores SIGHUP, a dev server it started in
+//! the background) would outlive the Tab, keeping its leaf and its memory. So once the Session
+//! has exited, whatever is still in its leaf is killed through `cgroup.kill` ([`Cgroups::release`]).
+//! `<run>` is the daemon's pid: a leaf a previous run left populated is never reused for a new
+//! Session; its processes are killed too, and the leaf is removed once it empties
+//! ([`Cgroups::sweep`]).
 
 use crate::model::{HostPressure, PressureLevel, SessionId, SessionMemory};
 use std::collections::HashSet;
@@ -147,16 +153,25 @@ impl Cgroups {
         *argv = wrapped;
     }
 
-    /// Remove a Session's leaf once it has exited. Still populated (a process outlived the
-    /// hangup) it stays, and [`Cgroups::sweep`] removes it once empty.
+    /// A Session has exited: kill whatever outlived its hangup in its leaf, and remove the leaf.
+    /// The kill is asynchronous, so a leaf still populated stays for [`Cgroups::sweep`].
     pub fn release(&self, id: SessionId) {
-        let _ = fs::remove_dir(self.leaf(id));
+        let leaf = self.leaf(id);
+        match kill_leaf(&leaf) {
+            Ok(0) => {}
+            Ok(n) => eprintln!("cgroup: Session {id} ended with {n} process(es) still running in its cgroup; killed"),
+            Err(e) => eprintln!("cgroup: Session {id} ended with processes still running in its cgroup, not killed: {e}"),
+        }
+        let _ = fs::remove_dir(&leaf);
     }
 
-    /// Remove every empty leaf that is not one of `live`'s: what earlier runs left, and leaves
-    /// [`Cgroups::release`] found still populated.
+    /// Remove every empty leaf that is not one of `live`'s. A populated leaf of an earlier run
+    /// (its daemon's hangup did not reach everything) has its processes killed first. This run's
+    /// leaves are never killed here: [`Cgroups::release`] does that when the Session exits, and
+    /// a Session being spawned has a populated leaf before it is registered.
     pub fn sweep(&self, live: &[SessionId]) {
         let keep: HashSet<String> = live.iter().map(|id| format!("{}-{id}", self.run)).collect();
+        let prefix = format!("{}-", self.run);
         let Ok(dir) = fs::read_dir(&self.sessions) else { return };
         for entry in dir.flatten() {
             let path = entry.path();
@@ -164,9 +179,16 @@ impl Cgroups {
             if !path.is_dir() || keep.contains(&name) {
                 continue;
             }
-            let events = fs::read_to_string(path.join("cgroup.events")).unwrap_or_default();
-            if !populated(&events) {
+            if name.starts_with(&prefix) {
                 let _ = fs::remove_dir(&path);
+                continue;
+            }
+            match kill_leaf(&path) {
+                Ok(0) => {
+                    let _ = fs::remove_dir(&path);
+                }
+                Ok(n) => eprintln!("cgroup: {name}, left by an earlier run, still ran {n} process(es); killed"),
+                Err(e) => eprintln!("cgroup: {name}, left by an earlier run, still runs processes, not killed: {e}"),
             }
         }
     }
@@ -229,16 +251,15 @@ pub fn own_cgroup(text: &str) -> Option<&str> {
 
 /// How hard the Sessions press, from their memory and stall times. Throttled: at the limit
 /// where the kernel throttles (within 2%), or all of them stalled a fifth of the time. Tight:
-/// past 85% of it, swap nearly full, or stalls noticeable.
+/// past 85% of it, stalls noticeable, or swap nearly full while some stall at all. Swap alone
+/// is not pressure: pages an earlier stall pushed out stay there for days, until each is next
+/// touched, and the Sessions run fine without them.
 pub fn level(mem: u64, limit: Option<u64>, swap: u64, swap_max: Option<u64>, some: f32, full: f32) -> PressureLevel {
     let at = |limit: u64, percent: u64| mem.saturating_mul(100) >= limit.saturating_mul(percent);
+    let swap_full = swap_max.is_some_and(|s| s > 0 && swap.saturating_mul(10) >= s.saturating_mul(9));
     if full >= 20.0 || limit.is_some_and(|l| at(l, 98)) {
         PressureLevel::Throttled
-    } else if some >= 10.0
-        || full >= 5.0
-        || limit.is_some_and(|l| at(l, 85))
-        || swap_max.is_some_and(|s| s > 0 && swap.saturating_mul(10) >= s.saturating_mul(9))
-    {
+    } else if some >= 10.0 || full >= 5.0 || limit.is_some_and(|l| at(l, 85)) || (swap_full && some >= 5.0) {
         PressureLevel::Tight
     } else {
         PressureLevel::Ok
@@ -282,6 +303,22 @@ pub fn parse_size(v: &str) -> Option<u64> {
 
 fn populated(events: &str) -> bool {
     events.lines().any(|l| l.trim() == "populated 1")
+}
+
+/// Kill every process in `leaf` if any is there: how many were, or 0 for an empty (or absent)
+/// leaf. `cgroup.kill` (cgroup v2, Linux 5.14) SIGKILLs the whole leaf at once, forks included;
+/// the kernel empties it a moment later.
+fn kill_leaf(leaf: &Path) -> Result<usize, String> {
+    let events = fs::read_to_string(leaf.join("cgroup.events")).unwrap_or_default();
+    if !populated(&events) {
+        return Ok(0);
+    }
+    let n = fs::read_to_string(leaf.join("cgroup.procs"))
+        .map(|p| p.split_whitespace().count())
+        .unwrap_or(0)
+        .max(1);
+    write(&leaf.join("cgroup.kill"), "1")?;
+    Ok(n)
 }
 
 fn mkdir(dir: &Path) -> Result<(), String> {
@@ -363,7 +400,10 @@ mod tests {
         assert_eq!(level(9 * g, Some(9 * g), 2 * g, Some(2 * g), 44.0, 42.0), Throttled);
         assert_eq!(level(9 * g - g / 100, Some(9 * g), 0, None, 0.0, 0.0), Throttled);
         assert_eq!(level(8 * g, Some(9 * g), 0, None, 0.0, 0.0), Tight);
-        assert_eq!(level(2 * g, Some(9 * g), 2 * g, Some(2 * g), 0.0, 0.0), Tight);
+        // Swap an earlier stall left full is not pressure by itself; with some stall it is.
+        assert_eq!(level(2 * g, Some(9 * g), 2 * g, Some(2 * g), 0.0, 0.0), Ok);
+        assert_eq!(level(2 * g, Some(9 * g), 2 * g, Some(2 * g), 1.0, 0.5), Ok);
+        assert_eq!(level(2 * g, Some(9 * g), 2 * g, Some(2 * g), 6.0, 1.0), Tight);
         assert_eq!(level(2 * g, Some(9 * g), 0, Some(2 * g), 12.0, 1.0), Tight);
         assert_eq!(level(2 * g, Some(9 * g), 0, Some(2 * g), 1.0, 0.0), Ok);
         assert_eq!(level(20 * g, None, 0, None, 0.0, 0.0), Ok, "no limit, no stalls");
@@ -408,7 +448,8 @@ mod tests {
         assert_eq!(s.level, PressureLevel::Tight);
         assert_eq!(s.top.iter().map(|t| t.session_id).collect::<Vec<_>>(), [8, 7]);
 
-        // The sweep removes empty leaves that are not live; a populated one stays.
+        // The sweep removes empty leaves that are not live; a populated one of this run stays
+        // (its Session may be spawning), untouched.
         fs::remove_file(root.join("sessions/1-3/memory.current")).unwrap();
         fs::write(root.join("sessions/885-8/cgroup.events"), "populated 1\n").unwrap();
         fs::remove_file(root.join("sessions/885-7/memory.current")).unwrap();
@@ -418,6 +459,40 @@ mod tests {
         assert!(!root.join("sessions/1-3").exists());
         assert!(!root.join("sessions/885-7").exists());
         assert!(root.join("sessions/885-8").exists(), "still populated");
+        assert!(!root.join("sessions/885-8/cgroup.kill").exists(), "never killed by the sweep");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// What outlived a Session's hangup is killed when the Session exits, and what an earlier
+    /// run left running is killed by the sweep.
+    #[test]
+    fn a_close_kills_what_outlived_the_hangup() {
+        let root = tmp("kill");
+        fs::write(root.join("cgroup.controllers"), "memory\n").unwrap();
+        fs::write(root.join("cgroup.procs"), "").unwrap();
+        let cg = Cgroups::setup_at(&root, Limits::default(), 885).unwrap();
+
+        // An agent and its dev server, in their own process groups, survived the shell.
+        cg.wrap(27, &mut vec![]);
+        let leaf = root.join("sessions/885-27");
+        fs::write(leaf.join("cgroup.events"), "populated 1\n").unwrap();
+        fs::write(leaf.join("cgroup.procs"), "3181462\n3900163\n").unwrap();
+        cg.release(27);
+        assert_eq!(fs::read_to_string(leaf.join("cgroup.kill")).unwrap(), "1");
+        assert!(leaf.exists(), "the kernel empties it later; the sweep removes it then");
+
+        // A Session that left nothing behind (an empty leaf: the kernel's files go with it).
+        cg.wrap(28, &mut vec![]);
+        cg.release(28);
+        assert!(!root.join("sessions/885-28").exists());
+
+        // An earlier run's leaf, still running something: the sweep kills it.
+        let old = root.join("sessions/1-3");
+        fs::create_dir(&old).unwrap();
+        fs::write(old.join("cgroup.events"), "populated 1\n").unwrap();
+        cg.sweep(&[]);
+        assert_eq!(fs::read_to_string(old.join("cgroup.kill")).unwrap(), "1");
+        assert!(old.exists());
         fs::remove_dir_all(&root).unwrap();
     }
 
